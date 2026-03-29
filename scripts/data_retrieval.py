@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import tarfile
 import urllib.request
 from dataclasses import dataclass, field
@@ -38,6 +39,21 @@ class IntegrityReport:
     issues: list[str] = field(default_factory=list)
     restore_meta: bool = False
     missing_image_members: set[str] = field(default_factory=set)
+
+
+def print_progress(prefix: str, current: int, total: int, width: int = 32) -> None:
+    if total <= 0:
+        return
+    ratio = min(max(current / total, 0.0), 1.0)
+    filled = int(width * ratio)
+    bar = "#" * filled + "-" * (width - filled)
+    sys.stdout.write(
+        f"\r{prefix} [{bar}] {current}/{total} ({ratio * 100:5.1f}%)"
+    )
+    sys.stdout.flush()
+    if current >= total:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
 
 
 def parse_args() -> argparse.Namespace:
@@ -216,7 +232,14 @@ def extract_all_members(archive_path: Path, destination_dir: Path) -> None:
         for member in members:
             if not is_safe_member_path(destination_dir, member.name):
                 raise RuntimeError(f"Unsafe archive path detected: {member.name}")
-        tar.extractall(path=destination_dir, members=members)
+
+        total_members = len(members)
+        update_every = max(1, total_members // 200)
+        print_progress("Extracting", 0, total_members)
+        for index, member in enumerate(members, start=1):
+            tar.extract(member, path=destination_dir)
+            if index == total_members or index % update_every == 0:
+                print_progress("Extracting", index, total_members)
     print("Full extraction finished.")
 
 
@@ -228,6 +251,10 @@ def extract_selected_members(
         return
 
     extracted = 0
+    total_requested = len(requested)
+    update_every = max(1, total_requested // 100)
+    print_progress("Repairing", 0, total_requested)
+
     with tarfile.open(archive_path, mode="r:gz") as tar:
         for member in tar:
             if member.name in requested:
@@ -236,6 +263,8 @@ def extract_selected_members(
                 tar.extract(member, path=destination_dir)
                 extracted += 1
                 requested.remove(member.name)
+                if extracted == total_requested or extracted % update_every == 0:
+                    print_progress("Repairing", extracted, total_requested)
                 if not requested:
                     break
 

@@ -1,5 +1,13 @@
 # DATA 586 Course Project (W2026 T2)
 
+## Quick Start
+
+Run the full project workflow:
+
+```bash
+uv run python scripts/workflow.py
+```
+
 ## Basic Information
 
 - Course: `DATA 586 - Advanced Machine Learning`
