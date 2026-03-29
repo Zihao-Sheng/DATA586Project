@@ -1,0 +1,6 @@
+# Dataset artifacts (do not upload)
+data/
+
+# Python cache
+__pycache__/
+*.pyc
