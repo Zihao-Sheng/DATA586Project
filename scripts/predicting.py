@@ -8,7 +8,7 @@ from model_registry import discover_model_names, load_model_module
 
 
 def default_checkpoint_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "checkpoints" / "resnet18_best.pth"
+    return Path(__file__).resolve().parents[1] / "checkpoints" / "resnet18" / "best.pth"
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,6 +76,36 @@ def build_transform(image_size: int):
     )
 
 
+def supported_image_extensions() -> tuple[str, ...]:
+    return (".png", ".jpg", ".jpeg", ".bmp", ".webp")
+
+
+def collect_image_paths_from_directories(directories: list[Path]) -> list[Path]:
+    image_paths: list[Path] = []
+    for directory in directories:
+        for path in sorted(directory.iterdir()):
+            if path.is_file() and path.suffix.lower() in supported_image_extensions():
+                image_paths.append(path.resolve())
+    return image_paths
+
+
+class ImagePathDataset:
+    def __init__(self, image_paths: list[Path], transform) -> None:
+        self.image_paths = image_paths
+        self.transform = transform
+
+    def __len__(self) -> int:
+        return len(self.image_paths)
+
+    def __getitem__(self, index: int):
+        from PIL import Image
+
+        image_path = self.image_paths[index]
+        image = Image.open(image_path).convert("RGB")
+        tensor = self.transform(image)
+        return tensor, str(image_path)
+
+
 def predict_image(
     model,
     image_path: Path,
@@ -102,6 +132,50 @@ def predict_image(
     }
 
 
+def predict_images_batch(
+    model,
+    image_paths: list[Path],
+    transform,
+    idx_to_class: dict[int, str],
+    device: str,
+    batch_size: int = 16,
+    num_workers: int = 0,
+    progress_callback=None,
+) -> list[dict[str, str | float]]:
+    import torch
+    from torch.utils.data import DataLoader
+
+    dataset = ImagePathDataset(image_paths, transform)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    results: list[dict[str, str | float]] = []
+    processed = 0
+    total = len(dataset)
+
+    with torch.no_grad():
+        for tensors, batch_paths in dataloader:
+            tensors = tensors.to(device)
+            logits = model(tensors)
+            probs = torch.softmax(logits, dim=1)
+            pred_indices = torch.argmax(probs, dim=1)
+
+            for batch_index, image_path in enumerate(batch_paths):
+                pred_idx = int(pred_indices[batch_index].item())
+                confidence = float(probs[batch_index, pred_idx].item())
+                results.append(
+                    {
+                        "image_path": image_path,
+                        "predicted_class": idx_to_class[pred_idx],
+                        "confidence": confidence,
+                    }
+                )
+
+            processed += len(batch_paths)
+            if progress_callback is not None:
+                progress_callback(processed, total)
+
+    return results
+
+
 def main() -> None:
     args = parse_args()
     import torch
@@ -116,15 +190,22 @@ def main() -> None:
     idx_to_class = {idx: name for name, idx in class_to_idx.items()}
     transform = build_transform(args.image_size)
 
-    results: list[dict[str, str | float]] = []
+    valid_image_paths: list[Path] = []
     for image_path in args.image_paths:
         resolved_path = image_path.expanduser().resolve()
         if not resolved_path.is_file():
             print(f"Skipping missing image: {resolved_path}")
             continue
+        valid_image_paths.append(resolved_path)
 
-        result = predict_image(model, resolved_path, transform, idx_to_class, device)
-        results.append(result)
+    results = predict_images_batch(
+        model,
+        valid_image_paths,
+        transform,
+        idx_to_class,
+        device,
+    )
+    for result in results:
         print(
             f"{result['image_path']} -> {result['predicted_class']} "
             f"(confidence={result['confidence']:.4f})"

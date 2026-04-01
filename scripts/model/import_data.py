@@ -29,16 +29,29 @@ def data_import(data_root=None,
                 batch_size=32,
                 num_workers=4,
                 pin_memory=True,
-                image_size=224):
+                image_size=224,
+                use_validation_split=False,
+                validation_proportion=0.1,
+                split_seed=42):
     if data_root is None:
         data_root = _default_data_root()
     classes,class_to_idx=class_reader(data_root)
     train_samples=read_split(data_root,split_name='train',class_to_idx=class_to_idx)
     test_samples=read_split(data_root,split_name='test',class_to_idx=class_to_idx)
+    val_samples = []
+    if use_validation_split:
+        train_samples, val_samples = split_train_validation(
+            train_samples,
+            validation_proportion=validation_proportion,
+            split_seed=split_seed,
+        )
     validate_samples(train_samples)
+    if use_validation_split:
+        validate_samples(val_samples)
     validate_samples(test_samples)
     train_transform,test_transform=build_transforms(image_size=image_size)
     train_dataset=Food101Dataset(train_samples,transform=train_transform)
+    val_dataset=Food101Dataset(val_samples,transform=test_transform) if use_validation_split else None
     test_dataset=Food101Dataset(test_samples,transform=test_transform)
     train_loader=DataLoader(
         dataset=train_dataset,
@@ -47,6 +60,13 @@ def data_import(data_root=None,
         pin_memory=pin_memory,
         shuffle=True
     )
+    val_loader=DataLoader(
+        dataset=val_dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        shuffle=False
+    ) if use_validation_split else None
     test_loader=DataLoader(
         dataset=test_dataset,
         batch_size=batch_size,
@@ -54,7 +74,7 @@ def data_import(data_root=None,
         pin_memory=pin_memory,
         shuffle=False
     )
-    return train_loader,test_loader,class_to_idx,len(classes)
+    return train_loader,val_loader,test_loader,class_to_idx,len(classes)
 
 
 def class_reader(data_root=None):
@@ -100,6 +120,36 @@ def validate_samples(samples):
             missing+=1
     print('Validated Rate:',100*(total-missing)/total,'%')
     return missing
+
+
+def split_train_validation(samples, validation_proportion=0.1, split_seed=42):
+    if not 0.0 < validation_proportion < 1.0:
+        raise ValueError("validation_proportion must be between 0 and 1.")
+
+    import random
+
+    rng = random.Random(split_seed)
+    grouped = {}
+    for sample in samples:
+        grouped.setdefault(sample[1], []).append(sample)
+
+    train_split = []
+    val_split = []
+    for label, items in grouped.items():
+        shuffled = list(items)
+        rng.shuffle(shuffled)
+        if len(shuffled) <= 1:
+            train_split.extend(shuffled)
+            continue
+
+        val_count = max(1, int(len(shuffled) * validation_proportion))
+        val_count = min(val_count, len(shuffled) - 1)
+        val_split.extend(shuffled[:val_count])
+        train_split.extend(shuffled[val_count:])
+
+    rng.shuffle(train_split)
+    rng.shuffle(val_split)
+    return train_split, val_split
 
 
 def build_transforms(image_size=224):

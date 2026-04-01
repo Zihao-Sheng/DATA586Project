@@ -5,9 +5,10 @@ import json
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, Qt, QTimer
+from PySide6.QtCore import QObject, QProcess, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QIcon, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -23,7 +24,12 @@ from PySide6.QtWidgets import (
     QPushButton,
     QPlainTextEdit,
     QProgressBar,
+    QListView,
+    QListWidget,
+    QListWidgetItem,
     QSpinBox,
+    QStackedWidget,
+    QTreeView,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -46,6 +52,7 @@ ICON_BIG = 1
 IMAGE_ICON = 1
 LR_LOADFROMFILE = 0x00000010
 LR_DEFAULTSIZE = 0x00000040
+NEW_CHECKPOINT_NAME_LABEL = "New checkpoint name..."
 
 
 def set_windows_app_id() -> None:
@@ -108,7 +115,17 @@ class TrainingLauncher(QMainWindow):
         self.predict_image_paths: list[Path] = []
         self.predict_results: list[dict[str, str | float | bool | None]] = []
         self.current_predict_index = -1
+        self.predict_thread: QThread | None = None
+        self.predict_worker: PredictionWorker | None = None
+        self.predict_compact_built = False
+        self.predict_compact_loading = False
+        self.predict_compact_pending_indices: list[int] = []
+        self.predict_thumbnail_cache: dict[str, QIcon] = {}
+        self.predict_display_cache: dict[tuple[str, int, int], QPixmap] = {}
         self.available_models = discover_model_names()
+        self._checkpoint_name_locked_to_model = True
+        self._last_training_model_name = self.available_models[0] if self.available_models else ""
+        self._last_predict_model_name = self.available_models[0] if self.available_models else ""
 
         self._init_data_controls()
         self._init_training_controls()
@@ -116,6 +133,7 @@ class TrainingLauncher(QMainWindow):
         self._build_ui()
         self.refresh_command_preview()
         self.refresh_predict_page()
+        self.on_predict_compact_toggled(self.predict_compact_checkbox.isChecked())
 
     def _init_training_controls(self) -> None:
         self.model_combo = QComboBox()
@@ -149,6 +167,15 @@ class TrainingLauncher(QMainWindow):
         self.freeze_checkbox = QCheckBox("Freeze backbone")
         self.freeze_checkbox.setChecked(True)
 
+        self.validation_checkbox = QCheckBox("Use validation split")
+        self.validation_checkbox.setChecked(False)
+
+        self.validation_proportion_spin = QDoubleSpinBox()
+        self.validation_proportion_spin.setRange(0.01, 0.99)
+        self.validation_proportion_spin.setDecimals(2)
+        self.validation_proportion_spin.setSingleStep(0.01)
+        self.validation_proportion_spin.setValue(0.10)
+
         self.resume_checkbox = QCheckBox("Resume from checkpoint")
         self.resume_checkbox.setChecked(False)
 
@@ -161,11 +188,15 @@ class TrainingLauncher(QMainWindow):
         self.resume_clear_button = QPushButton("Clear")
         self.resume_clear_button.clicked.connect(self.clear_resume_path)
 
+        self.checkpoint_output_combo = QComboBox()
+        self.checkpoint_output_combo.setEditable(True)
+        self.refresh_checkpoint_output_options()
+
         self.data_root_label = QLabel(str(DEFAULT_DATA_ROOT))
         self.data_root_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.data_root_label.setWordWrap(True)
 
-        self.checkpoint_dir_label = QLabel(str(DEFAULT_CHECKPOINT_DIR))
+        self.checkpoint_dir_label = QLabel(str(self.selected_checkpoint_dir()))
         self.checkpoint_dir_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.checkpoint_dir_label.setWordWrap(True)
 
@@ -215,6 +246,19 @@ class TrainingLauncher(QMainWindow):
         self.data_status_label = QLabel("Idle")
         self.data_status_label.setWordWrap(True)
 
+        self.data_task_value_label = QLabel("Idle")
+        self.data_task_value_label.setWordWrap(True)
+
+        self.data_state_value_label = QLabel("Ready")
+        self.data_state_value_label.setWordWrap(True)
+
+        self.data_target_value_label = QLabel(str(DEFAULT_DATA_ROOT))
+        self.data_target_value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.data_target_value_label.setWordWrap(True)
+
+        self.data_last_result_value_label = QLabel("No dataset task has been run yet.")
+        self.data_last_result_value_label.setWordWrap(True)
+
         self.data_progress_label = QLabel("Dataset status will appear here.")
         self.data_progress_label.setWordWrap(True)
 
@@ -246,8 +290,14 @@ class TrainingLauncher(QMainWindow):
         self.predict_select_images_button = QPushButton("Select Images")
         self.predict_select_images_button.clicked.connect(self.choose_predict_images)
 
+        self.predict_select_folder_button = QPushButton("Select Folders")
+        self.predict_select_folder_button.clicked.connect(self.choose_predict_folders)
+
         self.predict_run_button = QPushButton("Predict")
         self.predict_run_button.clicked.connect(self.run_predictions)
+
+        self.predict_compact_checkbox = QCheckBox("Compact Mode")
+        self.predict_compact_checkbox.toggled.connect(self.on_predict_compact_toggled)
 
         self.predict_prev_button = QPushButton("Previous")
         self.predict_prev_button.clicked.connect(self.show_previous_prediction)
@@ -261,6 +311,11 @@ class TrainingLauncher(QMainWindow):
         self.predict_status_label = QLabel("Ready.")
         self.predict_status_label.setWordWrap(True)
 
+        self.predict_progress_bar = QProgressBar()
+        self.predict_progress_bar.setRange(0, 100)
+        self.predict_progress_bar.setValue(0)
+        self.predict_progress_bar.setFormat("%p%")
+
         self.predict_page_label = QLabel("0 / 0")
 
         self.predict_image_label = QLabel("Select images and click Predict.")
@@ -273,6 +328,35 @@ class TrainingLauncher(QMainWindow):
         self.predict_result_label = QLabel("Prediction result will appear here.")
         self.predict_result_label.setWordWrap(True)
         self.predict_result_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+
+        self.predict_compact_list = QListWidget()
+        self.predict_compact_list.setViewMode(QListView.IconMode)
+        self.predict_compact_list.setResizeMode(QListView.Adjust)
+        self.predict_compact_list.setMovement(QListView.Static)
+        self.predict_compact_list.setSpacing(12)
+        self.predict_compact_list.setIconSize(QSize(160, 160))
+        self.predict_compact_list.setGridSize(QSize(190, 250))
+        self.predict_compact_list.setWordWrap(True)
+        self.predict_compact_list.setUniformItemSizes(True)
+        self.predict_compact_list.itemClicked.connect(self.on_predict_compact_item_clicked)
+
+        self.predict_display_stack = QStackedWidget()
+
+        single_predict_page = QWidget()
+        single_predict_layout = QVBoxLayout(single_predict_page)
+        single_predict_layout.addWidget(self.predict_image_label, stretch=1)
+
+        predict_result_group = QGroupBox("Prediction Result")
+        predict_result_layout = QVBoxLayout(predict_result_group)
+        predict_result_layout.addWidget(self.predict_result_label)
+        single_predict_layout.addWidget(predict_result_group)
+
+        compact_predict_page = QWidget()
+        compact_predict_layout = QVBoxLayout(compact_predict_page)
+        compact_predict_layout.addWidget(self.predict_compact_list)
+
+        self.predict_display_stack.addWidget(single_predict_page)
+        self.predict_display_stack.addWidget(compact_predict_page)
 
     def _build_ui(self) -> None:
         tabs = QTabWidget(self)
@@ -294,6 +378,14 @@ class TrainingLauncher(QMainWindow):
         data_controls.addWidget(self.data_status_label)
         data_controls.addStretch(1)
         data_layout.addLayout(data_controls)
+
+        data_status_group = QGroupBox("Task Status")
+        data_status_form = QFormLayout(data_status_group)
+        data_status_form.addRow("Current Task", self.data_task_value_label)
+        data_status_form.addRow("State", self.data_state_value_label)
+        data_status_form.addRow("Target", self.data_target_value_label)
+        data_status_form.addRow("Last Result", self.data_last_result_value_label)
+        data_layout.addWidget(data_status_group)
 
         data_progress_group = QGroupBox("Data Progress")
         data_progress_layout = QVBoxLayout(data_progress_group)
@@ -319,7 +411,10 @@ class TrainingLauncher(QMainWindow):
         form.addRow("Image Size", self.image_size_spin)
         form.addRow("Learning Rate", self.lr_spin)
         form.addRow("", self.freeze_checkbox)
+        form.addRow("", self.validation_checkbox)
+        form.addRow("Validation Proportion", self.validation_proportion_spin)
         form.addRow("", self.resume_checkbox)
+        form.addRow("Checkpoint Output", self.checkpoint_output_combo)
         resume_layout = QHBoxLayout()
         resume_layout.addWidget(self.resume_path_edit, stretch=1)
         resume_layout.addWidget(self.resume_browse_button)
@@ -365,7 +460,9 @@ class TrainingLauncher(QMainWindow):
 
         predict_controls = QHBoxLayout()
         predict_controls.addWidget(self.predict_select_images_button)
+        predict_controls.addWidget(self.predict_select_folder_button)
         predict_controls.addWidget(self.predict_run_button)
+        predict_controls.addWidget(self.predict_compact_checkbox)
         predict_controls.addStretch(1)
         predict_controls.addWidget(self.predict_prev_button)
         predict_controls.addWidget(self.predict_page_label)
@@ -373,19 +470,15 @@ class TrainingLauncher(QMainWindow):
         predict_layout.addLayout(predict_controls)
 
         predict_layout.addWidget(self.predict_status_label)
-        predict_layout.addWidget(self.predict_image_label, stretch=1)
-
-        predict_result_group = QGroupBox("Prediction Result")
-        predict_result_layout = QVBoxLayout(predict_result_group)
-        predict_result_layout.addWidget(self.predict_result_label)
-        predict_layout.addWidget(predict_result_group)
+        predict_layout.addWidget(self.predict_progress_bar)
+        predict_layout.addWidget(self.predict_display_stack, stretch=1)
 
         tabs.addTab(training_tab, "Training")
         tabs.addTab(predict_tab, "Predicting")
         tabs.addTab(data_tab, "Data")
         tabs.setCurrentIndex(0)
 
-        self.model_combo.currentTextChanged.connect(self.refresh_command_preview)
+        self.model_combo.currentTextChanged.connect(self.on_training_model_changed)
         self.device_combo.currentTextChanged.connect(self.refresh_command_preview)
         self.epochs_spin.valueChanged.connect(self.refresh_command_preview)
         self.batch_size_spin.valueChanged.connect(self.refresh_command_preview)
@@ -393,11 +486,18 @@ class TrainingLauncher(QMainWindow):
         self.image_size_spin.valueChanged.connect(self.refresh_command_preview)
         self.lr_spin.valueChanged.connect(self.refresh_command_preview)
         self.freeze_checkbox.toggled.connect(self.refresh_command_preview)
+        self.validation_checkbox.toggled.connect(self.on_validation_toggled)
+        self.validation_proportion_spin.valueChanged.connect(self.refresh_command_preview)
         self.resume_checkbox.toggled.connect(self.on_resume_toggled)
         self.resume_path_edit.textChanged.connect(self.refresh_command_preview)
+        self.checkpoint_output_combo.currentTextChanged.connect(self.on_checkpoint_output_changed)
+        self.checkpoint_output_combo.activated.connect(self.on_checkpoint_output_activated)
+        self.on_validation_toggled(self.validation_checkbox.isChecked())
         self.on_resume_toggled(self.resume_checkbox.isChecked())
+        self.on_training_model_changed(self.model_combo.currentText())
 
     def build_command(self) -> list[str]:
+        checkpoint_dir = self.selected_checkpoint_dir()
         command = [
             "-u",
             str(TRAINING_SCRIPT),
@@ -406,7 +506,7 @@ class TrainingLauncher(QMainWindow):
             "--data-root",
             str(DEFAULT_DATA_ROOT),
             "--checkpoint-dir",
-            str(DEFAULT_CHECKPOINT_DIR),
+            str(checkpoint_dir),
             "--epochs",
             str(self.epochs_spin.value()),
             "--batch-size",
@@ -426,6 +526,14 @@ class TrainingLauncher(QMainWindow):
             command.extend(["--device", device])
 
         command.append("--freeze-backbone" if self.freeze_checkbox.isChecked() else "--no-freeze-backbone")
+        if self.validation_checkbox.isChecked():
+            command.extend(
+                [
+                    "--use-validation-split",
+                    "--validation-proportion",
+                    format(self.validation_proportion_spin.value(), ".2f"),
+                ]
+            )
 
         resume_path = self.resume_path_edit.text().strip()
         if self.resume_checkbox.isChecked() and resume_path:
@@ -446,16 +554,67 @@ class TrainingLauncher(QMainWindow):
         return command
 
     def default_predict_checkpoint_path(self) -> Path:
-        return DEFAULT_CHECKPOINT_DIR / f"{self.predict_model_combo.currentText()}_best.pth"
+        return DEFAULT_CHECKPOINT_DIR / self.predict_model_combo.currentText() / "best.pth"
 
     def on_predict_model_changed(self) -> None:
         current_path = self.predict_checkpoint_edit.text().strip()
-        if not current_path or Path(current_path).parent == DEFAULT_CHECKPOINT_DIR:
+        old_default = DEFAULT_CHECKPOINT_DIR / self._last_predict_model_name / "best.pth"
+        old_flat_default = DEFAULT_CHECKPOINT_DIR / f"{self._last_predict_model_name}_best.pth"
+        if not current_path or Path(current_path) in {old_default, old_flat_default}:
             self.predict_checkpoint_edit.setText(str(self.default_predict_checkpoint_path()))
+        self._last_predict_model_name = self.predict_model_combo.currentText()
 
     def refresh_command_preview(self) -> None:
         parts = [sys.executable, *self.build_command()]
         self.command_preview.setText(" ".join(f'"{part}"' if " " in part else part for part in parts))
+
+    def checkpoint_output_name(self) -> str:
+        text = self.checkpoint_output_combo.currentText().strip()
+        return "" if text == NEW_CHECKPOINT_NAME_LABEL else text
+
+    def selected_checkpoint_dir(self) -> Path:
+        checkpoint_name = self.checkpoint_output_name() or self.model_combo.currentText()
+        return DEFAULT_CHECKPOINT_DIR / checkpoint_name
+
+    def refresh_checkpoint_output_options(self, preserve_text: str | None = None) -> None:
+        if preserve_text is None:
+            preserve_text = self.checkpoint_output_combo.currentText().strip()
+        checkpoint_names = sorted(
+            path.name for path in DEFAULT_CHECKPOINT_DIR.iterdir()
+            if path.is_dir()
+        ) if DEFAULT_CHECKPOINT_DIR.is_dir() else []
+        items = [*checkpoint_names, NEW_CHECKPOINT_NAME_LABEL]
+        self.checkpoint_output_combo.blockSignals(True)
+        self.checkpoint_output_combo.clear()
+        self.checkpoint_output_combo.addItems(items)
+        self.checkpoint_output_combo.blockSignals(False)
+        if preserve_text and preserve_text != NEW_CHECKPOINT_NAME_LABEL:
+            self.checkpoint_output_combo.setEditText(preserve_text)
+        elif self.model_combo.currentText():
+            self.checkpoint_output_combo.setEditText(self.model_combo.currentText())
+
+    def update_checkpoint_dir_label(self) -> None:
+        self.checkpoint_dir_label.setText(str(self.selected_checkpoint_dir()))
+
+    def on_training_model_changed(self, model_name: str) -> None:
+        current_name = self.checkpoint_output_name()
+        if self._checkpoint_name_locked_to_model or not current_name or current_name == self._last_training_model_name:
+            self.checkpoint_output_combo.setEditText(model_name)
+            self._checkpoint_name_locked_to_model = True
+        self._last_training_model_name = model_name
+        self.update_checkpoint_dir_label()
+        self.refresh_command_preview()
+
+    def on_checkpoint_output_changed(self, text: str) -> None:
+        checkpoint_name = text.strip()
+        self._checkpoint_name_locked_to_model = checkpoint_name in {"", self.model_combo.currentText()}
+        self.update_checkpoint_dir_label()
+        self.refresh_command_preview()
+
+    def on_checkpoint_output_activated(self, index: int) -> None:
+        if self.checkpoint_output_combo.itemText(index) == NEW_CHECKPOINT_NAME_LABEL:
+            self.checkpoint_output_combo.setEditText("")
+            self.checkpoint_output_combo.lineEdit().setFocus()
 
     def on_resume_toggled(self, checked: bool) -> None:
         self.resume_path_edit.setEnabled(checked)
@@ -463,8 +622,12 @@ class TrainingLauncher(QMainWindow):
         self.resume_clear_button.setEnabled(checked)
         self.refresh_command_preview()
 
+    def on_validation_toggled(self, checked: bool) -> None:
+        self.validation_proportion_spin.setEnabled(checked)
+        self.refresh_command_preview()
+
     def choose_resume_path(self) -> None:
-        start_dir = self._resolve_dialog_dir(self.resume_path_edit.text().strip(), DEFAULT_CHECKPOINT_DIR)
+        start_dir = self._resolve_dialog_dir(self.resume_path_edit.text().strip(), self.selected_checkpoint_dir())
         selected_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select Resume Checkpoint",
@@ -490,6 +653,9 @@ class TrainingLauncher(QMainWindow):
         self.image_size_spin.setEnabled(not running)
         self.lr_spin.setEnabled(not running)
         self.freeze_checkbox.setEnabled(not running)
+        self.validation_checkbox.setEnabled(not running)
+        self.validation_proportion_spin.setEnabled(not running and self.validation_checkbox.isChecked())
+        self.checkpoint_output_combo.setEnabled(not running)
         self.resume_checkbox.setEnabled(not running)
         self.resume_path_edit.setEnabled(not running and self.resume_checkbox.isChecked())
         self.resume_browse_button.setEnabled(not running and self.resume_checkbox.isChecked())
@@ -609,6 +775,10 @@ class TrainingLauncher(QMainWindow):
             if not Path(resume_path).is_file():
                 QMessageBox.warning(self, "Invalid Resume Path", f"Checkpoint file does not exist:\n{resume_path}")
                 return
+        checkpoint_name = self.checkpoint_output_name()
+        if not checkpoint_name:
+            QMessageBox.warning(self, "Checkpoint Name Required", "Choose or enter a checkpoint output folder name.")
+            return
 
         self.output_text.clear()
         self._committed_output = ""
@@ -638,6 +808,9 @@ class TrainingLauncher(QMainWindow):
         self._data_committed_output = ""
         self._data_stream_buffer = ""
         self.data_status_label.setText(status_text)
+        self.data_task_value_label.setText(status_text)
+        self.data_state_value_label.setText("Starting")
+        self.data_last_result_value_label.setText("Task queued.")
         self.data_progress_label.setText(status_text)
         self.data_progress_bar.setRange(0, 0)
         self.append_data_output(f"Project root: {PROJECT_ROOT}\n")
@@ -680,10 +853,12 @@ class TrainingLauncher(QMainWindow):
     def on_data_process_started(self) -> None:
         self.set_data_running_state(True)
         self.data_status_label.setText("Running")
+        self.data_state_value_label.setText("Running")
         self.data_progress_label.setText("Data task started...")
 
     def on_process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         self.set_running_state(False)
+        self.refresh_checkpoint_output_options(preserve_text=self.checkpoint_output_name())
         status_text = "NormalExit" if exit_status == QProcess.NormalExit else "CrashExit"
         self.status_label.setText(f"Finished ({exit_code})")
         if self._stream_buffer.strip():
@@ -706,11 +881,17 @@ class TrainingLauncher(QMainWindow):
         self._data_stream_buffer = ""
         if exit_code == 0 and exit_status == QProcess.NormalExit:
             self.data_status_label.setText("Finished")
+            self.data_state_value_label.setText("Completed")
             self.data_progress_label.setText("Dataset task finished successfully.")
+            self.data_last_result_value_label.setText("Last run completed successfully.")
             self.data_progress_bar.setValue(100)
         else:
             self.data_status_label.setText(f"Finished ({exit_code})")
+            self.data_state_value_label.setText("Failed")
             self.data_progress_label.setText(f"Dataset task stopped with exit code {exit_code} ({status_text}).")
+            self.data_last_result_value_label.setText(
+                f"Last run stopped with exit code {exit_code} ({status_text})."
+            )
             self.data_progress_bar.setValue(0)
         self.append_data_output(f"\nProcess finished with exit code {exit_code} ({status_text}).\n")
 
@@ -723,9 +904,11 @@ class TrainingLauncher(QMainWindow):
     def on_data_process_error(self, error: QProcess.ProcessError) -> None:
         self.set_data_running_state(False)
         self.data_status_label.setText("Error")
+        self.data_state_value_label.setText("Error")
         self.data_progress_bar.setRange(0, 100)
         self.data_progress_bar.setValue(0)
         self.data_progress_label.setText(f"Process error: {error}")
+        self.data_last_result_value_label.setText(f"Process error: {error}")
         self.append_data_output(f"\nProcess error: {error}\n")
 
     def choose_predict_checkpoint(self) -> None:
@@ -740,20 +923,90 @@ class TrainingLauncher(QMainWindow):
             self.predict_checkpoint_edit.setText(selected_path)
 
     def choose_predict_images(self) -> None:
-        start_dir = str(DEFAULT_DATA_ROOT / "images")
-        selected_paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Select Images to Predict",
-            start_dir,
-            "Images (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*.*)",
+        selected_paths = self.select_multiple_files(
+            title="Select Images to Predict",
+            start_dir=DEFAULT_DATA_ROOT / "images",
+            file_filter="Images (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*.*)",
         )
         if selected_paths:
             self.predict_image_paths = [Path(path) for path in selected_paths]
             self.predict_results = []
             self.current_predict_index = -1
+            self.predict_compact_built = False
+            self.predict_compact_loading = False
+            self.predict_compact_pending_indices = []
+            self.predict_progress_bar.setValue(0)
             self.refresh_predict_page()
 
+    def choose_predict_folders(self) -> None:
+        selected_dirs = self.select_multiple_directories(
+            title="Select Folder(s) to Predict",
+            start_dir=DEFAULT_DATA_ROOT / "images",
+        )
+        if not selected_dirs:
+            return
+
+        image_paths = []
+        for folder_path in selected_dirs:
+            for pattern in ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.webp"):
+                image_paths.extend(folder_path.glob(pattern))
+
+        self.predict_image_paths = sorted(path.resolve() for path in image_paths if path.is_file())
+        self.predict_results = []
+        self.current_predict_index = -1
+        self.predict_compact_built = False
+        self.predict_compact_loading = False
+        self.predict_compact_pending_indices = []
+        self.predict_progress_bar.setValue(0)
+        if not self.predict_image_paths:
+            self.predict_status_label.setText("No supported images found in the selected folder(s).")
+        else:
+            self.predict_status_label.setText(
+                f"Loaded {len(self.predict_image_paths)} image(s) from {len(selected_dirs)} folder(s)."
+            )
+        self.refresh_predict_page()
+
+    def select_multiple_files(self, title: str, start_dir: Path, file_filter: str) -> list[str]:
+        dialog = QFileDialog(self, title, str(start_dir))
+        dialog.setFileMode(QFileDialog.ExistingFiles)
+        dialog.setNameFilter(file_filter)
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+
+        list_view = dialog.findChild(QListView, "listView")
+        if list_view is not None:
+            list_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
+        tree_view = dialog.findChild(QTreeView)
+        if tree_view is not None:
+            tree_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
+        if not dialog.exec():
+            return []
+
+        return dialog.selectedFiles()
+
+    def select_multiple_directories(self, title: str, start_dir: Path) -> list[Path]:
+        dialog = QFileDialog(self, title, str(start_dir))
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+        dialog.setOption(QFileDialog.ShowDirsOnly, True)
+
+        list_view = dialog.findChild(QListView, "listView")
+        if list_view is not None:
+            list_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
+        tree_view = dialog.findChild(QTreeView)
+        if tree_view is not None:
+            tree_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
+        if not dialog.exec():
+            return []
+
+        return [Path(path) for path in dialog.selectedFiles()]
+
     def run_predictions(self) -> None:
+        if self.predict_thread is not None and self.predict_thread.isRunning():
+            return
         checkpoint_path = Path(self.predict_checkpoint_edit.text().strip()).expanduser()
         if not checkpoint_path.is_file():
             QMessageBox.warning(self, "Invalid Checkpoint", f"Checkpoint file does not exist:\n{checkpoint_path}")
@@ -762,43 +1015,31 @@ class TrainingLauncher(QMainWindow):
             QMessageBox.warning(self, "No Images Selected", "Select one or more images before predicting.")
             return
 
-        import torch
-        from predicting import build_transform, load_model, predict_image
-
         device = self.predict_device_combo.currentText()
-        resolved_device = device if device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
-
         self.predict_status_label.setText("Loading model and running predictions...")
-        QApplication.processEvents()
+        self.predict_progress_bar.setRange(0, len(self.predict_image_paths))
+        self.predict_progress_bar.setValue(0)
+        self.set_prediction_running_state(True)
 
-        try:
-            model_name = self.predict_model_combo.currentText()
-            model, class_to_idx = load_model(checkpoint_path.resolve(), model_name, resolved_device)
-            transform = build_transform(self.predict_image_size_spin.value())
-            idx_to_class = {idx: name for name, idx in class_to_idx.items()}
-            results: list[dict[str, str | float | bool | None]] = []
-            for image_path in self.predict_image_paths:
-                resolved_image = image_path.expanduser().resolve()
-                result = predict_image(model, resolved_image, transform, idx_to_class, resolved_device)
-                actual_label = resolved_image.parent.name if resolved_image.parent.name in class_to_idx else None
-                results.append(
-                    {
-                        **result,
-                        "actual_label": actual_label,
-                        "is_correct": None if actual_label is None else result["predicted_class"] == actual_label,
-                    }
-                )
-        except Exception as exc:
-            QMessageBox.critical(self, "Prediction Failed", str(exc))
-            self.predict_status_label.setText("Prediction failed.")
-            return
+        self.predict_thread = QThread(self)
+        self.predict_worker = PredictionWorker(
+            image_paths=[path.expanduser().resolve() for path in self.predict_image_paths],
+            checkpoint_path=checkpoint_path.resolve(),
+            model_name=self.predict_model_combo.currentText(),
+            image_size=self.predict_image_size_spin.value(),
+            device=device,
+        )
+        self.predict_worker.moveToThread(self.predict_thread)
+        self.predict_thread.started.connect(self.predict_worker.run)
+        self.predict_worker.progress.connect(self.on_prediction_progress)
+        self.predict_worker.finished.connect(self.on_prediction_finished)
+        self.predict_worker.failed.connect(self.on_prediction_failed)
+        self.predict_worker.finished.connect(self.predict_thread.quit)
+        self.predict_worker.failed.connect(self.predict_thread.quit)
+        self.predict_thread.finished.connect(self.predict_thread.deleteLater)
+        self.predict_thread.start()
 
-        self.predict_results = results
-        self.current_predict_index = 0 if results else -1
-        self.predict_status_label.setText(f"Predicted {len(results)} image(s).")
-        self.refresh_predict_page()
-
-    def refresh_predict_page(self) -> None:
+    def refresh_predict_page(self, refresh_compact: bool = False) -> None:
         if self.predict_image_paths:
             if len(self.predict_image_paths) == 1:
                 self.predict_selected_label.setText(str(self.predict_image_paths[0]))
@@ -815,6 +1056,8 @@ class TrainingLauncher(QMainWindow):
         self.predict_page_label.setText(
             f"{self.current_predict_index + 1 if has_results else 0} / {len(self.predict_results)}"
         )
+        if refresh_compact:
+            self.refresh_predict_compact_view()
 
         if not has_results:
             self.predict_image_label.setPixmap(QPixmap())
@@ -824,18 +1067,25 @@ class TrainingLauncher(QMainWindow):
 
         result = self.predict_results[self.current_predict_index]
         image_path = Path(str(result["image_path"]))
-        pixmap = QPixmap(str(image_path))
+        cache_key = (str(image_path), max(self.predict_image_label.width(), 1), max(self.predict_image_label.height(), 1))
+        pixmap = self.predict_display_cache.get(cache_key)
+        if pixmap is None:
+            loaded = QPixmap(str(image_path))
+            if not loaded.isNull():
+                pixmap = loaded.scaled(
+                    self.predict_image_label.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+                self.predict_display_cache[cache_key] = pixmap
+            else:
+                pixmap = QPixmap()
         if pixmap.isNull():
             self.predict_image_label.setPixmap(QPixmap())
             self.predict_image_label.setText(f"Could not load image:\n{image_path}")
         else:
-            scaled = pixmap.scaled(
-                self.predict_image_label.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
             self.predict_image_label.setText("")
-            self.predict_image_label.setPixmap(scaled)
+            self.predict_image_label.setPixmap(pixmap)
 
         actual_label = result.get("actual_label")
         is_correct = result.get("is_correct")
@@ -854,6 +1104,104 @@ class TrainingLauncher(QMainWindow):
             f"Ground Truth: {actual_text}\n"
             f"Predict Correct: {correctness_text}"
         )
+
+    def refresh_predict_compact_view(self) -> None:
+        if self.predict_compact_built and self.predict_compact_list.count() == len(self.predict_results):
+            if 0 <= self.current_predict_index < self.predict_compact_list.count():
+                self.predict_compact_list.setCurrentRow(self.current_predict_index)
+            return
+
+        self.predict_compact_list.clear()
+        if not self.predict_results:
+            self.predict_compact_built = False
+            self.predict_compact_loading = False
+            self.predict_compact_pending_indices = []
+            return
+
+        for index, result in enumerate(self.predict_results):
+            item = QListWidgetItem()
+            image_path = Path(str(result["image_path"]))
+            icon = self.predict_thumbnail_cache.get(str(image_path))
+            if icon is not None:
+                item.setIcon(icon)
+
+            is_correct = result.get("is_correct")
+            if is_correct is True:
+                correctness_text = "Yes"
+            elif is_correct is False:
+                correctness_text = "No"
+            else:
+                correctness_text = "Unknown"
+            actual_label = result.get("actual_label")
+            actual_text = actual_label if actual_label is not None else "Unknown"
+
+            item.setText(
+                f"{result['predicted_class']}\n"
+                f"True: {actual_text}\n"
+                f"{float(result['confidence']):.2%}\n"
+                f"Correct: {correctness_text}"
+            )
+            item.setTextAlignment(Qt.AlignHCenter)
+            item.setSizeHint(QSize(190, 250))
+            item.setData(Qt.UserRole, index)
+            self.predict_compact_list.addItem(item)
+
+        if 0 <= self.current_predict_index < self.predict_compact_list.count():
+            self.predict_compact_list.setCurrentRow(self.current_predict_index)
+        self.predict_compact_built = True
+        self.predict_compact_pending_indices = [
+            index for index, result in enumerate(self.predict_results)
+            if str(result["image_path"]) not in self.predict_thumbnail_cache
+        ]
+        if self.predict_compact_pending_indices:
+            self.predict_compact_loading = True
+            QTimer.singleShot(0, self.process_predict_compact_thumbnail_batch)
+        else:
+            self.predict_compact_loading = False
+
+    def process_predict_compact_thumbnail_batch(self) -> None:
+        if not self.predict_compact_pending_indices:
+            self.predict_compact_loading = False
+            return
+
+        batch_size = 12
+        batch = self.predict_compact_pending_indices[:batch_size]
+        self.predict_compact_pending_indices = self.predict_compact_pending_indices[batch_size:]
+
+        for index in batch:
+            if index >= len(self.predict_results) or index >= self.predict_compact_list.count():
+                continue
+            result = self.predict_results[index]
+            image_path = Path(str(result["image_path"]))
+            icon = self.predict_thumbnail_cache.get(str(image_path))
+            if icon is None:
+                pixmap = QPixmap(str(image_path))
+                if not pixmap.isNull():
+                    pixmap = pixmap.scaled(160, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    icon = QIcon(pixmap)
+                    self.predict_thumbnail_cache[str(image_path)] = icon
+            if icon is not None:
+                self.predict_compact_list.item(index).setIcon(icon)
+
+        if self.predict_compact_pending_indices:
+            QTimer.singleShot(0, self.process_predict_compact_thumbnail_batch)
+        else:
+            self.predict_compact_loading = False
+
+    def on_predict_compact_toggled(self, checked: bool) -> None:
+        self.predict_display_stack.setCurrentIndex(1 if checked else 0)
+        self.predict_prev_button.setVisible(not checked)
+        self.predict_next_button.setVisible(not checked)
+        self.predict_page_label.setVisible(not checked)
+        if checked:
+            self.refresh_predict_compact_view()
+
+    def on_predict_compact_item_clicked(self, item: QListWidgetItem) -> None:
+        index = item.data(Qt.UserRole)
+        if isinstance(index, int):
+            self.current_predict_index = index
+            if not self.predict_compact_checkbox.isChecked():
+                self.refresh_predict_page()
 
     def show_previous_prediction(self) -> None:
         if self.current_predict_index > 0:
@@ -876,6 +1224,99 @@ class TrainingLauncher(QMainWindow):
         super().resizeEvent(event)
         if self.predict_results and 0 <= self.current_predict_index < len(self.predict_results):
             self.refresh_predict_page()
+
+    def set_prediction_running_state(self, running: bool) -> None:
+        self.predict_run_button.setEnabled(not running)
+        self.predict_select_images_button.setEnabled(not running)
+        self.predict_select_folder_button.setEnabled(not running)
+        self.predict_checkpoint_browse_button.setEnabled(not running)
+        self.predict_model_combo.setEnabled(not running)
+        self.predict_device_combo.setEnabled(not running)
+        self.predict_image_size_spin.setEnabled(not running)
+
+    def on_prediction_progress(self, processed: int, total: int) -> None:
+        self.predict_progress_bar.setRange(0, max(total, 1))
+        self.predict_progress_bar.setValue(processed)
+        self.predict_progress_bar.setFormat(f"{processed}/{total} (%p%)")
+        self.predict_status_label.setText(f"Predicting images... {processed}/{total}")
+
+    def on_prediction_finished(self, results: list) -> None:
+        self.predict_results = results
+        self.current_predict_index = 0 if results else -1
+        self.predict_compact_built = False
+        self.predict_compact_loading = False
+        self.predict_compact_pending_indices = []
+        self.predict_status_label.setText(f"Predicted {len(results)} image(s).")
+        if self.predict_progress_bar.maximum() > 0:
+            self.predict_progress_bar.setValue(self.predict_progress_bar.maximum())
+        self.set_prediction_running_state(False)
+        self.predict_worker = None
+        self.predict_thread = None
+        self.refresh_predict_page()
+
+    def on_prediction_failed(self, error_message: str) -> None:
+        self.predict_status_label.setText("Prediction failed.")
+        self.predict_progress_bar.setValue(0)
+        self.set_prediction_running_state(False)
+        self.predict_worker = None
+        self.predict_thread = None
+        QMessageBox.critical(self, "Prediction Failed", error_message)
+
+
+class PredictionWorker(QObject):
+    progress = Signal(int, int)
+    finished = Signal(list)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        *,
+        image_paths: list[Path],
+        checkpoint_path: Path,
+        model_name: str,
+        image_size: int,
+        device: str,
+    ) -> None:
+        super().__init__()
+        self.image_paths = image_paths
+        self.checkpoint_path = checkpoint_path
+        self.model_name = model_name
+        self.image_size = image_size
+        self.device = device
+
+    def run(self) -> None:
+        try:
+            import torch
+            from predicting import build_transform, load_model, predict_images_batch
+
+            resolved_device = self.device if self.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
+            model, class_to_idx = load_model(self.checkpoint_path, self.model_name, resolved_device)
+            transform = build_transform(self.image_size)
+            idx_to_class = {idx: name for name, idx in class_to_idx.items()}
+
+            batch_results = predict_images_batch(
+                model,
+                self.image_paths,
+                transform,
+                idx_to_class,
+                resolved_device,
+                progress_callback=lambda processed, total: self.progress.emit(processed, total),
+            )
+
+            results: list[dict[str, str | float | bool | None]] = []
+            for result in batch_results:
+                resolved_image = Path(str(result["image_path"])).resolve()
+                actual_label = resolved_image.parent.name if resolved_image.parent.name in class_to_idx else None
+                results.append(
+                    {
+                        **result,
+                        "actual_label": actual_label,
+                        "is_correct": None if actual_label is None else result["predicted_class"] == actual_label,
+                    }
+                )
+            self.finished.emit(results)
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 def main() -> None:

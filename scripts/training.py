@@ -16,8 +16,12 @@ def default_data_root() -> Path:
     return Path(__file__).resolve().parents[1] / "data" / "food-101"
 
 
-def default_checkpoint_dir() -> Path:
+def default_checkpoint_root() -> Path:
     return Path(__file__).resolve().parents[1] / "checkpoints"
+
+
+def default_checkpoint_dir_for_model(model_name: str) -> Path:
+    return default_checkpoint_root() / model_name
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,8 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint-dir",
         type=Path,
-        default=default_checkpoint_dir(),
-        help="Directory to save checkpoints.",
+        default=None,
+        help="Directory to save checkpoints. Defaults to checkpoints/<model>.",
     )
     parser.add_argument(
         "--epochs",
@@ -100,6 +104,23 @@ def parse_args() -> argparse.Namespace:
         choices=["tqdm", "gui"],
         help="Progress output mode.",
     )
+    parser.add_argument(
+        "--use-validation-split",
+        action="store_true",
+        help="Split part of the training set into a validation set.",
+    )
+    parser.add_argument(
+        "--validation-proportion",
+        type=float,
+        default=0.1,
+        help="Proportion of the training set reserved for validation when enabled.",
+    )
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=42,
+        help="Random seed used for train/validation splitting.",
+    )
     parser.set_defaults(freeze_backbone=True)
     return parser.parse_args()
 
@@ -107,18 +128,29 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    checkpoint_dir = args.checkpoint_dir.expanduser().resolve()
+    checkpoint_dir = (
+        args.checkpoint_dir.expanduser().resolve()
+        if args.checkpoint_dir is not None
+        else default_checkpoint_dir_for_model(args.model)
+    )
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    best_checkpoint_path = checkpoint_dir / "best.pth"
+    last_checkpoint_path = checkpoint_dir / "last.pth"
     start_epoch = 0
 
     data_root = args.data_root.expanduser().resolve()
-    train_loader, test_loader, class_to_idx, num_classes = data_import(
+    train_loader, val_loader, test_loader, class_to_idx, num_classes = data_import(
         data_root=data_root,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         image_size=args.image_size,
         pin_memory=device.startswith("cuda"),
+        use_validation_split=args.use_validation_split,
+        validation_proportion=args.validation_proportion,
+        split_seed=args.split_seed,
     )
+    eval_loader = val_loader if args.use_validation_split else test_loader
+    eval_name = "val" if args.use_validation_split else "test"
 
     model_module = load_model_module(args.model)
     model = model_module.build_model(
@@ -131,17 +163,22 @@ def main() -> None:
     print(f"device: {device}")
     print(f"model: {args.model}")
     print(f"data_root: {data_root}")
+    print(f"checkpoint_dir: {checkpoint_dir}")
     print(f"num_classes: {num_classes}")
     print(
         f"epochs: {args.epochs}, batch_size: {args.batch_size}, "
         f"num_workers: {args.num_workers}, image_size: {args.image_size}, lr: {args.lr}"
     )
     print(f"freeze_backbone: {args.freeze_backbone}")
+    print(
+        f"use_validation_split: {args.use_validation_split}, "
+        f"validation_proportion: {args.validation_proportion}, split_seed: {args.split_seed}"
+    )
 
     loss_fn = nn.CrossEntropyLoss()
     best_acc = -1.0
 
-    fcn_history = {"train_loss": [], "train_acc": [], "test_loss": [], "test_acc": []}
+    fcn_history = {"train_loss": [], "train_acc": [], f"{eval_name}_loss": [], f"{eval_name}_acc": []}
 
     if args.resume is not None:
         checkpoint = torch.load(args.resume, map_location=device)
@@ -163,23 +200,24 @@ def main() -> None:
             num_epochs=num_epochs,
             progress_format=args.progress_format,
         )
-        test_loss, test_acc = evaluate(
+        eval_loss, eval_acc = evaluate(
             model,
-            test_loader,
+            eval_loader,
             loss_fn,
             device,
             epoch=epoch + 1,
             num_epochs=num_epochs,
             progress_format=args.progress_format,
+            stage_name=eval_name,
         )
 
         fcn_history["train_loss"].append(train_loss)
         fcn_history["train_acc"].append(train_acc)
-        fcn_history["test_loss"].append(test_loss)
-        fcn_history["test_acc"].append(test_acc)
+        fcn_history[f"{eval_name}_loss"].append(eval_loss)
+        fcn_history[f"{eval_name}_acc"].append(eval_acc)
 
-        if test_acc > best_acc:
-            best_acc = test_acc
+        if eval_acc > best_acc:
+            best_acc = eval_acc
             torch.save(
                 {
                     "epoch": epoch + 1,
@@ -189,13 +227,15 @@ def main() -> None:
                     "best_acc": best_acc,
                     "num_classes": num_classes,
                     "class_to_idx": class_to_idx,
+                    "use_validation_split": args.use_validation_split,
+                    "validation_proportion": args.validation_proportion,
                 },
-                checkpoint_dir / f"{args.model}_best.pth",
+                best_checkpoint_path,
             )
 
         print(f"Epoch {epoch+1}: "
             f"train_loss={train_loss:.4f}, train_acc={train_acc:.4f}, "
-            f"test_loss={test_loss:.4f}, test_acc={test_acc:.4f}")
+            f"{eval_name}_loss={eval_loss:.4f}, {eval_name}_acc={eval_acc:.4f}")
 
     torch.save(
         {
@@ -206,8 +246,10 @@ def main() -> None:
             "best_acc": best_acc,
             "num_classes": num_classes,
             "class_to_idx": class_to_idx,
+            "use_validation_split": args.use_validation_split,
+            "validation_proportion": args.validation_proportion,
         },
-        checkpoint_dir / f"{args.model}_last.pth",
+        last_checkpoint_path,
     )
         
 
@@ -295,6 +337,7 @@ def evaluate(
     epoch: int | None = None,
     num_epochs: int | None = None,
     progress_format: str = "tqdm",
+    stage_name: str = "eval",
 ):
     model.eval()
     total_loss = 0.0
@@ -302,7 +345,8 @@ def evaluate(
     total = 0
 
     total_steps = len(dataloader)
-    desc = f"Epoch {epoch}/{num_epochs} Eval" if epoch is not None and num_epochs is not None else "Eval"
+    title = stage_name.capitalize()
+    desc = f"Epoch {epoch}/{num_epochs} {title}" if epoch is not None and num_epochs is not None else title
     iterator = tqdm(dataloader, desc=desc, total=total_steps, leave=False) if progress_format == "tqdm" else dataloader
     with torch.no_grad():
         for step_idx, (images, labels) in enumerate(iterator, start=1):
@@ -322,7 +366,7 @@ def evaluate(
                     iterator.set_postfix(loss=f"{avg_loss:.4f}", acc=f"{accuracy:.4f}")
                 else:
                     emit_gui_progress(
-                        stage="eval",
+                        stage=stage_name,
                         epoch=epoch,
                         num_epochs=num_epochs,
                         step=step_idx,
