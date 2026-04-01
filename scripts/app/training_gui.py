@@ -50,7 +50,7 @@ DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_DATA_ROOT = PROJECT_ROOT / "data" / "food-101"
 DEFAULT_CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
 APP_ICON_PATH = PROJECT_ROOT / "scripts" / "assets" / "training_launcher_icon.ico"
-APP_ID = "DATA586Project.TrainingLauncher"
+APP_ID = "MLWorkbench.TrainingLauncher"
 WM_SETICON = 0x0080
 ICON_SMALL = 0
 ICON_BIG = 1
@@ -92,7 +92,7 @@ def apply_windows_taskbar_icon(window: QMainWindow) -> None:
 class TrainingLauncher(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("DATA586 Training Launcher")
+        self.setWindowTitle("Training Launcher")
         self.resize(1080, 820)
         if APP_ICON_PATH.is_file():
             self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
