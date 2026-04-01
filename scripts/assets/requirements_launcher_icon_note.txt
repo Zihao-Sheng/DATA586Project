@@ -1,0 +1,1 @@
+Requirements launcher icon asset placeholder generated alongside the GUI icon.

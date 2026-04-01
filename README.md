@@ -2,23 +2,11 @@
 
 ## Quick Start
 
-Install missing Python packages:
+Double-click [Check Requirements.lnk](c:/Users/18447/DATA586Project/Check%20Requirements.lnk) to open the package checker without a terminal window.
 
-```powershell
-python scripts\ensure_packages.py
-```
+Double-click [Launch Training GUI.lnk](c:/Users/18447/DATA586Project/Launch%20Training%20GUI.lnk) to open the desktop GUI without a terminal window.
 
-Prepare the dataset:
-
-```powershell
-python scripts\data_retrieval.py
-```
-
-Launch the desktop GUI:
-
-```powershell
-python scripts\training_gui.py
-```
+The GUI includes tabs for dataset preparation, training, and prediction, so you can download/repair data from inside the app.
 
 ## Basic Information
 

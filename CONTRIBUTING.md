@@ -1,88 +1,77 @@
 # Contributing Guide
 
-This repository is intended to be reproducible across teammates.  
-Please follow this guide when adding code, data steps, and experiments.
+This repository is meant to stay easy to run for teammates without hidden local setup.
 
-## 1. Environment Setup
+## 1. Working Style
 
-1. Use the project root as your working directory.
-2. Use `uv` to run scripts so everyone uses the same project environment.
-3. Keep local Python/package changes minimal and document any required dependency changes in your PR.
+1. Use the project root as the working directory.
+2. Prefer updating shared scripts under `scripts/` instead of creating one-off local helpers.
+3. Keep new code rerunnable and explicit about paths.
 
-## 2. Canonical Run Path
+## 2. Environment Setup
 
-Always use the workflow entrypoint first:
+The canonical dependency list lives in [requirements.txt](c:/Users/18447/DATA586Project/requirements.txt).
 
-```bash
-uv run python scripts/workflow.py
-```
+Why it stays in the repo root:
+- it is the standard Python location;
+- it is easy for teammates to find;
+- the root launchers and README already point to it;
+- `scripts/ensure_packages.py` uses it as the default source of packages.
 
-Do not bypass workflow for shared steps.  
-If a step is intended for team usage, it must be registered in `scripts/workflow.py`.
+When dependencies change:
+1. Update [requirements.txt](c:/Users/18447/DATA586Project/requirements.txt).
+2. Make sure [ensure_packages.py](c:/Users/18447/DATA586Project/scripts/ensure_packages.py) still works with the new list.
+3. Mention the dependency change in your PR or handoff note.
 
-Useful commands:
+## 3. Main Entry Points
 
-```bash
-uv run python scripts/workflow.py --list-steps
-uv run python scripts/workflow.py --only-step data_retrieval
-uv run python scripts/workflow.py --force-redownload
-```
+Current shared entry points are:
+- [training_gui.py](c:/Users/18447/DATA586Project/scripts/training_gui.py)
+- [training.py](c:/Users/18447/DATA586Project/scripts/training.py)
+- [predicting.py](c:/Users/18447/DATA586Project/scripts/predicting.py)
+- [data_retrieval.py](c:/Users/18447/DATA586Project/scripts/data_retrieval.py)
+- [ensure_packages.py](c:/Users/18447/DATA586Project/scripts/ensure_packages.py)
 
-## 3. Workflow Pitfalls and How to Avoid Them
+Root-level shortcuts exist for non-terminal usage:
+- [Check Requirements.lnk](c:/Users/18447/DATA586Project/Check%20Requirements.lnk)
+- [Launch Training GUI.lnk](c:/Users/18447/DATA586Project/Launch%20Training%20GUI.lnk)
 
-### Pitfall A: Team members run scripts in different order
-- Problem: Results differ because prerequisites were not prepared consistently.
-- Fix: Run `scripts/workflow.py` as the default entrypoint and keep step order centralized in `WORKFLOW_STEPS`.
+## 4. Model Integration Rule
 
-### Pitfall B: Running scripts directly with custom local flags
-- Problem: Hidden local differences lead to non-reproducible outputs.
-- Fix: Expose shared flags through `workflow.py`, then pass them into step scripts in a controlled way.
+To add a new trainable model:
+1. Add a new Python file under [scripts/model](c:/Users/18447/DATA586Project/scripts/model).
+2. Implement two functions with the exact names:
+   `build_model(...)`
+   `build_optimizer(...)`
+3. Keep dataset loading outside the model file.
 
-### Pitfall C: Partial dataset or corrupted files
-- Problem: Training fails or metrics drift because data files are missing.
-- Fix: Use `data_retrieval` via workflow; it checks integrity and repairs missing metadata/images.
+Model discovery is automatic through [model_registry.py](c:/Users/18447/DATA586Project/scripts/model_registry.py), so new model files should appear in the CLI and GUI without extra registration work.
 
-### Pitfall D: Data path inconsistency
-- Problem: One user uses `./data`, another uses a different folder; results or failures diverge.
-- Fix: Keep `--data-dir` explicit when needed and document non-default paths in PR descriptions.
+## 5. Data and Artifacts
 
-### Pitfall E: "Works on my machine" workflow changes
-- Problem: A new step works locally but not for others.
-- Fix: New steps must be idempotent, use clear CLI args, and avoid hidden assumptions about local files.
+- `data/` must not be committed.
+- `checkpoints/` must not be committed.
+- Large generated outputs should stay out of git unless explicitly requested.
 
-## 4. Adding a New Workflow Step
+## 6. GUI Expectations
 
-When adding training/evaluation or any shared stage:
+If you change the desktop app:
+1. Keep `Training`, `Predicting`, and `Data` tabs usable without terminal commands.
+2. Avoid adding features that only work from CLI unless they are also exposed in the GUI when appropriate.
+3. Keep launch behavior friendly for double-click usage on Windows.
 
-1. Create a dedicated script under `scripts/` with `argparse` CLI.
-2. Make the script safe to re-run (no destructive side effects by default).
-3. Register the step in `WORKFLOW_STEPS` inside `scripts/workflow.py`.
-4. If step options are needed, add them to `workflow.py` and wire them into the step command builder.
-5. Update `README.md` and this file if behavior or run instructions change.
+## 7. Verification Before Merging
 
-## 5. Data and Artifact Policy
+At minimum, verify the parts you touched:
+- package check still runs;
+- GUI still opens;
+- data preparation still works if you changed dataset logic;
+- training/prediction scripts still show `--help` successfully if you changed CLI behavior.
 
-- `data/` must never be committed (already ignored in `.gitignore`).
-- Do not commit large generated artifacts, checkpoints, or temporary outputs unless explicitly requested.
-- Keep notebooks/scripts reproducible from repository code and documented commands.
+## 8. Documentation Rule
 
-## 6. Commit and PR Expectations
+If behavior changes, update:
+- [README.md](c:/Users/18447/DATA586Project/README.md)
+- [CONTRIBUTING.md](c:/Users/18447/DATA586Project/CONTRIBUTING.md)
 
-1. Keep PRs focused and scoped.
-2. Explain what changed, why, and how to run/verify.
-3. Mention workflow impact explicitly:
-   - new step added?
-   - step order changed?
-   - new required arguments?
-4. Include at least one runnable command example in the PR description.
-
-## 7. Quick Verification Before PR
-
-Run at least:
-
-```bash
-uv run python scripts/workflow.py --list-steps
-uv run python scripts/workflow.py --only-step data_retrieval
-```
-
-If your PR adds a new step, include one end-to-end command showing that step execution path.
+The goal is that a teammate can open the repo and understand how to run it without guessing.
