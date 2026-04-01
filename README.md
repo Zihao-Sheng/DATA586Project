@@ -16,6 +16,46 @@ If shortcut targets drift after changing environments, rebuild them with:
 powershell -ExecutionPolicy Bypass -File .\scripts\maintenance\rebuild_gui_shortcuts.ps1
 ```
 
+## Run in Jupyter (.ipynb)
+
+If teammates cannot open the GUI, run training directly from notebook cells:
+
+```python
+%cd c:/Users/18447/DATA586Project
+```
+
+```python
+!python scripts/entry/data_retrieval.py
+```
+
+```python
+!python scripts/entry/training.py --model resnet18 --epochs 3 --batch-size 32 --num-workers 4 --image-size 224 --checkpoint-dir checkpoints/resnet18_ipynb
+```
+
+```python
+!python scripts/entry/training.py --help
+```
+
+## Run in Terminal
+
+If GUI cannot be launched, run from PowerShell or CMD:
+
+```powershell
+cd c:\Users\18447\DATA586Project
+```
+
+```powershell
+python scripts/entry/data_retrieval.py
+```
+
+```powershell
+python scripts/entry/training.py --model resnet18 --epochs 3 --batch-size 32 --num-workers 4 --image-size 224 --checkpoint-dir checkpoints\resnet18_cli
+```
+
+```powershell
+python scripts/entry/training.py --help
+```
+
 ## Basic Information
 
 - Course: `DATA 586 - Advanced Machine Learning`
