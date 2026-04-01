@@ -33,6 +33,11 @@ META_MEMBERS = {
 CHUNK_SIZE = 1024 * 1024  # 1 MB
 
 
+def default_data_dir() -> Path:
+    # Always place the dataset next to the scripts/ directory, regardless of cwd.
+    return Path(__file__).resolve().parents[1] / "data"
+
+
 @dataclass
 class IntegrityReport:
     is_complete: bool
@@ -63,13 +68,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path("data"),
+        default=default_data_dir(),
         help="Destination folder for dataset files (default: data).",
     )
     parser.add_argument(
         "--force-redownload",
         action="store_true",
         help="Re-download the archive even if it already exists.",
+    )
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Check dataset integrity only and do not download or repair.",
     )
     return parser.parse_args()
 
@@ -306,6 +316,17 @@ def main() -> None:
     archive_path = data_dir / ARCHIVE_NAME
 
     data_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.check_only:
+        report = check_dataset_integrity(dataset_root)
+        if report.is_complete:
+            print(f"Dataset is complete: {dataset_root}")
+            return
+
+        print("Dataset integrity check failed:")
+        for issue in report.issues:
+            print(f"- {issue}")
+        raise SystemExit(1)
 
     if args.force_redownload:
         print("Force redownload mode enabled.")

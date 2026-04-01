@@ -1,5 +1,6 @@
 # Dataset artifacts (do not upload)
 data/
+checkpoints/
 
 # Python cache
 __pycache__/

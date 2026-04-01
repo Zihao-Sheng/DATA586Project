@@ -2,10 +2,22 @@
 
 ## Quick Start
 
-Run the full project workflow:
+Install missing Python packages:
 
-```bash
-uv run python scripts/workflow.py
+```powershell
+python scripts\ensure_packages.py
+```
+
+Prepare the dataset:
+
+```powershell
+python scripts\data_retrieval.py
+```
+
+Launch the desktop GUI:
+
+```powershell
+python scripts\training_gui.py
 ```
 
 ## Basic Information
@@ -82,27 +94,21 @@ Robustness test variants (~4.07 GB):
 10. **Deliverable Packaging**
    - Prepare report PDF, reproducible notebook, and 8-10 minute presentation in one ZIP (without dataset).
 
-## Unified Workflow Runner
+## Training GUI
 
-Use one command to run the project pipeline in a fixed order:
-
-```bash
-uv run python scripts/workflow.py
-```
-
-Current registered step:
-
-- `data_retrieval`
-
-Useful options:
+Launch the PySide6 desktop trainer:
 
 ```bash
-uv run python scripts/workflow.py --list-steps
-uv run python scripts/workflow.py --only-step data_retrieval
-uv run python scripts/workflow.py --force-redownload
+python scripts/training_gui.py
 ```
 
-When new pipeline steps are added (e.g., training/evaluation), register them in `scripts/workflow.py` to keep team runs consistent and reproducible.
+The GUI wraps `scripts/training.py`, lets you adjust the currently exposed training arguments, and streams terminal output into the window while training runs.
+
+To build a Windows `.exe` after installing `PySide6` and `PyInstaller`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_training_gui.ps1
+```
 
 ## Deliverables
 

@@ -29,6 +29,18 @@ def build_resnet18(
     return model
 
 
+def build_model(
+    num_classes: int,
+    freeze_backbone: bool = True,
+    device: str | torch.device = "cpu",
+) -> nn.Module:
+    return build_resnet18(
+        num_classes=num_classes,
+        freeze_backbone=freeze_backbone,
+        device=device,
+    )
+
+
 def build_optimizer(model: nn.Module, lr: float = 1e-3) -> torch.optim.Optimizer:
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     return torch.optim.Adam(trainable_params, lr=lr)
