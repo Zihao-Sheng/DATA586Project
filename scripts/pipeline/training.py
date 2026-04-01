@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+import time
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 from tqdm import tqdm
+
+SCRIPTS_ROOT = Path(__file__).resolve().parents[1]
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from model.import_data import data_import
 from core.model_registry import discover_model_names, load_model_module
@@ -126,6 +132,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    wall_total_start = time.perf_counter()
     args = parse_args()
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint_dir = (
@@ -179,6 +186,11 @@ def main() -> None:
     best_acc = -1.0
 
     fcn_history = {"train_loss": [], "train_acc": [], f"{eval_name}_loss": [], f"{eval_name}_acc": []}
+    stage_totals: dict[str, dict[str, float]] = {
+        "train": {"total_seconds": 0.0, "pure_seconds": 0.0, "batches": 0.0},
+        "val": {"total_seconds": 0.0, "pure_seconds": 0.0, "batches": 0.0},
+        "test": {"total_seconds": 0.0, "pure_seconds": 0.0, "batches": 0.0},
+    }
 
     if args.resume is not None:
         checkpoint = torch.load(args.resume, map_location=device)
@@ -187,10 +199,14 @@ def main() -> None:
         start_epoch = checkpoint["epoch"]
         best_acc = checkpoint.get("best_acc", -1.0)
         print(f"Resumed from checkpoint {args.resume} at epoch {start_epoch} with best_acc {best_acc:.4f}")
+
     num_epochs = args.epochs
     
+    final_test_loss: float | None = None
+    final_test_acc: float | None = None
+
     for epoch in range(start_epoch, num_epochs):
-        train_loss, train_acc = train_one_epoch(
+        train_loss, train_acc, train_timing = train_one_epoch(
             model,
             train_loader,
             loss_fn,
@@ -200,7 +216,7 @@ def main() -> None:
             num_epochs=num_epochs,
             progress_format=args.progress_format,
         )
-        eval_loss, eval_acc = evaluate(
+        eval_loss, eval_acc, eval_timing = evaluate(
             model,
             eval_loader,
             loss_fn,
@@ -210,6 +226,13 @@ def main() -> None:
             progress_format=args.progress_format,
             stage_name=eval_name,
         )
+
+        stage_totals["train"]["total_seconds"] += train_timing["total_seconds"]
+        stage_totals["train"]["pure_seconds"] += train_timing["pure_seconds"]
+        stage_totals["train"]["batches"] += train_timing["batches"]
+        stage_totals[eval_name]["total_seconds"] += eval_timing["total_seconds"]
+        stage_totals[eval_name]["pure_seconds"] += eval_timing["pure_seconds"]
+        stage_totals[eval_name]["batches"] += eval_timing["batches"]
 
         fcn_history["train_loss"].append(train_loss)
         fcn_history["train_acc"].append(train_acc)
@@ -233,9 +256,66 @@ def main() -> None:
                 best_checkpoint_path,
             )
 
-        print(f"Epoch {epoch+1}: "
+        train_avg_pure_per_batch = train_timing["pure_seconds"] / max(train_timing["batches"], 1)
+        eval_avg_pure_per_batch = eval_timing["pure_seconds"] / max(eval_timing["batches"], 1)
+        print(
+            f"Epoch {epoch+1}: "
             f"train_loss={train_loss:.4f}, train_acc={train_acc:.4f}, "
-            f"{eval_name}_loss={eval_loss:.4f}, {eval_name}_acc={eval_acc:.4f}")
+            f"train_total_time={train_timing['total_seconds']:.2f}s, "
+            f"train_pure_time={train_timing['pure_seconds']:.2f}s, "
+            f"train_avg_pure_per_batch={train_avg_pure_per_batch:.4f}s, "
+            f"{eval_name}_loss={eval_loss:.4f}, {eval_name}_acc={eval_acc:.4f}, "
+            f"{eval_name}_total_time={eval_timing['total_seconds']:.2f}s, "
+            f"{eval_name}_pure_time={eval_timing['pure_seconds']:.2f}s, "
+            f"{eval_name}_avg_pure_per_batch={eval_avg_pure_per_batch:.4f}s"
+        )
+
+    if args.use_validation_split:
+        final_test_loss, final_test_acc, test_timing = evaluate(
+            model,
+            test_loader,
+            loss_fn,
+            device,
+            progress_format=args.progress_format,
+            stage_name="test",
+        )
+        stage_totals["test"]["total_seconds"] += test_timing["total_seconds"]
+        stage_totals["test"]["pure_seconds"] += test_timing["pure_seconds"]
+        stage_totals["test"]["batches"] += test_timing["batches"]
+        test_avg_pure_per_batch = test_timing["pure_seconds"] / max(test_timing["batches"], 1)
+        print(
+            f"Final test: test_loss={final_test_loss:.4f}, test_acc={final_test_acc:.4f}, "
+            f"test_total_time={test_timing['total_seconds']:.2f}s, "
+            f"test_pure_time={test_timing['pure_seconds']:.2f}s, "
+            f"test_avg_pure_per_batch={test_avg_pure_per_batch:.4f}s"
+        )
+
+    pure_execution_total = (
+        stage_totals["train"]["pure_seconds"]
+        + stage_totals["val"]["pure_seconds"]
+        + stage_totals["test"]["pure_seconds"]
+    )
+    wall_total_elapsed = time.perf_counter() - wall_total_start
+    init_and_overhead = max(wall_total_elapsed - pure_execution_total, 0.0)
+
+    print("\nTiming summary:")
+    print(f"total_wall_time={wall_total_elapsed:.2f}s")
+    print(f"total_pure_execution_time={pure_execution_total:.2f}s")
+    print(f"initialization_and_overhead_time={init_and_overhead:.2f}s")
+    for stage_name in ("train", "val", "test"):
+        stage_total = stage_totals[stage_name]["total_seconds"]
+        stage_pure = stage_totals[stage_name]["pure_seconds"]
+        stage_batches = stage_totals[stage_name]["batches"]
+        if stage_batches <= 0:
+            continue
+        stage_avg = stage_pure / stage_batches
+        print(
+            f"{stage_name}: total_time={stage_total:.2f}s, "
+            f"pure_time={stage_pure:.2f}s, avg_pure_per_batch={stage_avg:.4f}s"
+        )
+
+    if final_test_loss is not None and final_test_acc is not None:
+        print(f"final_test_loss={final_test_loss:.4f}, final_test_acc={final_test_acc:.4f}")
 
     torch.save(
         {
@@ -286,6 +366,7 @@ def train_one_epoch(
     num_epochs: int | None = None,
     progress_format: str = "tqdm",
 ):
+    stage_total_start = time.perf_counter()
     model.train()
     total_loss = 0.0
     correct = 0
@@ -295,6 +376,7 @@ def train_one_epoch(
     desc = f"Epoch {epoch}/{num_epochs} Train" if epoch is not None and num_epochs is not None else "Train"
     iterator = tqdm(dataloader, desc=desc, total=total_steps, leave=False) if progress_format == "tqdm" else dataloader
 
+    pure_start = time.perf_counter()
     for step_idx, (images, labels) in enumerate(iterator, start=1):
         images = images.to(device)
         labels = labels.to(device)
@@ -324,9 +406,16 @@ def train_one_epoch(
                     acc=accuracy,
                 )
 
-    avg_loss = total_loss / total
-    accuracy = correct / total
-    return avg_loss, accuracy
+    pure_seconds = time.perf_counter() - pure_start
+    total_seconds = time.perf_counter() - stage_total_start
+    avg_loss = (total_loss / total) if total > 0 else 0.0
+    accuracy = (correct / total) if total > 0 else 0.0
+    timing = {
+        "total_seconds": total_seconds,
+        "pure_seconds": pure_seconds,
+        "batches": total_steps,
+    }
+    return avg_loss, accuracy, timing
 
 
 def evaluate(
@@ -339,6 +428,7 @@ def evaluate(
     progress_format: str = "tqdm",
     stage_name: str = "eval",
 ):
+    stage_total_start = time.perf_counter()
     model.eval()
     total_loss = 0.0
     correct = 0
@@ -348,6 +438,7 @@ def evaluate(
     title = stage_name.capitalize()
     desc = f"Epoch {epoch}/{num_epochs} {title}" if epoch is not None and num_epochs is not None else title
     iterator = tqdm(dataloader, desc=desc, total=total_steps, leave=False) if progress_format == "tqdm" else dataloader
+    pure_start = time.perf_counter()
     with torch.no_grad():
         for step_idx, (images, labels) in enumerate(iterator, start=1):
             images = images.to(device)
@@ -375,9 +466,16 @@ def evaluate(
                         acc=accuracy,
                     )
 
-    avg_loss = total_loss / total
-    accuracy = correct / total
-    return avg_loss, accuracy
+    pure_seconds = time.perf_counter() - pure_start
+    total_seconds = time.perf_counter() - stage_total_start
+    avg_loss = (total_loss / total) if total > 0 else 0.0
+    accuracy = (correct / total) if total > 0 else 0.0
+    timing = {
+        "total_seconds": total_seconds,
+        "pure_seconds": pure_seconds,
+        "batches": total_steps,
+    }
+    return avg_loss, accuracy, timing
 
 if __name__ == "__main__":
     main()

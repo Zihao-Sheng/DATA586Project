@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import json
 import sys
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QSize, Qt, QThread, QTimer, Signal
@@ -1244,13 +1245,21 @@ class TrainingLauncher(QMainWindow):
         self.predict_progress_bar.setFormat(f"{processed}/{total} (%p%)")
         self.predict_status_label.setText(f"Predicting images... {processed}/{total}")
 
-    def on_prediction_finished(self, results: list) -> None:
+    def on_prediction_finished(self, results: list, timing: dict) -> None:
         self.predict_results = results
         self.current_predict_index = 0 if results else -1
         self.predict_compact_built = False
         self.predict_compact_loading = False
         self.predict_compact_pending_indices = []
-        self.predict_status_label.setText(f"Predicted {len(results)} image(s).")
+        total_seconds = float(timing.get("total_seconds", 0.0))
+        pure_seconds = float(timing.get("pure_seconds", 0.0))
+        avg_pure_per_image = float(timing.get("avg_pure_per_image_seconds", 0.0))
+        avg_pure_per_batch = float(timing.get("avg_pure_per_batch_seconds", 0.0))
+        self.predict_status_label.setText(
+            f"Predicted {len(results)} image(s). "
+            f"Total={total_seconds:.2f}s, Pure={pure_seconds:.2f}s, "
+            f"AvgPure/Image={avg_pure_per_image:.4f}s, AvgPure/Batch={avg_pure_per_batch:.4f}s"
+        )
         if self.predict_progress_bar.maximum() > 0:
             self.predict_progress_bar.setValue(self.predict_progress_bar.maximum())
         self.set_prediction_running_state(False)
@@ -1269,7 +1278,7 @@ class TrainingLauncher(QMainWindow):
 
 class PredictionWorker(QObject):
     progress = Signal(int, int)
-    finished = Signal(list)
+    finished = Signal(list, dict)
     failed = Signal(str)
 
     def __init__(
@@ -1290,6 +1299,7 @@ class PredictionWorker(QObject):
 
     def run(self) -> None:
         try:
+            total_start = time.perf_counter()
             import torch
             from pipeline.predicting import build_transform, load_model, predict_images_batch
 
@@ -1297,15 +1307,20 @@ class PredictionWorker(QObject):
             model, class_to_idx = load_model(self.checkpoint_path, self.model_name, resolved_device)
             transform = build_transform(self.image_size)
             idx_to_class = {idx: name for name, idx in class_to_idx.items()}
+            predict_batch_size = 16
 
+            pure_start = time.perf_counter()
             batch_results = predict_images_batch(
                 model,
                 self.image_paths,
                 transform,
                 idx_to_class,
                 resolved_device,
+                batch_size=predict_batch_size,
                 progress_callback=lambda processed, total: self.progress.emit(processed, total),
             )
+            pure_seconds = time.perf_counter() - pure_start
+            total_seconds = time.perf_counter() - total_start
 
             results: list[dict[str, str | float | bool | None]] = []
             for result in batch_results:
@@ -1318,7 +1333,17 @@ class PredictionWorker(QObject):
                         "is_correct": None if actual_label is None else result["predicted_class"] == actual_label,
                     }
                 )
-            self.finished.emit(results)
+            num_images = len(self.image_paths)
+            num_batches = (num_images + predict_batch_size - 1) // predict_batch_size if num_images > 0 else 0
+            timing = {
+                "total_seconds": total_seconds,
+                "pure_seconds": pure_seconds,
+                "avg_pure_per_image_seconds": (pure_seconds / num_images) if num_images > 0 else 0.0,
+                "avg_pure_per_batch_seconds": (pure_seconds / num_batches) if num_batches > 0 else 0.0,
+                "num_images": num_images,
+                "num_batches": num_batches,
+            }
+            self.finished.emit(results, timing)
         except Exception as exc:
             self.failed.emit(str(exc))
 
