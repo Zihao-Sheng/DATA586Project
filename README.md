@@ -2,9 +2,9 @@
 
 ## Quick Start
 
-Double-click [Check Requirements.lnk](c:/Users/18447/DATA586Project/Check%20Requirements.lnk) to open the package checker without a terminal window.
+Double-click `Check Requirements.lnk` (in the project root) to open the package checker without a terminal window.
 
-Double-click [Launch Training GUI.lnk](c:/Users/18447/DATA586Project/Launch%20Training%20GUI.lnk) to open the desktop GUI without a terminal window.
+Double-click `Launch Training GUI.lnk` (in the project root) to open the desktop GUI without a terminal window.
 
 The GUI includes tabs for dataset preparation, training, and prediction, so you can download/repair data from inside the app.
 
@@ -21,7 +21,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\maintenance\rebuild_gui_short
 If teammates cannot open the GUI, run training directly from notebook cells:
 
 ```python
-%cd c:/Users/18447/DATA586Project
+%cd /path/to/DATA586Project
 ```
 
 ```python
@@ -41,7 +41,7 @@ If teammates cannot open the GUI, run training directly from notebook cells:
 If GUI cannot be launched, run from PowerShell or CMD:
 
 ```powershell
-cd c:\Users\18447\DATA586Project
+cd <path-to>\DATA586Project
 ```
 
 ```powershell
