@@ -58,6 +58,7 @@ IMAGE_ICON = 1
 LR_LOADFROMFILE = 0x00000010
 LR_DEFAULTSIZE = 0x00000040
 NEW_CHECKPOINT_NAME_LABEL = "New checkpoint name..."
+RUN_LOG_DIRNAME = "_run_logs"
 
 
 def set_windows_app_id() -> None:
@@ -135,10 +136,12 @@ class TrainingLauncher(QMainWindow):
         self._init_data_controls()
         self._init_training_controls()
         self._init_prediction_controls()
+        self._init_log_controls()
         self._build_ui()
         self.refresh_command_preview()
         self.refresh_predict_page()
         self.on_predict_compact_toggled(self.predict_compact_checkbox.isChecked())
+        self.refresh_training_log_runs()
 
     def _init_training_controls(self) -> None:
         self.model_combo = QComboBox()
@@ -363,6 +366,24 @@ class TrainingLauncher(QMainWindow):
         self.predict_display_stack.addWidget(single_predict_page)
         self.predict_display_stack.addWidget(compact_predict_page)
 
+    def _init_log_controls(self) -> None:
+        self.training_log_runs: list[dict] = []
+        self.training_log_run_combo = QComboBox()
+        self.training_log_run_combo.currentIndexChanged.connect(self.on_training_log_run_changed)
+
+        self.training_log_stage_combo = QComboBox()
+        self.training_log_stage_combo.addItems(["Summary", "Train", "Val", "Test"])
+        self.training_log_stage_combo.currentIndexChanged.connect(self.refresh_training_log_view)
+
+        self.training_log_refresh_button = QPushButton("Refresh Logs")
+        self.training_log_refresh_button.clicked.connect(self.refresh_training_log_runs)
+
+        self.training_log_status_label = QLabel("No training logs loaded.")
+        self.training_log_status_label.setWordWrap(True)
+
+        self.training_log_text = QPlainTextEdit()
+        self.training_log_text.setReadOnly(True)
+
     def _build_ui(self) -> None:
         tabs = QTabWidget(self)
         self.setCentralWidget(tabs)
@@ -478,9 +499,29 @@ class TrainingLauncher(QMainWindow):
         predict_layout.addWidget(self.predict_progress_bar)
         predict_layout.addWidget(self.predict_display_stack, stretch=1)
 
+        logs_tab = QWidget()
+        logs_layout = QVBoxLayout(logs_tab)
+
+        logs_controls_group = QGroupBox("Run Selection")
+        logs_controls_form = QFormLayout(logs_controls_group)
+        logs_controls_form.addRow("Run", self.training_log_run_combo)
+        logs_controls_form.addRow("View", self.training_log_stage_combo)
+        logs_layout.addWidget(logs_controls_group)
+
+        logs_actions = QHBoxLayout()
+        logs_actions.addWidget(self.training_log_refresh_button)
+        logs_actions.addWidget(self.training_log_status_label, stretch=1)
+        logs_layout.addLayout(logs_actions)
+
+        logs_output_group = QGroupBox("Training Run Details")
+        logs_output_layout = QVBoxLayout(logs_output_group)
+        logs_output_layout.addWidget(self.training_log_text)
+        logs_layout.addWidget(logs_output_group, stretch=1)
+
         tabs.addTab(training_tab, "Training")
         tabs.addTab(predict_tab, "Predicting")
         tabs.addTab(data_tab, "Data")
+        tabs.addTab(logs_tab, "Logs")
         tabs.setCurrentIndex(0)
 
         self.model_combo.currentTextChanged.connect(self.on_training_model_changed)
@@ -836,6 +877,212 @@ class TrainingLauncher(QMainWindow):
             "Force re-downloading and extracting dataset...",
         )
 
+    def load_training_log_files(self) -> list[dict]:
+        log_files = sorted(
+            DEFAULT_CHECKPOINT_DIR.glob(f"**/{RUN_LOG_DIRNAME}/*.json"),
+            key=lambda path: path.stat().st_mtime if path.is_file() else 0.0,
+            reverse=True,
+        )
+        loaded: list[dict] = []
+        for path in log_files:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+                data["_log_path"] = str(path)
+                loaded.append(data)
+            except Exception:
+                continue
+        return loaded
+
+    def refresh_training_log_runs(self) -> None:
+        self.training_log_runs = self.load_training_log_files()
+        previous_run_id = self.training_log_run_combo.currentData()
+
+        self.training_log_run_combo.blockSignals(True)
+        self.training_log_run_combo.clear()
+        if not self.training_log_runs:
+            self.training_log_run_combo.addItem("No logs found", None)
+            self.training_log_run_combo.blockSignals(False)
+            self.training_log_status_label.setText(
+                f"No run logs found under {DEFAULT_CHECKPOINT_DIR}. "
+                "Start training once to create logs."
+            )
+            self.training_log_text.setPlainText("")
+            return
+
+        selected_index = 0
+        for index, run in enumerate(self.training_log_runs):
+            run_id = str(run.get("run_id", "unknown"))
+            model_name = str(((run.get("args") or {}) if isinstance(run.get("args"), dict) else {}).get("model", "unknown"))
+            status = str(run.get("status", "unknown"))
+            started = str(run.get("start_time_utc", "unknown"))
+            label = f"{started} | {model_name} | {status} | {run_id}"
+            self.training_log_run_combo.addItem(label, run_id)
+            if previous_run_id is not None and run_id == previous_run_id:
+                selected_index = index
+        self.training_log_run_combo.setCurrentIndex(selected_index)
+        self.training_log_run_combo.blockSignals(False)
+        self.on_training_log_run_changed()
+
+    def on_training_log_run_changed(self) -> None:
+        self.refresh_training_log_view()
+
+    @staticmethod
+    def signature_matches(saved: dict | None, current: dict | None) -> bool:
+        if not isinstance(saved, dict) or not isinstance(current, dict):
+            return False
+        return saved.get("exists") == current.get("exists") and saved.get("size") == current.get("size") and saved.get(
+            "mtime_ns"
+        ) == current.get("mtime_ns")
+
+    @staticmethod
+    def current_file_signature(path: Path) -> dict:
+        if not path.is_file():
+            return {"exists": False}
+        stat = path.stat()
+        return {"exists": True, "size": int(stat.st_size), "mtime_ns": int(stat.st_mtime_ns)}
+
+    def describe_artifact_state(self, artifact: dict) -> str:
+        path_text = str(artifact.get("path", ""))
+        if not path_text:
+            return "unknown"
+        current_sig = self.current_file_signature(Path(path_text))
+        final_sig = artifact.get("final_signature")
+        initial_sig = artifact.get("initial_signature")
+
+        if not current_sig.get("exists", False):
+            return "missing"
+        if self.signature_matches(final_sig if isinstance(final_sig, dict) else None, current_sig):
+            return "exists (same as saved in this run)"
+        if self.signature_matches(initial_sig if isinstance(initial_sig, dict) else None, current_sig):
+            return "exists (same as before this run)"
+        return "exists (overwritten after this run)"
+
+    def normalize_run_status(self, run: dict) -> str:
+        status = str(run.get("status", "unknown"))
+        if status == "running":
+            return "incomplete_or_interrupted"
+        return status
+
+    def render_run_summary(self, run: dict) -> str:
+        args = run.get("args") if isinstance(run.get("args"), dict) else {}
+        expected = run.get("expected") if isinstance(run.get("expected"), dict) else {}
+        epochs = run.get("epochs") if isinstance(run.get("epochs"), list) else []
+        timing_summary = run.get("timing_summary") if isinstance(run.get("timing_summary"), dict) else {}
+        artifacts = run.get("artifacts") if isinstance(run.get("artifacts"), dict) else {}
+        best_ckpt = artifacts.get("best_checkpoint") if isinstance(artifacts.get("best_checkpoint"), dict) else {}
+        last_ckpt = artifacts.get("last_checkpoint") if isinstance(artifacts.get("last_checkpoint"), dict) else {}
+
+        planned_epochs = int(args.get("planned_epochs_this_run", 0)) if isinstance(args.get("planned_epochs_this_run"), int | float) else 0
+        completed_epochs = len(epochs)
+        progress_text = f"{completed_epochs}/{planned_epochs}" if planned_epochs > 0 else str(completed_epochs)
+
+        lines = [
+            f"Run ID: {run.get('run_id', 'unknown')}",
+            f"Status: {self.normalize_run_status(run)}",
+            f"Started (UTC): {run.get('start_time_utc', '-')}",
+            f"Ended (UTC): {run.get('end_time_utc', '-')}",
+            f"Model: {args.get('model', '-')}",
+            f"Device: {args.get('device', '-')}",
+            f"Command: {run.get('command', '-')}",
+            f"Planned Epochs / Completed Epochs: {progress_text}",
+            f"Expected Train Batches/Epoch: {expected.get('train_batches_per_epoch', '-')}",
+            f"Expected Val Batches/Epoch: {expected.get('val_batches_per_epoch', '-')}",
+            f"Expected Test Batches/Epoch: {expected.get('test_batches_per_epoch', '-')}",
+            f"Expected Final Test Batches: {expected.get('final_test_batches', '-')}",
+            f"Error Message: {run.get('error_message', '-')}",
+            "",
+            "Checkpoint Files:",
+            f"- best.pth path: {best_ckpt.get('path', '-')}",
+            f"- best.pth state: {self.describe_artifact_state(best_ckpt)}",
+            f"- best.pth saved epoch: {best_ckpt.get('saved_epoch', '-')}",
+            f"- best.pth best_acc: {best_ckpt.get('saved_best_acc', '-')}",
+            f"- last.pth path: {last_ckpt.get('path', '-')}",
+            f"- last.pth state: {self.describe_artifact_state(last_ckpt)}",
+            "",
+            "Timing Summary:",
+            f"- total_wall_time_seconds: {timing_summary.get('total_wall_time_seconds', '-')}",
+            f"- total_pure_execution_time_seconds: {timing_summary.get('total_pure_execution_time_seconds', '-')}",
+            f"- initialization_and_overhead_time_seconds: {timing_summary.get('initialization_and_overhead_time_seconds', '-')}",
+        ]
+
+        final_test = run.get("final_test") if isinstance(run.get("final_test"), dict) else None
+        if final_test:
+            lines.extend(
+                [
+                    "",
+                    "Final Test:",
+                    f"- loss: {final_test.get('loss', '-')}",
+                    f"- acc: {final_test.get('acc', '-')}",
+                    f"- timing: {final_test.get('timing', '-')}",
+                ]
+            )
+
+        return "\n".join(lines)
+
+    def render_stage_epochs(self, run: dict, stage_name: str) -> str:
+        epochs = run.get("epochs") if isinstance(run.get("epochs"), list) else []
+        stage_key = stage_name.lower()
+        if stage_key == "test":
+            final_test = run.get("final_test") if isinstance(run.get("final_test"), dict) else None
+            if not final_test:
+                return "No test record in this run."
+            timing = final_test.get("timing", {})
+            return (
+                f"Final test: loss={final_test.get('loss', '-')}, acc={final_test.get('acc', '-')}, "
+                f"total_time={timing.get('total_seconds', '-')}, "
+                f"pure_time={timing.get('pure_seconds', '-')}, "
+                f"batches={timing.get('batches', '-')}"
+            )
+
+        if not epochs:
+            return "No epoch records in this run."
+
+        lines: list[str] = []
+        for epoch_record in epochs:
+            if not isinstance(epoch_record, dict):
+                continue
+            epoch_idx = epoch_record.get("epoch", "?")
+            stage = epoch_record.get(stage_key)
+            if not isinstance(stage, dict):
+                continue
+            timing = stage.get("timing", {})
+            lines.append(
+                (
+                    f"Epoch {epoch_idx}: "
+                    f"loss={stage.get('loss', '-')}, acc={stage.get('acc', '-')}, "
+                    f"total_time={timing.get('total_seconds', '-')}, "
+                    f"pure_time={timing.get('pure_seconds', '-')}, "
+                    f"batches={timing.get('batches', '-')}"
+                )
+            )
+
+        if not lines:
+            return f"No {stage_key} records in this run."
+        return "\n".join(lines)
+
+    def refresh_training_log_view(self) -> None:
+        if not self.training_log_runs:
+            return
+        run_id = self.training_log_run_combo.currentData()
+        selected_run = None
+        for run in self.training_log_runs:
+            if str(run.get("run_id", "")) == str(run_id):
+                selected_run = run
+                break
+        if selected_run is None:
+            selected_run = self.training_log_runs[0]
+
+        status_text = f"Loaded log: {selected_run.get('_log_path', '-')}"
+        self.training_log_status_label.setText(status_text)
+
+        selected_view = self.training_log_stage_combo.currentText().strip().lower()
+        if selected_view == "summary":
+            self.training_log_text.setPlainText(self.render_run_summary(selected_run))
+            return
+        self.training_log_text.setPlainText(self.render_stage_epochs(selected_run, selected_view))
+
     def stop_training(self) -> None:
         if self.process.state() == QProcess.NotRunning:
             return
@@ -864,6 +1111,7 @@ class TrainingLauncher(QMainWindow):
     def on_process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         self.set_running_state(False)
         self.refresh_checkpoint_output_options(preserve_text=self.checkpoint_output_name())
+        self.refresh_training_log_runs()
         status_text = "NormalExit" if exit_status == QProcess.NormalExit else "CrashExit"
         self.status_label.setText(f"Finished ({exit_code})")
         if self._stream_buffer.strip():
@@ -902,6 +1150,7 @@ class TrainingLauncher(QMainWindow):
 
     def on_process_error(self, error: QProcess.ProcessError) -> None:
         self.set_running_state(False)
+        self.refresh_training_log_runs()
         self.status_label.setText("Error")
         self.progress_label.setText(f"Process error: {error}")
         self.append_output(f"\nProcess error: {error}\n")

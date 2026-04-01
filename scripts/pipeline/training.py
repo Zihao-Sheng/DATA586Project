@@ -4,6 +4,8 @@ import argparse
 import json
 import sys
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
@@ -16,6 +18,8 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 from model.import_data import data_import
 from core.model_registry import discover_model_names, load_model_module
+
+RUN_LOG_DIRNAME = "_run_logs"
 
 
 def default_data_root() -> Path:
@@ -131,6 +135,176 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def now_iso_utc() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def file_signature(path: Path) -> dict[str, int | bool]:
+    if not path.is_file():
+        return {"exists": False}
+    stat = path.stat()
+    return {
+        "exists": True,
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+    }
+
+
+class TrainingRunLogger:
+    def __init__(
+        self,
+        *,
+        checkpoint_dir: Path,
+        best_checkpoint_path: Path,
+        last_checkpoint_path: Path,
+        args: argparse.Namespace,
+        model_name: str,
+        device: str,
+        start_epoch: int,
+        num_epochs: int,
+        eval_name: str,
+        train_batches: int,
+        eval_batches: int,
+        test_batches: int,
+    ) -> None:
+        run_logs_dir = checkpoint_dir / RUN_LOG_DIRNAME
+        run_logs_dir.mkdir(parents=True, exist_ok=True)
+        run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+        self.path = run_logs_dir / f"{run_id}.json"
+        self._finalized = False
+        self.data: dict[str, object] = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "status": "running",
+            "start_time_utc": now_iso_utc(),
+            "end_time_utc": None,
+            "error_message": None,
+            "command": " ".join(sys.argv),
+            "args": {
+                "model": model_name,
+                "data_root": str(args.data_root.expanduser().resolve()),
+                "checkpoint_dir": str(checkpoint_dir),
+                "epochs": int(num_epochs),
+                "start_epoch": int(start_epoch),
+                "planned_epochs_this_run": int(max(num_epochs - start_epoch, 0)),
+                "batch_size": int(args.batch_size),
+                "num_workers": int(args.num_workers),
+                "image_size": int(args.image_size),
+                "lr": float(args.lr),
+                "device": device,
+                "freeze_backbone": bool(args.freeze_backbone),
+                "use_validation_split": bool(args.use_validation_split),
+                "validation_proportion": float(args.validation_proportion),
+                "resume": str(args.resume.expanduser().resolve()) if args.resume is not None else None,
+            },
+            "expected": {
+                "train_batches_per_epoch": int(train_batches),
+                f"{eval_name}_batches_per_epoch": int(eval_batches),
+                "final_test_batches": int(test_batches),
+            },
+            "epochs": [],
+            "final_test": None,
+            "timing_summary": None,
+            "artifacts": {
+                "best_checkpoint": {
+                    "path": str(best_checkpoint_path),
+                    "initial_signature": file_signature(best_checkpoint_path),
+                    "final_signature": None,
+                    "saved_epoch": None,
+                    "saved_best_acc": None,
+                },
+                "last_checkpoint": {
+                    "path": str(last_checkpoint_path),
+                    "initial_signature": file_signature(last_checkpoint_path),
+                    "final_signature": None,
+                },
+            },
+        }
+        self.write()
+
+    def write(self) -> None:
+        self.path.write_text(json.dumps(self.data, ensure_ascii=True, indent=2), encoding="utf-8")
+
+    def append_epoch(
+        self,
+        *,
+        epoch: int,
+        train_loss: float,
+        train_acc: float,
+        train_timing: dict[str, float],
+        eval_name: str,
+        eval_loss: float,
+        eval_acc: float,
+        eval_timing: dict[str, float],
+    ) -> None:
+        epochs = self.data["epochs"]
+        assert isinstance(epochs, list)
+        epochs.append(
+            {
+                "epoch": int(epoch),
+                "train": {
+                    "loss": float(train_loss),
+                    "acc": float(train_acc),
+                    "timing": train_timing,
+                },
+                eval_name: {
+                    "loss": float(eval_loss),
+                    "acc": float(eval_acc),
+                    "timing": eval_timing,
+                },
+            }
+        )
+        self.write()
+
+    def mark_best_checkpoint(self, *, epoch: int, best_acc: float, path: Path) -> None:
+        artifacts = self.data["artifacts"]
+        assert isinstance(artifacts, dict)
+        best = artifacts["best_checkpoint"]
+        assert isinstance(best, dict)
+        best["saved_epoch"] = int(epoch)
+        best["saved_best_acc"] = float(best_acc)
+        best["final_signature"] = file_signature(path)
+        self.write()
+
+    def mark_last_checkpoint(self, *, path: Path) -> None:
+        artifacts = self.data["artifacts"]
+        assert isinstance(artifacts, dict)
+        last = artifacts["last_checkpoint"]
+        assert isinstance(last, dict)
+        last["final_signature"] = file_signature(path)
+        self.write()
+
+    def set_final_test(self, *, loss: float, acc: float, timing: dict[str, float]) -> None:
+        self.data["final_test"] = {
+            "loss": float(loss),
+            "acc": float(acc),
+            "timing": timing,
+        }
+        self.write()
+
+    def finalize(
+        self,
+        *,
+        status: str,
+        stage_totals: dict[str, dict[str, float]],
+        wall_total_elapsed: float,
+        pure_execution_total: float,
+        init_and_overhead: float,
+        error_message: str | None = None,
+    ) -> None:
+        self.data["status"] = status
+        self.data["end_time_utc"] = now_iso_utc()
+        self.data["error_message"] = error_message
+        self.data["timing_summary"] = {
+            "total_wall_time_seconds": float(wall_total_elapsed),
+            "total_pure_execution_time_seconds": float(pure_execution_total),
+            "initialization_and_overhead_time_seconds": float(init_and_overhead),
+            "stage_totals": stage_totals,
+        }
+        self._finalized = True
+        self.write()
+
+
 def main() -> None:
     wall_total_start = time.perf_counter()
     args = parse_args()
@@ -201,136 +375,207 @@ def main() -> None:
         print(f"Resumed from checkpoint {args.resume} at epoch {start_epoch} with best_acc {best_acc:.4f}")
 
     num_epochs = args.epochs
-    
+
+    run_logger = TrainingRunLogger(
+        checkpoint_dir=checkpoint_dir,
+        best_checkpoint_path=best_checkpoint_path,
+        last_checkpoint_path=last_checkpoint_path,
+        args=args,
+        model_name=args.model,
+        device=device,
+        start_epoch=start_epoch,
+        num_epochs=num_epochs,
+        eval_name=eval_name,
+        train_batches=len(train_loader),
+        eval_batches=len(eval_loader),
+        test_batches=len(test_loader),
+    )
+
     final_test_loss: float | None = None
     final_test_acc: float | None = None
-
-    for epoch in range(start_epoch, num_epochs):
-        train_loss, train_acc, train_timing = train_one_epoch(
-            model,
-            train_loader,
-            loss_fn,
-            optimizer,
-            device,
-            epoch=epoch + 1,
-            num_epochs=num_epochs,
-            progress_format=args.progress_format,
-        )
-        eval_loss, eval_acc, eval_timing = evaluate(
-            model,
-            eval_loader,
-            loss_fn,
-            device,
-            epoch=epoch + 1,
-            num_epochs=num_epochs,
-            progress_format=args.progress_format,
-            stage_name=eval_name,
-        )
-
-        stage_totals["train"]["total_seconds"] += train_timing["total_seconds"]
-        stage_totals["train"]["pure_seconds"] += train_timing["pure_seconds"]
-        stage_totals["train"]["batches"] += train_timing["batches"]
-        stage_totals[eval_name]["total_seconds"] += eval_timing["total_seconds"]
-        stage_totals[eval_name]["pure_seconds"] += eval_timing["pure_seconds"]
-        stage_totals[eval_name]["batches"] += eval_timing["batches"]
-
-        fcn_history["train_loss"].append(train_loss)
-        fcn_history["train_acc"].append(train_acc)
-        fcn_history[f"{eval_name}_loss"].append(eval_loss)
-        fcn_history[f"{eval_name}_acc"].append(eval_acc)
-
-        if eval_acc > best_acc:
-            best_acc = eval_acc
-            torch.save(
-                {
-                    "epoch": epoch + 1,
-                    "model_name": args.model,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "best_acc": best_acc,
-                    "num_classes": num_classes,
-                    "class_to_idx": class_to_idx,
-                    "use_validation_split": args.use_validation_split,
-                    "validation_proportion": args.validation_proportion,
-                },
-                best_checkpoint_path,
+    try:
+        for epoch in range(start_epoch, num_epochs):
+            train_loss, train_acc, train_timing = train_one_epoch(
+                model,
+                train_loader,
+                loss_fn,
+                optimizer,
+                device,
+                epoch=epoch + 1,
+                num_epochs=num_epochs,
+                progress_format=args.progress_format,
+            )
+            eval_loss, eval_acc, eval_timing = evaluate(
+                model,
+                eval_loader,
+                loss_fn,
+                device,
+                epoch=epoch + 1,
+                num_epochs=num_epochs,
+                progress_format=args.progress_format,
+                stage_name=eval_name,
             )
 
-        train_avg_pure_per_batch = train_timing["pure_seconds"] / max(train_timing["batches"], 1)
-        eval_avg_pure_per_batch = eval_timing["pure_seconds"] / max(eval_timing["batches"], 1)
-        print(
-            f"Epoch {epoch+1}: "
-            f"train_loss={train_loss:.4f}, train_acc={train_acc:.4f}, "
-            f"train_total_time={train_timing['total_seconds']:.2f}s, "
-            f"train_pure_time={train_timing['pure_seconds']:.2f}s, "
-            f"train_avg_pure_per_batch={train_avg_pure_per_batch:.4f}s, "
-            f"{eval_name}_loss={eval_loss:.4f}, {eval_name}_acc={eval_acc:.4f}, "
-            f"{eval_name}_total_time={eval_timing['total_seconds']:.2f}s, "
-            f"{eval_name}_pure_time={eval_timing['pure_seconds']:.2f}s, "
-            f"{eval_name}_avg_pure_per_batch={eval_avg_pure_per_batch:.4f}s"
+            stage_totals["train"]["total_seconds"] += train_timing["total_seconds"]
+            stage_totals["train"]["pure_seconds"] += train_timing["pure_seconds"]
+            stage_totals["train"]["batches"] += train_timing["batches"]
+            stage_totals[eval_name]["total_seconds"] += eval_timing["total_seconds"]
+            stage_totals[eval_name]["pure_seconds"] += eval_timing["pure_seconds"]
+            stage_totals[eval_name]["batches"] += eval_timing["batches"]
+
+            fcn_history["train_loss"].append(train_loss)
+            fcn_history["train_acc"].append(train_acc)
+            fcn_history[f"{eval_name}_loss"].append(eval_loss)
+            fcn_history[f"{eval_name}_acc"].append(eval_acc)
+
+            run_logger.append_epoch(
+                epoch=epoch + 1,
+                train_loss=train_loss,
+                train_acc=train_acc,
+                train_timing=train_timing,
+                eval_name=eval_name,
+                eval_loss=eval_loss,
+                eval_acc=eval_acc,
+                eval_timing=eval_timing,
+            )
+
+            if eval_acc > best_acc:
+                best_acc = eval_acc
+                torch.save(
+                    {
+                        "epoch": epoch + 1,
+                        "model_name": args.model,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "best_acc": best_acc,
+                        "num_classes": num_classes,
+                        "class_to_idx": class_to_idx,
+                        "use_validation_split": args.use_validation_split,
+                        "validation_proportion": args.validation_proportion,
+                    },
+                    best_checkpoint_path,
+                )
+                run_logger.mark_best_checkpoint(epoch=epoch + 1, best_acc=best_acc, path=best_checkpoint_path)
+
+            train_avg_pure_per_batch = train_timing["pure_seconds"] / max(train_timing["batches"], 1)
+            eval_avg_pure_per_batch = eval_timing["pure_seconds"] / max(eval_timing["batches"], 1)
+            print(
+                f"Epoch {epoch+1}: "
+                f"train_loss={train_loss:.4f}, train_acc={train_acc:.4f}, "
+                f"train_total_time={train_timing['total_seconds']:.2f}s, "
+                f"train_pure_time={train_timing['pure_seconds']:.2f}s, "
+                f"train_avg_pure_per_batch={train_avg_pure_per_batch:.4f}s, "
+                f"{eval_name}_loss={eval_loss:.4f}, {eval_name}_acc={eval_acc:.4f}, "
+                f"{eval_name}_total_time={eval_timing['total_seconds']:.2f}s, "
+                f"{eval_name}_pure_time={eval_timing['pure_seconds']:.2f}s, "
+                f"{eval_name}_avg_pure_per_batch={eval_avg_pure_per_batch:.4f}s"
+            )
+
+        if args.use_validation_split:
+            final_test_loss, final_test_acc, test_timing = evaluate(
+                model,
+                test_loader,
+                loss_fn,
+                device,
+                progress_format=args.progress_format,
+                stage_name="test",
+            )
+            stage_totals["test"]["total_seconds"] += test_timing["total_seconds"]
+            stage_totals["test"]["pure_seconds"] += test_timing["pure_seconds"]
+            stage_totals["test"]["batches"] += test_timing["batches"]
+            run_logger.set_final_test(loss=final_test_loss, acc=final_test_acc, timing=test_timing)
+            test_avg_pure_per_batch = test_timing["pure_seconds"] / max(test_timing["batches"], 1)
+            print(
+                f"Final test: test_loss={final_test_loss:.4f}, test_acc={final_test_acc:.4f}, "
+                f"test_total_time={test_timing['total_seconds']:.2f}s, "
+                f"test_pure_time={test_timing['pure_seconds']:.2f}s, "
+                f"test_avg_pure_per_batch={test_avg_pure_per_batch:.4f}s"
+            )
+
+        pure_execution_total = (
+            stage_totals["train"]["pure_seconds"]
+            + stage_totals["val"]["pure_seconds"]
+            + stage_totals["test"]["pure_seconds"]
         )
+        wall_total_elapsed = time.perf_counter() - wall_total_start
+        init_and_overhead = max(wall_total_elapsed - pure_execution_total, 0.0)
 
-    if args.use_validation_split:
-        final_test_loss, final_test_acc, test_timing = evaluate(
-            model,
-            test_loader,
-            loss_fn,
-            device,
-            progress_format=args.progress_format,
-            stage_name="test",
+        print("\nTiming summary:")
+        print(f"total_wall_time={wall_total_elapsed:.2f}s")
+        print(f"total_pure_execution_time={pure_execution_total:.2f}s")
+        print(f"initialization_and_overhead_time={init_and_overhead:.2f}s")
+        for stage_name in ("train", "val", "test"):
+            stage_total = stage_totals[stage_name]["total_seconds"]
+            stage_pure = stage_totals[stage_name]["pure_seconds"]
+            stage_batches = stage_totals[stage_name]["batches"]
+            if stage_batches <= 0:
+                continue
+            stage_avg = stage_pure / stage_batches
+            print(
+                f"{stage_name}: total_time={stage_total:.2f}s, "
+                f"pure_time={stage_pure:.2f}s, avg_pure_per_batch={stage_avg:.4f}s"
+            )
+
+        if final_test_loss is not None and final_test_acc is not None:
+            print(f"final_test_loss={final_test_loss:.4f}, final_test_acc={final_test_acc:.4f}")
+
+        torch.save(
+            {
+                "epoch": num_epochs,
+                "model_name": args.model,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_acc": best_acc,
+                "num_classes": num_classes,
+                "class_to_idx": class_to_idx,
+                "use_validation_split": args.use_validation_split,
+                "validation_proportion": args.validation_proportion,
+            },
+            last_checkpoint_path,
         )
-        stage_totals["test"]["total_seconds"] += test_timing["total_seconds"]
-        stage_totals["test"]["pure_seconds"] += test_timing["pure_seconds"]
-        stage_totals["test"]["batches"] += test_timing["batches"]
-        test_avg_pure_per_batch = test_timing["pure_seconds"] / max(test_timing["batches"], 1)
-        print(
-            f"Final test: test_loss={final_test_loss:.4f}, test_acc={final_test_acc:.4f}, "
-            f"test_total_time={test_timing['total_seconds']:.2f}s, "
-            f"test_pure_time={test_timing['pure_seconds']:.2f}s, "
-            f"test_avg_pure_per_batch={test_avg_pure_per_batch:.4f}s"
+        run_logger.mark_last_checkpoint(path=last_checkpoint_path)
+        run_logger.finalize(
+            status="completed",
+            stage_totals=stage_totals,
+            wall_total_elapsed=wall_total_elapsed,
+            pure_execution_total=pure_execution_total,
+            init_and_overhead=init_and_overhead,
         )
-
-    pure_execution_total = (
-        stage_totals["train"]["pure_seconds"]
-        + stage_totals["val"]["pure_seconds"]
-        + stage_totals["test"]["pure_seconds"]
-    )
-    wall_total_elapsed = time.perf_counter() - wall_total_start
-    init_and_overhead = max(wall_total_elapsed - pure_execution_total, 0.0)
-
-    print("\nTiming summary:")
-    print(f"total_wall_time={wall_total_elapsed:.2f}s")
-    print(f"total_pure_execution_time={pure_execution_total:.2f}s")
-    print(f"initialization_and_overhead_time={init_and_overhead:.2f}s")
-    for stage_name in ("train", "val", "test"):
-        stage_total = stage_totals[stage_name]["total_seconds"]
-        stage_pure = stage_totals[stage_name]["pure_seconds"]
-        stage_batches = stage_totals[stage_name]["batches"]
-        if stage_batches <= 0:
-            continue
-        stage_avg = stage_pure / stage_batches
-        print(
-            f"{stage_name}: total_time={stage_total:.2f}s, "
-            f"pure_time={stage_pure:.2f}s, avg_pure_per_batch={stage_avg:.4f}s"
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user.")
+        pure_execution_total = (
+            stage_totals["train"]["pure_seconds"]
+            + stage_totals["val"]["pure_seconds"]
+            + stage_totals["test"]["pure_seconds"]
         )
-
-    if final_test_loss is not None and final_test_acc is not None:
-        print(f"final_test_loss={final_test_loss:.4f}, final_test_acc={final_test_acc:.4f}")
-
-    torch.save(
-        {
-            "epoch": num_epochs,
-            "model_name": args.model,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "best_acc": best_acc,
-            "num_classes": num_classes,
-            "class_to_idx": class_to_idx,
-            "use_validation_split": args.use_validation_split,
-            "validation_proportion": args.validation_proportion,
-        },
-        last_checkpoint_path,
-    )
+        wall_total_elapsed = time.perf_counter() - wall_total_start
+        init_and_overhead = max(wall_total_elapsed - pure_execution_total, 0.0)
+        run_logger.finalize(
+            status="interrupted",
+            stage_totals=stage_totals,
+            wall_total_elapsed=wall_total_elapsed,
+            pure_execution_total=pure_execution_total,
+            init_and_overhead=init_and_overhead,
+            error_message="KeyboardInterrupt",
+        )
+        raise SystemExit(130)
+    except Exception as exc:
+        pure_execution_total = (
+            stage_totals["train"]["pure_seconds"]
+            + stage_totals["val"]["pure_seconds"]
+            + stage_totals["test"]["pure_seconds"]
+        )
+        wall_total_elapsed = time.perf_counter() - wall_total_start
+        init_and_overhead = max(wall_total_elapsed - pure_execution_total, 0.0)
+        run_logger.finalize(
+            status="failed",
+            stage_totals=stage_totals,
+            wall_total_elapsed=wall_total_elapsed,
+            pure_execution_total=pure_execution_total,
+            init_and_overhead=init_and_overhead,
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
+        raise
         
 
 def emit_gui_progress(
