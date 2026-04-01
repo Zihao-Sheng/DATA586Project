@@ -12,7 +12,7 @@ def build_resnet18(
 ) -> nn.Module:
     """Create a minimal ResNet18 classifier."""
     try:
-        model = models.resnet18(weights=None)
+        model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     except TypeError:
         model = models.resnet18(pretrained=False)
 
