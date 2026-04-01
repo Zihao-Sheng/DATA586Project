@@ -16,6 +16,20 @@ If shortcut targets drift after changing environments, rebuild them with:
 powershell -ExecutionPolicy Bypass -File .\scripts\maintenance\rebuild_gui_shortcuts.ps1
 ```
 
+## Check and Install Requirements
+
+Use either method below from the project root:
+
+```powershell
+python scripts/maintenance/ensure_packages.py
+```
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Or double-click `Check Requirements.lnk` in the project root.
+
 ## Run in Jupyter (.ipynb)
 
 If teammates cannot open the GUI, run training directly from notebook cells:
