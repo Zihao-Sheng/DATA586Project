@@ -35,12 +35,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from model_registry import discover_model_names
+SCRIPTS_ROOT = Path(__file__).resolve().parents[1]
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+from core.model_registry import discover_model_names
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_RETRIEVAL_SCRIPT = PROJECT_ROOT / "scripts" / "data_retrieval.py"
-TRAINING_SCRIPT = PROJECT_ROOT / "scripts" / "training.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_RETRIEVAL_SCRIPT = PROJECT_ROOT / "scripts" / "entry" / "data_retrieval.py"
+TRAINING_SCRIPT = PROJECT_ROOT / "scripts" / "entry" / "training.py"
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_DATA_ROOT = PROJECT_ROOT / "data" / "food-101"
 DEFAULT_CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
@@ -1287,7 +1291,7 @@ class PredictionWorker(QObject):
     def run(self) -> None:
         try:
             import torch
-            from predicting import build_transform, load_model, predict_images_batch
+            from pipeline.predicting import build_transform, load_model, predict_images_batch
 
             resolved_device = self.device if self.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
             model, class_to_idx = load_model(self.checkpoint_path, self.model_name, resolved_device)

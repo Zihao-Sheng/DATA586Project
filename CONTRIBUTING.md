@@ -16,21 +16,26 @@ Why it stays in the repo root:
 - it is the standard Python location;
 - it is easy for teammates to find;
 - the root launchers and README already point to it;
-- `scripts/ensure_packages.py` uses it as the default source of packages.
+- `scripts/maintenance/ensure_packages.py` uses it as the default source of packages.
 
 When dependencies change:
 1. Update [requirements.txt](c:/Users/18447/DATA586Project/requirements.txt).
-2. Make sure [ensure_packages.py](c:/Users/18447/DATA586Project/scripts/ensure_packages.py) still works with the new list.
+2. Make sure [ensure_packages.py](c:/Users/18447/DATA586Project/scripts/maintenance/ensure_packages.py) still works with the new list.
 3. Mention the dependency change in your PR or handoff note.
 
 ## 3. Main Entry Points
 
 Current shared entry points are:
-- [training_gui.py](c:/Users/18447/DATA586Project/scripts/training_gui.py)
-- [training.py](c:/Users/18447/DATA586Project/scripts/training.py)
-- [predicting.py](c:/Users/18447/DATA586Project/scripts/predicting.py)
-- [data_retrieval.py](c:/Users/18447/DATA586Project/scripts/data_retrieval.py)
-- [ensure_packages.py](c:/Users/18447/DATA586Project/scripts/ensure_packages.py)
+- [training_gui.py](c:/Users/18447/DATA586Project/scripts/app/training_gui.py)
+- [training.py](c:/Users/18447/DATA586Project/scripts/entry/training.py)
+- [predicting.py](c:/Users/18447/DATA586Project/scripts/entry/predicting.py)
+- [data_retrieval.py](c:/Users/18447/DATA586Project/scripts/entry/data_retrieval.py)
+- [ensure_packages.py](c:/Users/18447/DATA586Project/scripts/entry/ensure_packages.py)
+
+Implementation folders:
+- [scripts/pipeline](c:/Users/18447/DATA586Project/scripts/pipeline) for training/prediction/data logic.
+- [scripts/core](c:/Users/18447/DATA586Project/scripts/core) for shared script modules.
+- [scripts/maintenance](c:/Users/18447/DATA586Project/scripts/maintenance) for environment and launcher maintenance.
 
 Root-level shortcuts exist for non-terminal usage:
 - [Check Requirements.lnk](c:/Users/18447/DATA586Project/Check%20Requirements.lnk)
@@ -45,7 +50,7 @@ To add a new trainable model:
    `build_optimizer(...)`
 3. Keep dataset loading outside the model file.
 
-Model discovery is automatic through [model_registry.py](c:/Users/18447/DATA586Project/scripts/model_registry.py), so new model files should appear in the CLI and GUI without extra registration work.
+Model discovery is automatic through [model_registry.py](c:/Users/18447/DATA586Project/scripts/core/model_registry.py), so new model files should appear in the CLI and GUI without extra registration work.
 
 ## 5. Data and Artifacts
 

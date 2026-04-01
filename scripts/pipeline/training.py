@@ -9,15 +9,15 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from model.import_data import data_import
-from model_registry import discover_model_names, load_model_module
+from core.model_registry import discover_model_names, load_model_module
 
 
 def default_data_root() -> Path:
-    return Path(__file__).resolve().parents[1] / "data" / "food-101"
+    return Path(__file__).resolve().parents[2] / "data" / "food-101"
 
 
 def default_checkpoint_root() -> Path:
-    return Path(__file__).resolve().parents[1] / "checkpoints"
+    return Path(__file__).resolve().parents[2] / "checkpoints"
 
 
 def default_checkpoint_dir_for_model(model_name: str) -> Path:

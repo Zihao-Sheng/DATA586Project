@@ -35,7 +35,7 @@ CHUNK_SIZE = 1024 * 1024  # 1 MB
 
 def default_data_dir() -> Path:
     # Always place the dataset next to the scripts/ directory, regardless of cwd.
-    return Path(__file__).resolve().parents[1] / "data"
+    return Path(__file__).resolve().parents[2] / "data"
 
 
 @dataclass

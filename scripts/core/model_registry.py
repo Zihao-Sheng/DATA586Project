@@ -5,7 +5,7 @@ from types import ModuleType
 from pathlib import Path
 
 
-MODEL_DIR = Path(__file__).resolve().parent / "model"
+MODEL_DIR = Path(__file__).resolve().parents[1] / "model"
 IGNORED_MODEL_FILES = {"import_data.py", "__init__.py"}
 
 

@@ -8,10 +8,12 @@ Double-click [Launch Training GUI.lnk](c:/Users/18447/DATA586Project/Launch%20Tr
 
 The GUI includes tabs for dataset preparation, training, and prediction, so you can download/repair data from inside the app.
 
-If the shortcuts point to an old Python path after changing environments, rebuild them with:
+`Check Requirements.lnk` now runs a resilient launcher and repairs shortcut targets when they are stale, including `Launch Training GUI.lnk`.
+
+If shortcut targets drift after changing environments, rebuild them with:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\rebuild_gui_shortcuts.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\maintenance\rebuild_gui_shortcuts.ps1
 ```
 
 ## Basic Information
@@ -93,15 +95,21 @@ Robustness test variants (~4.07 GB):
 Launch the PySide6 desktop trainer:
 
 ```bash
-python scripts/training_gui.py
+python scripts/app/training_gui.py
 ```
 
-The GUI wraps `scripts/training.py`, lets you adjust the currently exposed training arguments, and streams terminal output into the window while training runs.
+The GUI wraps `scripts/entry/training.py`, lets you adjust the currently exposed training arguments, and streams terminal output into the window while training runs.
+
+Script layout:
+- `scripts/pipeline/`: training, prediction, and dataset retrieval implementations.
+- `scripts/core/`: shared core modules (for example model discovery).
+- `scripts/maintenance/`: dependency checks and Windows shortcut launch/repair logic.
+- `scripts/build/`: build scripts for distributable launchers.
 
 To build a Windows `.exe` after installing `PySide6` and `PyInstaller`:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build_training_gui.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\build\build_training_gui.ps1
 ```
 
 ## Deliverables

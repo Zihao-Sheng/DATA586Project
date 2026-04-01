@@ -4,11 +4,11 @@ import argparse
 import json
 from pathlib import Path
 
-from model_registry import discover_model_names, load_model_module
+from core.model_registry import discover_model_names, load_model_module
 
 
 def default_checkpoint_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "checkpoints" / "resnet18" / "best.pth"
+    return Path(__file__).resolve().parents[2] / "checkpoints" / "resnet18" / "best.pth"
 
 
 def parse_args() -> argparse.Namespace:
