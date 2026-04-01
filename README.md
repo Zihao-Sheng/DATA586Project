@@ -8,6 +8,12 @@ Double-click [Launch Training GUI.lnk](c:/Users/18447/DATA586Project/Launch%20Tr
 
 The GUI includes tabs for dataset preparation, training, and prediction, so you can download/repair data from inside the app.
 
+If the shortcuts point to an old Python path after changing environments, rebuild them with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\rebuild_gui_shortcuts.ps1
+```
+
 ## Basic Information
 
 - Course: `DATA 586 - Advanced Machine Learning`
