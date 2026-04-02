@@ -1,7 +1,16 @@
 # Dataset artifacts (do not upload)
 data/
-checkpoints/
+
+# Checkpoints: ignore model artifacts, keep structured run logs
+checkpoints/**
+!checkpoints/**/
+!checkpoints/**/_run_logs/
+!checkpoints/**/_run_logs/*.json
 
 # Python cache
 __pycache__/
 *.pyc
+
+# Local Windows shortcuts (machine-specific targets)
+Check Requirements.lnk
+Launch Training GUI.lnk
