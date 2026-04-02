@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "run_id": "20260401T230656Z_6741fc0b",
+  "status": "completed",
+  "start_time_utc": "2026-04-01T23:06:56+00:00",
+  "end_time_utc": "2026-04-01T23:43:11+00:00",
+  "error_message": null,
+  "command": "C:\\Users\\18447\\DATA586Project\\scripts\\pipeline\\training.py --model resnet18 --data-root C:\\Users\\18447\\DATA586Project\\data\\food-101 --checkpoint-dir C:\\Users\\18447\\DATA586Project\\checkpoints\\resnet18 --epochs 20 --batch-size 32 --num-workers 4 --image-size 224 --lr 0.001000 --progress-format gui --freeze-backbone --resume C:/Users/18447/DATA586Project/checkpoints/resnet18_image_net/last.pth",
+  "args": {
+    "model": "resnet18",
+    "data_root": "C:\\Users\\18447\\DATA586Project\\data\\food-101",
+    "checkpoint_dir": "C:\\Users\\18447\\DATA586Project\\checkpoints\\resnet18",
+    "epochs": 20,
+    "start_epoch": 10,
+    "planned_epochs_this_run": 10,
+    "batch_size": 32,
+    "num_workers": 4,
+    "image_size": 224,
+    "lr": 0.001,
+    "device": "cuda",
+    "freeze_backbone": true,
+    "use_validation_split": false,
+    "validation_proportion": 0.1,
+    "resume": "C:\\Users\\18447\\DATA586Project\\checkpoints\\resnet18_image_net\\last.pth"
+  },
+  "expected": {
+    "train_batches_per_epoch": 2368,
+    "test_batches_per_epoch": 790,
+    "final_test_batches": 790
+  },
+  "epochs": [
+    {
+      "epoch": 11,
+      "train": {
+        "loss": 1.822589602835501,
+        "acc": 0.5394191419141914,
+        "timing": {
+          "total_seconds": 91.78353540002718,
+          "pure_seconds": 91.78338639999856,
+          "batches": 2368
+        }
+      },
+      "test": {
+        "loss": 1.7685300428654889,
+        "acc": 0.5493069306930694,
+        "timing": {
+          "total_seconds": 45.32112409998081,
+          "pure_seconds": 45.32092700002249,
+          "batches": 790
+        }
+      }
+    },
+    {
+      "epoch": 12,
+      "train": {
+        "loss": 1.8134823847540928,
+        "acc": 0.5405940594059406,
+        "timing": {
+          "total_seconds": 118.10292380000465,
+          "pure_seconds": 118.10274450000725,
+          "batches": 2368
+        }
+      },
+      "test": {
+        "loss": 1.7849637210439928,
+        "acc": 0.5493465346534654,
+        "timing": {
+          "total_seconds": 51.664660499984166,
+          "pure_seconds": 51.66445290000411,
+          "batches": 790
+        }
+      }
+    },
+    {
+      "epoch": 13,
+      "train": {
+        "loss": 1.8110566811892066,
+        "acc": 0.5424818481848185,
+        "timing": {
+          "total_seconds": 120.32243790000211,
+          "pure_seconds": 120.32224090001546,
+          "batches": 2368
+        }
+      },
+      "test": {
+        "loss": 1.8002401417729879,
+        "acc": 0.5475643564356436,
+        "timing": {
+          "total_seconds": 57.36639359997935,
+          "pure_seconds": 57.36612779999268,
+          "batches": 790
+        }
+      }
+    },
+    {
+      "epoch": 14,
+      "train": {
+        "loss": 1.7979542754459696,
+        "acc": 0.544950495049505,
+        "timing": {
+          "total_seconds": 131.53462580000632,
+          "pure_seconds": 131.53437160002068,
+          "batches": 2368
+        }
+      },
+      "test": {
+        "loss": 1.7901984754930629,
+        "acc": 0.5491089108910892,
+        "timing": {
+          "total_seconds": 58.89462770000682,
+          "pure_seconds": 58.894311400013976,
+          "batches": 790
+        }
+      }
+    },
+    {
+      "epoch": 15,
+      "train": {
+        "loss": 1.7986408422614875,
+        "acc": 0.5441716171617161,
+        "timing": {
+          "total_seconds": 139.3790682000108,
+          "pure_seconds": 139.37880940001924,
+          "batches": 2368
+        }
+      },
+      "test": {
+        "loss": 1.7836386922113967,
+        "acc": 0.5504158415841585,
+        "timing": {
+          "total_seconds": 58.262218799995026,
+          "pure_seconds": 58.261941500008106,
+          "batches": 790
+        }
+      }
+    },
+    {
+      "epoch": 16,
+      "train": {
+        "loss": 1.7872543884881653,
+        "acc": 0.5465610561056106,
+        "timing": {
+          "total_seconds": 177.10556129997713,
+          "pure_seconds": 177.10531050001737,
+          "batches": 2368
+        }
+      },
+      "test": {
+        "loss": 1.7914179608987109,
+        "acc": 0.5521188118811882,
+        "timing": {
+          "total_seconds": 59.730031099985354,
+          "pure_seconds": 59.729227400006494,
+          "batches": 790
+        }
+      }
+    },
+    {
+      "epoch": 17,
+      "train": {
+        "loss": 1.789792054808966,
+        "acc": 0.5441320132013201,
+        "timing": {
+          "total_seconds": 152.09137009998085,
+          "pure_seconds": 152.0910625999968,
+          "batches": 2368
+        }
+      },
+      "test": {
+        "loss": 1.8209975922084092,
+        "acc": 0.5433267326732674,
+        "timing": {
+          "total_seconds": 60.708642499987036,
+          "pure_seconds": 60.708361099998,
+          "batches": 790
+        }
+      }
+    },
+    {
+      "epoch": 18,
+      "train": {
+        "loss": 1.7811860469465601,
+        "acc": 0.5462046204620462,
+        "timing": {
+          "total_seconds": 208.71676060001482,
+          "pure_seconds": 208.71645800000988,
+          "batches": 2368
+        }
+      },
+      "test": {
+        "loss": 1.7791858437840302,
+        "acc": 0.5496237623762377,
+        "timing": {
+          "total_seconds": 105.79717489998438,
+          "pure_seconds": 105.7969207999995,
+          "batches": 790
+        }
+      }
+    },
+    {
+      "epoch": 19,
+      "train": {
+        "loss": 1.7777852788490824,
+        "acc": 0.5498085808580858,
+        "timing": {
+          "total_seconds": 169.10896690000664,
+          "pure_seconds": 169.10869729999104,
+          "batches": 2368
+        }
+      },
+      "test": {
+        "loss": 1.7955224539023815,
+        "acc": 0.5480396039603961,
+        "timing": {
+          "total_seconds": 68.57751490001101,
+          "pure_seconds": 68.57717679999769,
+          "batches": 790
+        }
+      }
+    },
+    {
+      "epoch": 20,
+      "train": {
+        "loss": 1.7784648497836424,
+        "acc": 0.5495841584158416,
+        "timing": {
+          "total_seconds": 193.08006380000734,
+          "pure_seconds": 193.07981920000748,
+          "batches": 2368
+        }
+      },
+      "test": {
+        "loss": 1.8089042130083142,
+        "acc": 0.5486732673267327,
+        "timing": {
+          "total_seconds": 107.24777230000473,
+          "pure_seconds": 107.24703729999601,
+          "batches": 790
+        }
+      }
+    }
+  ],
+  "final_test": null,
+  "timing_summary": {
+    "total_wall_time_seconds": 2181.0369580000115,
+    "total_pure_execution_time_seconds": 2174.789384400123,
+    "initialization_and_overhead_time_seconds": 6.24757359988871,
+    "stage_totals": {
+      "train": {
+        "total_seconds": 1501.2253138000378,
+        "pure_seconds": 1501.2229004000837,
+        "batches": 23680.0
+      },
+      "val": {
+        "total_seconds": 0.0,
+        "pure_seconds": 0.0,
+        "batches": 0.0
+      },
+      "test": {
+        "total_seconds": 673.5701603999187,
+        "pure_seconds": 673.566484000039,
+        "batches": 7900.0
+      }
+    }
+  },
+  "artifacts": {
+    "best_checkpoint": {
+      "path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\resnet18\\best.pth",
+      "initial_signature": {
+        "exists": true,
+        "size": 45412323,
+        "mtime_ns": 1775033185324955700
+      },
+      "final_signature": null,
+      "saved_epoch": null,
+      "saved_best_acc": null
+    },
+    "last_checkpoint": {
+      "path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\resnet18\\last.pth",
+      "initial_signature": {
+        "exists": true,
+        "size": 45412323,
+        "mtime_ns": 1775026538421048100
+      },
+      "final_signature": {
+        "exists": true,
+        "size": 45404589,
+        "mtime_ns": 1775086991520165200
+      }
+    }
+  }
+}
