@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (
     QListView,
     QListWidget,
     QListWidgetItem,
+    QScrollArea,
+    QSplitter,
     QSpinBox,
     QStackedWidget,
     QTreeView,
@@ -116,9 +118,12 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QListWidget {
     color: #eff4fb;
     border: 1px solid #364152;
     border-radius: 10px;
-    padding: 7px 10px;
+    padding: 4px 10px;
     selection-background-color: #2c6df2;
     selection-color: #ffffff;
+}
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+    min-height: 28px;
 }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus, QListWidget:focus {
     border: 1px solid #4e8cff;
@@ -133,6 +138,7 @@ QPushButton {
     border: none;
     border-radius: 10px;
     padding: 8px 14px;
+    min-height: 18px;
     font-weight: 600;
 }
 QPushButton:hover {
@@ -185,12 +191,16 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0px;
 }
 QListWidget::item {
-    border-radius: 10px;
-    padding: 6px;
+    border-radius: 8px;
+    padding: 6px 8px;
+    margin: 4px 6px;
 }
 QListWidget::item:selected {
-    background: #243a64;
-    border: 1px solid #4e8cff;
+    background: #22314a;
+    border: 1px solid #365c9a;
+}
+QListWidget::item:hover:!selected {
+    background: #1a2331;
 }
 QPlainTextEdit {
     background: #11151a;
@@ -529,7 +539,8 @@ class TrainingLauncher(QMainWindow):
 
         self.output_text = QPlainTextEdit()
         self.output_text.setReadOnly(True)
-        self.output_text.setMaximumHeight(170)
+        self.output_text.setMinimumHeight(120)
+        self.output_text.setMaximumHeight(230)
         self.output_text.setPlaceholderText("Training logs and launch details will appear here.")
 
         self.progress_label = QLabel("Progress will appear here after training starts.")
@@ -690,30 +701,50 @@ class TrainingLauncher(QMainWindow):
 
     def _init_log_controls(self) -> None:
         self.training_log_runs: list[dict] = []
-        self.training_log_run_combo = QComboBox()
-        self.training_log_run_combo.currentIndexChanged.connect(self.on_training_log_run_changed)
+        self.training_log_available_list = QListWidget()
+        self.training_log_available_list.setMaximumWidth(280)
+        self.training_log_available_list.itemSelectionChanged.connect(self.on_available_log_selection_changed)
+
+        self.training_log_selected_list = QListWidget()
+        self.training_log_selected_list.setMaximumWidth(280)
+        self.training_log_selected_list.itemSelectionChanged.connect(self.on_selected_log_selection_changed)
+
+        self.training_log_add_button = QPushButton("+ Add")
+        self.training_log_add_button.clicked.connect(self.add_selected_log_to_compare)
+        self.training_log_add_button.setFixedWidth(88)
+
+        self.training_log_remove_button = QPushButton("Remove")
+        self.training_log_remove_button.clicked.connect(self.remove_selected_log_from_compare)
+        self.training_log_remove_button.setFixedWidth(88)
+
+        self.training_log_clear_button = QPushButton("Clear")
+        self.training_log_clear_button.clicked.connect(self.clear_selected_logs)
+        self.training_log_clear_button.setFixedWidth(72)
 
         self.training_log_stage_combo = QComboBox()
-        self.training_log_stage_combo.addItems(["Summary", "Compare", "Train", "Val", "Test"])
+        self.training_log_stage_combo.addItems(["Summary", "Train", "Val", "Test"])
         self.training_log_stage_combo.currentIndexChanged.connect(self.refresh_training_log_view)
 
         self.training_log_refresh_button = QPushButton("Refresh Logs")
         self.training_log_refresh_button.clicked.connect(self.refresh_training_log_runs)
+        self.training_log_refresh_button.setFixedWidth(110)
 
         self.training_log_status_label = QLabel("No training logs loaded.")
         self.training_log_status_label.setWordWrap(True)
         self.training_log_status_label.setObjectName("SectionStatus")
 
-        self.training_plot_mode_combo = QComboBox()
-        self.training_plot_mode_combo.addItems(
-            ["Selected Run Accuracy", "Selected Run Timing", "Compare Accuracy", "Compare Timing"]
-        )
-        self.training_plot_mode_combo.currentIndexChanged.connect(self.refresh_training_log_plot)
+        self.training_plot_detail_label = QLabel("Detail View")
+        self.training_plot_value_combo = QComboBox()
+        self.training_plot_value_combo.addItems(["Accuracy", "Timing"])
+        self.training_plot_value_combo.currentIndexChanged.connect(self.refresh_training_log_plot)
 
+        self.training_plot_metric_label = QLabel("Plot Metric")
+        self.training_plot_stage_label = QLabel("Stage")
         self.training_plot_stage_combo = QComboBox()
         self.training_plot_stage_combo.addItems(["All / Auto", "Train", "Val", "Test"])
         self.training_plot_stage_combo.currentIndexChanged.connect(self.refresh_training_log_plot)
 
+        self.training_plot_timing_label = QLabel("Timing Metric")
         self.training_plot_timing_combo = QComboBox()
         self.training_plot_timing_combo.addItems(["Total Time", "Pure Time", "Avg Pure / Batch"])
         self.training_plot_timing_combo.currentIndexChanged.connect(self.refresh_training_log_plot)
@@ -767,7 +798,13 @@ class TrainingLauncher(QMainWindow):
         data_layout.addWidget(data_output_group)
 
         training_tab = QWidget()
-        training_layout = QVBoxLayout(training_tab)
+        training_tab_layout = QVBoxLayout(training_tab)
+        training_scroll = QScrollArea()
+        training_scroll.setWidgetResizable(True)
+        training_scroll.setFrameShape(QScrollArea.NoFrame)
+        training_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        training_scroll_content = QWidget()
+        training_layout = QVBoxLayout(training_scroll_content)
 
         config_group = QGroupBox("Training Config")
         form = QFormLayout(config_group)
@@ -810,6 +847,9 @@ class TrainingLauncher(QMainWindow):
         log_layout = QVBoxLayout(log_group)
         log_layout.addWidget(self.output_text)
         training_layout.addWidget(log_group)
+        training_layout.addStretch(1)
+        training_scroll.setWidget(training_scroll_content)
+        training_tab_layout.addWidget(training_scroll)
 
         predict_tab = QWidget()
         predict_layout = QVBoxLayout(predict_tab)
@@ -843,34 +883,71 @@ class TrainingLauncher(QMainWindow):
 
         logs_tab = QWidget()
         logs_layout = QVBoxLayout(logs_tab)
+        logs_splitter = QSplitter(Qt.Horizontal)
 
-        logs_controls_group = QGroupBox("Run Selection")
-        logs_controls_form = QFormLayout(logs_controls_group)
-        logs_controls_form.addRow("Run", self.training_log_run_combo)
-        logs_controls_form.addRow("View", self.training_log_stage_combo)
-        logs_layout.addWidget(logs_controls_group)
+        logs_left_panel = QWidget()
+        logs_left_panel.setMinimumWidth(300)
+        logs_left_panel.setMaximumWidth(340)
+        logs_left_layout = QVBoxLayout(logs_left_panel)
 
+        logs_available_group = QGroupBox("Available Runs")
+        logs_available_layout = QVBoxLayout(logs_available_group)
+        logs_available_layout.addWidget(self.training_log_available_list)
+        logs_available_actions = QHBoxLayout()
+        logs_available_actions.addWidget(self.training_log_add_button)
+        logs_available_actions.addWidget(self.training_log_refresh_button)
+        logs_available_actions.addStretch(1)
+        logs_available_layout.addLayout(logs_available_actions)
+        logs_left_layout.addWidget(logs_available_group, stretch=3)
+
+        logs_selected_group = QGroupBox("Selected For Plot")
+        logs_selected_layout = QVBoxLayout(logs_selected_group)
+        logs_selected_layout.addWidget(self.training_log_selected_list)
+        logs_selected_actions = QHBoxLayout()
+        logs_selected_actions.addWidget(self.training_log_remove_button)
+        logs_selected_actions.addWidget(self.training_log_clear_button)
+        logs_selected_actions.addStretch(1)
+        logs_selected_layout.addLayout(logs_selected_actions)
+        logs_left_layout.addWidget(logs_selected_group, stretch=2)
+        logs_left_layout.addWidget(self.training_log_status_label)
+
+        logs_right_splitter = QSplitter(Qt.Vertical)
+
+        logs_top_panel = QWidget()
+        logs_top_layout = QVBoxLayout(logs_top_panel)
         logs_plot_group = QGroupBox("Plot")
         logs_plot_form = QFormLayout(logs_plot_group)
-        logs_plot_form.addRow("Mode", self.training_plot_mode_combo)
-        logs_plot_form.addRow("Stage", self.training_plot_stage_combo)
-        logs_plot_form.addRow("Timing Metric", self.training_plot_timing_combo)
-        logs_layout.addWidget(logs_plot_group)
-
-        logs_actions = QHBoxLayout()
-        logs_actions.addWidget(self.training_log_refresh_button)
-        logs_actions.addWidget(self.training_log_status_label, stretch=1)
-        logs_layout.addLayout(logs_actions)
+        logs_plot_form.addRow(self.training_plot_detail_label, self.training_log_stage_combo)
+        logs_plot_form.addRow(self.training_plot_metric_label, self.training_plot_value_combo)
+        logs_plot_form.addRow(self.training_plot_stage_label, self.training_plot_stage_combo)
+        logs_plot_form.addRow(self.training_plot_timing_label, self.training_plot_timing_combo)
+        logs_top_layout.addWidget(logs_plot_group)
 
         logs_plot_canvas_group = QGroupBox("Run Plot")
         logs_plot_canvas_layout = QVBoxLayout(logs_plot_canvas_group)
         logs_plot_canvas_layout.addWidget(self.training_plot_widget)
-        logs_layout.addWidget(logs_plot_canvas_group)
+        logs_top_layout.addWidget(logs_plot_canvas_group, stretch=1)
 
+        logs_bottom_panel = QWidget()
+        logs_bottom_layout = QVBoxLayout(logs_bottom_panel)
         logs_output_group = QGroupBox("Training Run Details")
         logs_output_layout = QVBoxLayout(logs_output_group)
         logs_output_layout.addWidget(self.training_log_text)
-        logs_layout.addWidget(logs_output_group, stretch=1)
+        logs_bottom_layout.addWidget(logs_output_group, stretch=1)
+
+        logs_right_splitter.addWidget(logs_top_panel)
+        logs_right_splitter.addWidget(logs_bottom_panel)
+        logs_right_splitter.setStretchFactor(0, 7)
+        logs_right_splitter.setStretchFactor(1, 3)
+
+        logs_splitter.addWidget(logs_left_panel)
+        logs_splitter.addWidget(logs_right_splitter)
+        logs_splitter.setCollapsible(0, False)
+        logs_splitter.setCollapsible(1, False)
+        logs_splitter.setStretchFactor(0, 0)
+        logs_splitter.setStretchFactor(1, 1)
+        logs_splitter.setSizes([320, 980])
+        logs_layout.addWidget(logs_splitter, stretch=1)
 
         self.tabs.addTab(training_tab, "Training")
         self.tabs.addTab(predict_tab, "Predicting")
@@ -1285,15 +1362,71 @@ class TrainingLauncher(QMainWindow):
                 continue
         return loaded
 
+    def get_run_by_id(self, run_id: str | None) -> dict | None:
+        if run_id is None:
+            return None
+        for run in self.training_log_runs:
+            if str(run.get("run_id", "")) == str(run_id):
+                return run
+        return None
+
+    def selected_compare_run_ids(self) -> list[str]:
+        run_ids: list[str] = []
+        for index in range(self.training_log_selected_list.count()):
+            item = self.training_log_selected_list.item(index)
+            run_id = item.data(Qt.UserRole)
+            if isinstance(run_id, str):
+                run_ids.append(run_id)
+        return run_ids
+
+    def selected_compare_runs(self) -> list[dict]:
+        runs: list[dict] = []
+        for run_id in self.selected_compare_run_ids():
+            run = self.get_run_by_id(run_id)
+            if run is not None:
+                runs.append(run)
+        return runs
+
+    def current_available_run(self) -> dict | None:
+        item = self.training_log_available_list.currentItem()
+        run_id = item.data(Qt.UserRole) if item is not None else None
+        if isinstance(run_id, str):
+            return self.get_run_by_id(run_id)
+        return None
+
+    def current_selected_compare_run(self) -> dict | None:
+        item = self.training_log_selected_list.currentItem()
+        run_id = item.data(Qt.UserRole) if item is not None else None
+        if isinstance(run_id, str):
+            return self.get_run_by_id(run_id)
+        selected_runs = self.selected_compare_runs()
+        return selected_runs[0] if selected_runs else None
+
+    def make_run_list_label(self, run: dict) -> str:
+        args = (run.get("args") or {}) if isinstance(run.get("args"), dict) else {}
+        model_name = str(args.get("model", "unknown"))
+        status = self.normalize_run_status(run)
+        started = str(run.get("start_time_utc", "unknown"))[:16].replace("T", " ")
+        best_eval = self.format_metric(self.infer_best_eval_acc(run))
+        return f"{started}  {model_name}\n{status}  best={best_eval}"
+
     def refresh_training_log_runs(self) -> None:
         self.training_log_runs = self.load_training_log_files()
-        previous_run_id = self.training_log_run_combo.currentData()
+        previous_available_id = None
+        available_item = self.training_log_available_list.currentItem()
+        if available_item is not None:
+            data = available_item.data(Qt.UserRole)
+            if isinstance(data, str):
+                previous_available_id = data
+        previous_selected_ids = self.selected_compare_run_ids()
 
-        self.training_log_run_combo.blockSignals(True)
-        self.training_log_run_combo.clear()
+        self.training_log_available_list.blockSignals(True)
+        self.training_log_selected_list.blockSignals(True)
+        self.training_log_available_list.clear()
+        self.training_log_selected_list.clear()
         if not self.training_log_runs:
-            self.training_log_run_combo.addItem("No logs found", None)
-            self.training_log_run_combo.blockSignals(False)
+            self.training_log_available_list.blockSignals(False)
+            self.training_log_selected_list.blockSignals(False)
             self.training_log_status_label.setText(
                 f"No run logs found under {DEFAULT_CHECKPOINT_DIR}. "
                 "Start training once to create logs."
@@ -1308,24 +1441,72 @@ class TrainingLauncher(QMainWindow):
             )
             return
 
-        selected_index = 0
+        selected_row = 0
         for index, run in enumerate(self.training_log_runs):
             run_id = str(run.get("run_id", "unknown"))
-            args = (run.get("args") or {}) if isinstance(run.get("args"), dict) else {}
-            model_name = str(args.get("model", "unknown"))
-            status = str(run.get("status", "unknown"))
-            started = str(run.get("start_time_utc", "unknown"))
-            best_eval = self.format_metric(self.infer_best_eval_acc(run))
-            final_test = self.format_metric(((run.get("summary") or {}) if isinstance(run.get("summary"), dict) else {}).get("final_test_acc"))
-            label = f"{started} | {model_name} | {status} | best={best_eval} | final_test={final_test} | {run_id}"
-            self.training_log_run_combo.addItem(label, run_id)
-            if previous_run_id is not None and run_id == previous_run_id:
-                selected_index = index
-        self.training_log_run_combo.setCurrentIndex(selected_index)
-        self.training_log_run_combo.blockSignals(False)
-        self.on_training_log_run_changed()
+            if run_id in previous_selected_ids:
+                selected_item = QListWidgetItem(self.make_run_list_label(run))
+                selected_item.setData(Qt.UserRole, run_id)
+                self.training_log_selected_list.addItem(selected_item)
+                continue
 
-    def on_training_log_run_changed(self) -> None:
+            available_item = QListWidgetItem(self.make_run_list_label(run))
+            available_item.setData(Qt.UserRole, run_id)
+            self.training_log_available_list.addItem(available_item)
+            if previous_available_id is not None and run_id == previous_available_id:
+                selected_row = self.training_log_available_list.count() - 1
+
+        if self.training_log_available_list.count() > 0:
+            self.training_log_available_list.setCurrentRow(selected_row)
+        self.training_log_available_list.blockSignals(False)
+        self.training_log_selected_list.blockSignals(False)
+        self.refresh_training_log_view()
+
+    def on_available_log_selection_changed(self) -> None:
+        self.refresh_training_log_view()
+
+    def on_selected_log_selection_changed(self) -> None:
+        self.refresh_training_log_view()
+
+    def add_selected_log_to_compare(self) -> None:
+        item = self.training_log_available_list.currentItem()
+        current_run = self.current_available_run()
+        if current_run is None or item is None:
+            return
+        run_id = str(current_run.get("run_id", "unknown"))
+        if run_id not in self.selected_compare_run_ids():
+            new_item = QListWidgetItem(self.make_run_list_label(current_run))
+            new_item.setData(Qt.UserRole, run_id)
+            row = self.training_log_available_list.row(item)
+            self.training_log_available_list.takeItem(row)
+            self.training_log_selected_list.addItem(new_item)
+            self.training_log_selected_list.setCurrentItem(new_item)
+            if self.training_log_available_list.count() > 0:
+                self.training_log_available_list.setCurrentRow(min(row, self.training_log_available_list.count() - 1))
+        self.refresh_training_log_view()
+
+    def remove_selected_log_from_compare(self) -> None:
+        row = self.training_log_selected_list.currentRow()
+        if row < 0:
+            return
+        item = self.training_log_selected_list.takeItem(row)
+        if item is not None:
+            self.training_log_available_list.addItem(item)
+            self.training_log_available_list.sortItems()
+        if self.training_log_selected_list.count() > 0:
+            self.training_log_selected_list.setCurrentRow(min(row, self.training_log_selected_list.count() - 1))
+        elif self.training_log_available_list.count() > 0:
+            self.training_log_available_list.setCurrentRow(0)
+        self.refresh_training_log_view()
+
+    def clear_selected_logs(self) -> None:
+        while self.training_log_selected_list.count() > 0:
+            item = self.training_log_selected_list.takeItem(0)
+            if item is not None:
+                self.training_log_available_list.addItem(item)
+        self.training_log_available_list.sortItems()
+        if self.training_log_available_list.count() > 0:
+            self.training_log_available_list.setCurrentRow(0)
         self.refresh_training_log_view()
 
     @staticmethod
@@ -1482,13 +1663,12 @@ class TrainingLauncher(QMainWindow):
         return points
 
     def current_selected_run(self) -> dict | None:
-        if not self.training_log_runs:
-            return None
-        run_id = self.training_log_run_combo.currentData()
-        for run in self.training_log_runs:
-            if str(run.get("run_id", "")) == str(run_id):
-                return run
-        return self.training_log_runs[0] if self.training_log_runs else None
+        selected_runs = self.selected_compare_runs()
+        if len(selected_runs) == 1:
+            return selected_runs[0]
+        if len(selected_runs) > 1:
+            return self.current_selected_compare_run()
+        return self.current_available_run()
 
     def run_display_name(self, run: dict, include_stage: str | None = None) -> str:
         args = run.get("args") if isinstance(run.get("args"), dict) else {}
@@ -1510,17 +1690,17 @@ class TrainingLauncher(QMainWindow):
 
         timing_label = {"total": "Total Time (s)", "pure": "Pure Time (s)", "avg": "Avg Pure / Batch (s)"}[timing_metric]
         return {
-            "title": "Selected Run Accuracy" if value_kind == "accuracy" else "Selected Run Timing",
+            "title": "Run Accuracy" if value_kind == "accuracy" else "Run Timing",
             "x_label": "Epoch",
             "y_label": "Accuracy" if value_kind == "accuracy" else timing_label,
             "series": series,
             "note": "All available stage curves are shown together." if stage_choice.startswith("all") else "",
         }
 
-    def build_compare_plot(self, *, value_kind: str, timing_metric: str) -> dict:
+    def build_compare_plot(self, runs: list[dict], *, value_kind: str, timing_metric: str) -> dict:
         stage_choice = self.training_plot_stage_combo.currentText().strip().lower()
         series: list[dict] = []
-        for index, run in enumerate(self.training_log_runs):
+        for index, run in enumerate(runs):
             stage_name = self.infer_eval_name(run) if stage_choice.startswith("all") else stage_choice
             points = self.extract_stage_points(run, stage_name, value_kind, timing_metric)
             if not points:
@@ -1548,37 +1728,34 @@ class TrainingLauncher(QMainWindow):
         }
 
     def refresh_training_log_plot(self) -> None:
-        mode = self.training_plot_mode_combo.currentText().strip().lower()
+        selected_runs = self.selected_compare_runs()
         timing_metric_label = self.training_plot_timing_combo.currentText().strip().lower()
         timing_metric = "avg" if "avg" in timing_metric_label else ("pure" if "pure" in timing_metric_label else "total")
+        plot_value = self.training_plot_value_combo.currentText().strip().lower()
+        value_kind = "accuracy" if "accuracy" in plot_value else "timing"
 
-        self.training_plot_timing_combo.setEnabled("timing" in mode)
-        if "compare" in mode:
-            plot = self.build_compare_plot(
-                value_kind="accuracy" if "accuracy" in mode else "timing",
-                timing_metric=timing_metric,
-            )
+        show_timing_controls = value_kind == "timing"
+        self.training_plot_timing_label.setVisible(show_timing_controls)
+        self.training_plot_timing_combo.setVisible(show_timing_controls)
+        self.training_plot_timing_combo.setEnabled(show_timing_controls)
+        if len(selected_runs) >= 2:
+            plot = self.build_compare_plot(selected_runs, value_kind=value_kind, timing_metric=timing_metric)
+        elif len(selected_runs) == 1:
+            plot = self.build_selected_run_plot(selected_runs[0], value_kind=value_kind, timing_metric=timing_metric)
         else:
-            selected_run = self.current_selected_run()
-            if selected_run is None:
-                plot = {
-                    "title": "Run Plot",
-                    "x_label": "Epoch",
-                    "y_label": "Value",
-                    "series": [],
-                    "note": "No run selected.",
-                }
-            else:
-                plot = self.build_selected_run_plot(
-                    selected_run,
-                    value_kind="accuracy" if "accuracy" in mode else "timing",
-                    timing_metric=timing_metric,
-                )
+            plot = {
+                "title": "Run Plot",
+                "x_label": "Epoch",
+                "y_label": "Value",
+                "series": [],
+                "note": "Add one run from the left to view a plot, or add multiple runs to compare them.",
+            }
         self.training_plot_widget.set_plot(**plot)
 
     def render_compare_runs(self) -> str:
-        if not self.training_log_runs:
-            return "No run logs available."
+        runs = self.selected_compare_runs()
+        if not runs:
+            return "No selected runs. Add one or more runs from the left list to compare."
 
         header = (
             f"{'Started':<22} {'Model':<12} {'Status':<14} {'Progress':<9} "
@@ -1586,9 +1763,13 @@ class TrainingLauncher(QMainWindow):
         )
         separator = "-" * len(header)
         lines = [header, separator]
-        for run in self.training_log_runs:
+        lines.append("")
+        lines.append("Average Timing Compare:")
+        for run in runs:
             args = run.get("args") if isinstance(run.get("args"), dict) else {}
             summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+            timing_summary = run.get("timing_summary") if isinstance(run.get("timing_summary"), dict) else {}
+            stage_totals = timing_summary.get("stage_totals") if isinstance(timing_summary.get("stage_totals"), dict) else {}
             started = str(run.get("start_time_utc", "-"))[:19]
             model = str(args.get("model", "-"))[:12]
             status = self.normalize_run_status(run)[:14]
@@ -1602,6 +1783,36 @@ class TrainingLauncher(QMainWindow):
             lines.append(
                 f"{started:<22} {model:<12} {status:<14} {progress:<9} "
                 f"{best_eval:<10} {final_test:<10} {eval_name:<6} {batch_size:<6} {lr:<10} {checkpoint_name}"
+            )
+            train_stage = stage_totals.get("train") if isinstance(stage_totals.get("train"), dict) else {}
+            test_stage = stage_totals.get("test") if isinstance(stage_totals.get("test"), dict) else {}
+            train_batches = float(train_stage.get("batches", 0.0)) if isinstance(train_stage.get("batches"), (int, float)) else 0.0
+            test_batches = float(test_stage.get("batches", 0.0)) if isinstance(test_stage.get("batches"), (int, float)) else 0.0
+            train_avg_epoch = (
+                float(train_stage.get("total_seconds", 0.0)) / max(float(self.infer_last_completed_epoch(run)), 1.0)
+                if self.infer_last_completed_epoch(run) > 0 and isinstance(train_stage.get("total_seconds"), (int, float))
+                else None
+            )
+            test_avg_epoch = (
+                float(test_stage.get("total_seconds", 0.0)) / max(float(self.infer_last_completed_epoch(run)), 1.0)
+                if self.infer_last_completed_epoch(run) > 0 and isinstance(test_stage.get("total_seconds"), (int, float))
+                else None
+            )
+            train_avg_batch = (
+                float(train_stage.get("pure_seconds", 0.0)) / train_batches
+                if train_batches > 0 and isinstance(train_stage.get("pure_seconds"), (int, float))
+                else None
+            )
+            test_avg_batch = (
+                float(test_stage.get("pure_seconds", 0.0)) / test_batches
+                if test_batches > 0 and isinstance(test_stage.get("pure_seconds"), (int, float))
+                else None
+            )
+            lines.append(
+                f"  avg_train_time_per_epoch={self.format_metric(train_avg_epoch)}s, "
+                f"avg_test_time_per_epoch={self.format_metric(test_avg_epoch)}s, "
+                f"avg_train_pure_per_batch={self.format_metric(train_avg_batch)}s, "
+                f"avg_test_pure_per_batch={self.format_metric(test_avg_batch)}s"
             )
         return "\n".join(lines)
 
@@ -1744,21 +1955,32 @@ class TrainingLauncher(QMainWindow):
     def refresh_training_log_view(self) -> None:
         if not self.training_log_runs:
             return
-        run_id = self.training_log_run_combo.currentData()
-        selected_run = None
-        for run in self.training_log_runs:
-            if str(run.get("run_id", "")) == str(run_id):
-                selected_run = run
-                break
-        if selected_run is None:
-            selected_run = self.training_log_runs[0]
-
-        status_text = f"Loaded log: {selected_run.get('_log_path', '-')}"
+        selected_runs = self.selected_compare_runs()
+        if selected_runs:
+            selected_run = self.current_selected_compare_run() or selected_runs[0]
+            status_text = f"Selected for plot: {len(selected_runs)} run(s)"
+        else:
+            selected_run = self.current_available_run()
+            if selected_run is None:
+                self.training_log_status_label.setText("Choose a run on the left, then press + Add to plot it.")
+                self.training_log_text.setPlainText("No run selected for details.")
+                self.refresh_training_log_plot()
+                return
+            status_text = f"Previewing available run: {selected_run.get('_log_path', '-')}"
         self.training_log_status_label.setText(status_text)
 
         selected_view = self.training_log_stage_combo.currentText().strip().lower()
-        if selected_view == "compare":
+        if len(selected_runs) >= 2 and selected_view == "summary":
             self.training_log_text.setPlainText(self.render_compare_runs())
+            self.refresh_training_log_plot()
+            return
+        if len(selected_runs) >= 2 and selected_view in {"train", "val", "test"}:
+            blocks: list[str] = []
+            for run in selected_runs:
+                blocks.append(self.run_display_name(run))
+                blocks.append(self.render_stage_epochs(run, selected_view))
+                blocks.append("")
+            self.training_log_text.setPlainText("\n".join(blocks).strip())
             self.refresh_training_log_plot()
             return
         if selected_view == "summary":

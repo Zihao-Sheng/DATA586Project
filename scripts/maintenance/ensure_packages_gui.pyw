@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import subprocess
 import sys
 import threading
@@ -36,7 +37,58 @@ class RequirementsWindow:
         status_label.pack(side=tk.LEFT, padx=(12, 0))
 
         self.process: subprocess.Popen[str] | None = None
+        self.pending_cli_args: list[str] = []
         self.start()
+
+    @staticmethod
+    def detect_installed_torch_variant() -> str | None:
+        try:
+            version = importlib.metadata.version("torch")
+        except importlib.metadata.PackageNotFoundError:
+            return None
+        if "+cu128" in version:
+            return "cu128"
+        if "+cpu" in version:
+            return "cpu"
+        return None
+
+    @staticmethod
+    def has_nvidia_gpu() -> bool:
+        try:
+            completed = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.SubprocessError):
+            return False
+        return completed.returncode == 0 and bool(completed.stdout.strip())
+
+    def choose_torch_install_args(self) -> list[str]:
+        if not self.has_nvidia_gpu():
+            return []
+
+        installed_variant = self.detect_installed_torch_variant()
+        if installed_variant == "cu128":
+            return []
+
+        if installed_variant == "cpu":
+            install_cuda = messagebox.askyesno(
+                "PyTorch CUDA Install",
+                "NVIDIA GPU detected and CPU-only PyTorch is installed.\n\nInstall the CUDA-enabled cu128 build instead?",
+                default=messagebox.YES,
+            )
+            return ["--torch-variant", "cu128", "--yes"] if install_cuda else []
+
+        install_cuda = messagebox.askyesno(
+            "PyTorch CUDA Install",
+            "NVIDIA GPU detected.\n\nInstall the CUDA-enabled cu128 build of PyTorch?",
+            default=messagebox.YES,
+        )
+        if install_cuda:
+            return ["--torch-variant", "cu128", "--yes"]
+        return ["--torch-variant", "cpu", "--yes"]
 
     def append(self, text: str) -> None:
         self.text.configure(state=tk.NORMAL)
@@ -48,6 +100,8 @@ class RequirementsWindow:
         if self.process is not None and self.process.poll() is None:
             return
 
+        self.pending_cli_args = self.choose_torch_install_args()
+
         self.text.configure(state=tk.NORMAL)
         self.text.delete("1.0", tk.END)
         self.text.configure(state=tk.DISABLED)
@@ -58,7 +112,7 @@ class RequirementsWindow:
         thread.start()
 
     def _run_process(self) -> None:
-        command = [sys.executable, str(SCRIPT_PATH)]
+        command = [sys.executable, str(SCRIPT_PATH), *self.pending_cli_args]
         self.process = subprocess.Popen(
             command,
             cwd=str(PROJECT_ROOT),

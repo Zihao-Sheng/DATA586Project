@@ -9,6 +9,11 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REQUIREMENTS = PROJECT_ROOT / "requirements.txt"
+TORCH_FAMILY = {"torch", "torchvision", "torchaudio"}
+TORCH_INDEX_URLS = {
+    "cpu": "https://download.pytorch.org/whl/cpu",
+    "cu128": "https://download.pytorch.org/whl/cu128",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,6 +39,17 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Show what would be installed without running pip.",
+    )
+    parser.add_argument(
+        "--torch-variant",
+        choices=["auto", "cpu", "cu128"],
+        default="auto",
+        help="PyTorch wheel variant to install for torch/torchvision/torchaudio (default: auto).",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Automatically accept install prompts.",
     )
     return parser.parse_args()
 
@@ -82,28 +98,138 @@ def gather_specs(args: argparse.Namespace) -> list[str]:
     return deduped
 
 
-def install_missing_packages(missing_specs: list[str], index_url: str | None, dry_run: bool) -> int:
+def run_install_command(command: list[str], dry_run: bool) -> int:
+    printable = " ".join(f'"{part}"' if " " in part else part for part in command)
+    print(f"Install command: {printable}")
+    if dry_run:
+        print("Dry run enabled, skipping installation.")
+        return 0
+    completed = subprocess.run(command)
+    return completed.returncode
+
+
+def detect_installed_torch_variant() -> str | None:
+    try:
+        version = importlib.metadata.version("torch")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    if "+cu128" in version:
+        return "cu128"
+    if "+cpu" in version:
+        return "cpu"
+    return None
+
+
+def has_nvidia_gpu() -> bool:
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0 and bool(completed.stdout.strip())
+
+
+def choose_torch_variant(requested_variant: str) -> str:
+    if requested_variant != "auto":
+        return requested_variant
+    installed_variant = detect_installed_torch_variant()
+    if installed_variant is not None:
+        return installed_variant
+    return "cu128" if has_nvidia_gpu() else "cpu"
+
+
+def should_prompt_for_cuda_choice(*, interactive: bool, assume_yes: bool) -> bool:
+    return interactive and not assume_yes
+
+
+def ask_yes_no(question: str, default_yes: bool = True) -> bool:
+    prompt = " [Y/n] " if default_yes else " [y/N] "
+    while True:
+        answer = input(question + prompt).strip().lower()
+        if not answer:
+            return default_yes
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"n", "no"}:
+            return False
+        print("Please answer y or n.")
+
+
+def resolve_torch_variant(requested_variant: str, assume_yes: bool) -> str:
+    if requested_variant != "auto":
+        return requested_variant
+
+    installed_variant = detect_installed_torch_variant()
+    gpu_available = has_nvidia_gpu()
+    interactive = sys.stdin.isatty()
+
+    if gpu_available and installed_variant == "cpu" and should_prompt_for_cuda_choice(interactive=interactive, assume_yes=assume_yes):
+        if ask_yes_no("NVIDIA GPU detected and CPU-only PyTorch is installed. Install the CUDA-enabled cu128 build instead?", default_yes=True):
+            return "cu128"
+        return "cpu"
+
+    if gpu_available and installed_variant is None and should_prompt_for_cuda_choice(interactive=interactive, assume_yes=assume_yes):
+        if ask_yes_no("NVIDIA GPU detected. Install the CUDA-enabled cu128 build of PyTorch?", default_yes=True):
+            return "cu128"
+        return "cpu"
+
+    if installed_variant is not None:
+        return installed_variant
+    return "cu128" if gpu_available else "cpu"
+
+
+def install_missing_packages(
+    missing_specs: list[str],
+    *,
+    index_url: str | None,
+    dry_run: bool,
+    torch_variant: str,
+) -> int:
     if not missing_specs:
         print("All requested packages are already installed.")
         return 0
 
-    print("Missing packages:")
+    torch_specs: list[str] = []
+    other_specs: list[str] = []
     for spec in missing_specs:
-        print(f"- {spec}")
+        if distribution_name(spec) in TORCH_FAMILY:
+            torch_specs.append(spec)
+        else:
+            other_specs.append(spec)
 
-    command = [sys.executable, "-m", "pip", "install", *missing_specs]
-    if index_url:
-        command.extend(["--index-url", index_url])
+    if torch_specs:
+        torch_index_url = TORCH_INDEX_URLS[torch_variant]
+        print(f"PyTorch install variant: {torch_variant}")
+        if torch_variant == "cu128":
+            print("Detected or selected NVIDIA/CUDA environment. Installing GPU wheels.")
+        else:
+            print("No NVIDIA/CUDA environment detected. Installing CPU wheels.")
+        print("Missing PyTorch packages:")
+        for spec in torch_specs:
+            print(f"- {spec}")
+        result = run_install_command(
+            [sys.executable, "-m", "pip", "install", *torch_specs, "--index-url", torch_index_url],
+            dry_run,
+        )
+        if result != 0:
+            return result
 
-    printable = " ".join(f'"{part}"' if " " in part else part for part in command)
-    print(f"Install command: {printable}")
+    if other_specs:
+        print("Missing packages:")
+        for spec in other_specs:
+            print(f"- {spec}")
+        command = [sys.executable, "-m", "pip", "install", *other_specs]
+        if index_url:
+            command.extend(["--index-url", index_url])
+        result = run_install_command(command, dry_run)
+        if result != 0:
+            return result
 
-    if dry_run:
-        print("Dry run enabled, skipping installation.")
-        return 0
-
-    completed = subprocess.run(command)
-    return completed.returncode
+    return 0
 
 
 def main() -> None:
@@ -115,15 +241,33 @@ def main() -> None:
         )
 
     missing_specs: list[str] = []
+    requested_torch_specs: list[str] = []
     for spec in specs:
         package_name = distribution_name(spec)
+        if package_name in TORCH_FAMILY:
+            requested_torch_specs.append(spec)
         if is_installed(package_name):
             print(f"[ok] {package_name}")
         else:
             print(f"[missing] {package_name}")
             missing_specs.append(spec)
 
-    raise SystemExit(install_missing_packages(missing_specs, args.index_url, args.dry_run))
+    selected_torch_variant = resolve_torch_variant(args.torch_variant, args.yes)
+    installed_torch_variant = detect_installed_torch_variant()
+    if requested_torch_specs and installed_torch_variant == "cpu" and selected_torch_variant == "cu128":
+        print("[upgrade] CPU-only PyTorch detected; CUDA-enabled cu128 build selected.")
+        for spec in requested_torch_specs:
+            if spec not in missing_specs:
+                missing_specs.append(spec)
+
+    raise SystemExit(
+        install_missing_packages(
+            missing_specs,
+            index_url=args.index_url,
+            dry_run=args.dry_run,
+            torch_variant=selected_torch_variant,
+        )
+    )
 
 
 if __name__ == "__main__":
