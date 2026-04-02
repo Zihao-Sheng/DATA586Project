@@ -131,12 +131,23 @@ def parse_args() -> argparse.Namespace:
         default=42,
         help="Random seed used for train/validation splitting.",
     )
+    parser.add_argument(
+        "--stop-file",
+        type=Path,
+        default=None,
+        help="Optional stop-request file used for graceful termination from the GUI.",
+    )
     parser.set_defaults(freeze_backbone=True)
     return parser.parse_args()
 
 
 def now_iso_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def check_stop_requested(stop_file: Path | None) -> None:
+    if stop_file is not None and stop_file.exists():
+        raise KeyboardInterrupt
 
 
 def file_signature(path: Path) -> dict[str, int | bool]:
@@ -148,6 +159,12 @@ def file_signature(path: Path) -> dict[str, int | bool]:
         "size": int(stat.st_size),
         "mtime_ns": int(stat.st_mtime_ns),
     }
+
+
+def count_parameters(model: nn.Module) -> tuple[int, int]:
+    total_params = sum(param.numel() for param in model.parameters())
+    trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    return total_params, trainable_params
 
 
 class TrainingRunLogger:
@@ -166,6 +183,12 @@ class TrainingRunLogger:
         train_batches: int,
         eval_batches: int,
         test_batches: int,
+        train_examples: int,
+        eval_examples: int,
+        test_examples: int,
+        num_classes: int,
+        total_params: int,
+        trainable_params: int,
     ) -> None:
         run_logs_dir = checkpoint_dir / RUN_LOG_DIRNAME
         run_logs_dir.mkdir(parents=True, exist_ok=True)
@@ -173,12 +196,13 @@ class TrainingRunLogger:
         self.path = run_logs_dir / f"{run_id}.json"
         self._finalized = False
         self.data: dict[str, object] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": run_id,
             "status": "running",
             "start_time_utc": now_iso_utc(),
             "end_time_utc": None,
             "error_message": None,
+            "status_reason": None,
             "command": " ".join(sys.argv),
             "args": {
                 "model": model_name,
@@ -197,6 +221,25 @@ class TrainingRunLogger:
                 "validation_proportion": float(args.validation_proportion),
                 "resume": str(args.resume.expanduser().resolve()) if args.resume is not None else None,
             },
+            "dataset": {
+                "num_classes": int(num_classes),
+                "class_count_from_mapping": int(num_classes),
+                "train_examples": int(train_examples),
+                "eval_examples": int(eval_examples),
+                "test_examples": int(test_examples),
+                "eval_name": eval_name,
+                "use_validation_split": bool(args.use_validation_split),
+                "validation_proportion": float(args.validation_proportion),
+            },
+            "model": {
+                "name": model_name,
+                "total_params": int(total_params),
+                "trainable_params": int(trainable_params),
+                "frozen_params": int(total_params - trainable_params),
+                "checkpoint_dir": str(checkpoint_dir),
+                "best_checkpoint_path": str(best_checkpoint_path),
+                "last_checkpoint_path": str(last_checkpoint_path),
+            },
             "expected": {
                 "train_batches_per_epoch": int(train_batches),
                 f"{eval_name}_batches_per_epoch": int(eval_batches),
@@ -204,6 +247,15 @@ class TrainingRunLogger:
             },
             "epochs": [],
             "final_test": None,
+            "summary": {
+                "best_eval_acc": None,
+                "best_eval_epoch": None,
+                "last_completed_epoch": int(start_epoch),
+                "last_eval_acc": None,
+                "last_eval_loss": None,
+                "final_test_acc": None,
+                "final_test_loss": None,
+            },
             "timing_summary": None,
             "artifacts": {
                 "best_checkpoint": {
@@ -236,6 +288,9 @@ class TrainingRunLogger:
         eval_loss: float,
         eval_acc: float,
         eval_timing: dict[str, float],
+        lr: float,
+        best_acc_after_epoch: float,
+        is_best_checkpoint: bool,
     ) -> None:
         epochs = self.data["epochs"]
         assert isinstance(epochs, list)
@@ -252,8 +307,20 @@ class TrainingRunLogger:
                     "acc": float(eval_acc),
                     "timing": eval_timing,
                 },
+                "lr": float(lr),
+                "best_eval_acc_after_epoch": float(best_acc_after_epoch),
+                "is_best_checkpoint": bool(is_best_checkpoint),
             }
         )
+        summary = self.data["summary"]
+        assert isinstance(summary, dict)
+        summary["last_completed_epoch"] = int(epoch)
+        summary["last_eval_acc"] = float(eval_acc)
+        summary["last_eval_loss"] = float(eval_loss)
+        if summary.get("best_eval_acc") is None or float(best_acc_after_epoch) >= float(summary.get("best_eval_acc")):
+            summary["best_eval_acc"] = float(best_acc_after_epoch)
+            if is_best_checkpoint:
+                summary["best_eval_epoch"] = int(epoch)
         self.write()
 
     def mark_best_checkpoint(self, *, epoch: int, best_acc: float, path: Path) -> None:
@@ -280,6 +347,10 @@ class TrainingRunLogger:
             "acc": float(acc),
             "timing": timing,
         }
+        summary = self.data["summary"]
+        assert isinstance(summary, dict)
+        summary["final_test_loss"] = float(loss)
+        summary["final_test_acc"] = float(acc)
         self.write()
 
     def finalize(
@@ -291,10 +362,12 @@ class TrainingRunLogger:
         pure_execution_total: float,
         init_and_overhead: float,
         error_message: str | None = None,
+        status_reason: str | None = None,
     ) -> None:
         self.data["status"] = status
         self.data["end_time_utc"] = now_iso_utc()
         self.data["error_message"] = error_message
+        self.data["status_reason"] = status_reason
         self.data["timing_summary"] = {
             "total_wall_time_seconds": float(wall_total_elapsed),
             "total_pure_execution_time_seconds": float(pure_execution_total),
@@ -317,6 +390,7 @@ def main() -> None:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     best_checkpoint_path = checkpoint_dir / "best.pth"
     last_checkpoint_path = checkpoint_dir / "last.pth"
+    stop_file = args.stop_file.expanduser().resolve() if args.stop_file is not None else None
     start_epoch = 0
 
     data_root = args.data_root.expanduser().resolve()
@@ -340,12 +414,25 @@ def main() -> None:
         device=device,
     )
     optimizer = model_module.build_optimizer(model, lr=args.lr)
+    total_params, trainable_params = count_parameters(model)
+    train_examples = len(train_loader.dataset)
+    eval_examples = len(eval_loader.dataset)
+    test_examples = len(test_loader.dataset)
 
     print(f"device: {device}")
     print(f"model: {args.model}")
     print(f"data_root: {data_root}")
     print(f"checkpoint_dir: {checkpoint_dir}")
+    print(f"stop_file: {stop_file}" if stop_file is not None else "stop_file: None")
     print(f"num_classes: {num_classes}")
+    print(
+        f"train_examples: {train_examples}, eval_examples: {eval_examples}, "
+        f"test_examples: {test_examples}"
+    )
+    print(
+        f"total_params: {total_params}, trainable_params: {trainable_params}, "
+        f"frozen_params: {total_params - trainable_params}"
+    )
     print(
         f"epochs: {args.epochs}, batch_size: {args.batch_size}, "
         f"num_workers: {args.num_workers}, image_size: {args.image_size}, lr: {args.lr}"
@@ -389,12 +476,19 @@ def main() -> None:
         train_batches=len(train_loader),
         eval_batches=len(eval_loader),
         test_batches=len(test_loader),
+        train_examples=train_examples,
+        eval_examples=eval_examples,
+        test_examples=test_examples,
+        num_classes=num_classes,
+        total_params=total_params,
+        trainable_params=trainable_params,
     )
 
     final_test_loss: float | None = None
     final_test_acc: float | None = None
     try:
         for epoch in range(start_epoch, num_epochs):
+            check_stop_requested(stop_file)
             train_loss, train_acc, train_timing = train_one_epoch(
                 model,
                 train_loader,
@@ -404,6 +498,7 @@ def main() -> None:
                 epoch=epoch + 1,
                 num_epochs=num_epochs,
                 progress_format=args.progress_format,
+                stop_file=stop_file,
             )
             eval_loss, eval_acc, eval_timing = evaluate(
                 model,
@@ -414,6 +509,7 @@ def main() -> None:
                 num_epochs=num_epochs,
                 progress_format=args.progress_format,
                 stage_name=eval_name,
+                stop_file=stop_file,
             )
 
             stage_totals["train"]["total_seconds"] += train_timing["total_seconds"]
@@ -428,18 +524,8 @@ def main() -> None:
             fcn_history[f"{eval_name}_loss"].append(eval_loss)
             fcn_history[f"{eval_name}_acc"].append(eval_acc)
 
-            run_logger.append_epoch(
-                epoch=epoch + 1,
-                train_loss=train_loss,
-                train_acc=train_acc,
-                train_timing=train_timing,
-                eval_name=eval_name,
-                eval_loss=eval_loss,
-                eval_acc=eval_acc,
-                eval_timing=eval_timing,
-            )
-
-            if eval_acc > best_acc:
+            is_best_checkpoint = eval_acc > best_acc
+            if is_best_checkpoint:
                 best_acc = eval_acc
                 torch.save(
                     {
@@ -456,6 +542,20 @@ def main() -> None:
                     best_checkpoint_path,
                 )
                 run_logger.mark_best_checkpoint(epoch=epoch + 1, best_acc=best_acc, path=best_checkpoint_path)
+            current_lr = float(optimizer.param_groups[0]["lr"]) if optimizer.param_groups else float(args.lr)
+            run_logger.append_epoch(
+                epoch=epoch + 1,
+                train_loss=train_loss,
+                train_acc=train_acc,
+                train_timing=train_timing,
+                eval_name=eval_name,
+                eval_loss=eval_loss,
+                eval_acc=eval_acc,
+                eval_timing=eval_timing,
+                lr=current_lr,
+                best_acc_after_epoch=best_acc,
+                is_best_checkpoint=is_best_checkpoint,
+            )
 
             train_avg_pure_per_batch = train_timing["pure_seconds"] / max(train_timing["batches"], 1)
             eval_avg_pure_per_batch = eval_timing["pure_seconds"] / max(eval_timing["batches"], 1)
@@ -479,6 +579,7 @@ def main() -> None:
                 device,
                 progress_format=args.progress_format,
                 stage_name="test",
+                stop_file=stop_file,
             )
             stage_totals["test"]["total_seconds"] += test_timing["total_seconds"]
             stage_totals["test"]["pure_seconds"] += test_timing["pure_seconds"]
@@ -540,6 +641,7 @@ def main() -> None:
             wall_total_elapsed=wall_total_elapsed,
             pure_execution_total=pure_execution_total,
             init_and_overhead=init_and_overhead,
+            status_reason="completed_normally",
         )
     except KeyboardInterrupt:
         print("\nTraining interrupted by user.")
@@ -557,6 +659,7 @@ def main() -> None:
             pure_execution_total=pure_execution_total,
             init_and_overhead=init_and_overhead,
             error_message="KeyboardInterrupt",
+            status_reason="graceful_stop_requested" if stop_file is not None and stop_file.exists() else "keyboard_interrupt",
         )
         raise SystemExit(130)
     except Exception as exc:
@@ -574,6 +677,7 @@ def main() -> None:
             pure_execution_total=pure_execution_total,
             init_and_overhead=init_and_overhead,
             error_message=f"{type(exc).__name__}: {exc}",
+            status_reason=type(exc).__name__,
         )
         raise
         
@@ -610,6 +714,7 @@ def train_one_epoch(
     epoch: int | None = None,
     num_epochs: int | None = None,
     progress_format: str = "tqdm",
+    stop_file: Path | None = None,
 ):
     stage_total_start = time.perf_counter()
     model.train()
@@ -623,6 +728,7 @@ def train_one_epoch(
 
     pure_start = time.perf_counter()
     for step_idx, (images, labels) in enumerate(iterator, start=1):
+        check_stop_requested(stop_file)
         images = images.to(device)
         labels = labels.to(device)
         optimizer.zero_grad()
@@ -672,6 +778,7 @@ def evaluate(
     num_epochs: int | None = None,
     progress_format: str = "tqdm",
     stage_name: str = "eval",
+    stop_file: Path | None = None,
 ):
     stage_total_start = time.perf_counter()
     model.eval()
@@ -686,6 +793,7 @@ def evaluate(
     pure_start = time.perf_counter()
     with torch.no_grad():
         for step_idx, (images, labels) in enumerate(iterator, start=1):
+            check_stop_requested(stop_file)
             images = images.to(device)
             labels = labels.to(device)
 

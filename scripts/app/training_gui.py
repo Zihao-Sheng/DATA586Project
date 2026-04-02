@@ -6,8 +6,8 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QIcon, QPixmap, QTextCursor
+from PySide6.QtCore import QObject, QPointF, QProcess, QRectF, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -59,6 +59,159 @@ LR_LOADFROMFILE = 0x00000010
 LR_DEFAULTSIZE = 0x00000040
 NEW_CHECKPOINT_NAME_LABEL = "New checkpoint name..."
 RUN_LOG_DIRNAME = "_run_logs"
+APP_STYLESHEET = """
+QMainWindow, QWidget {
+    background: #17191d;
+    color: #eef2f7;
+    font-family: "Segoe UI";
+    font-size: 10.5pt;
+}
+QTabWidget::pane {
+    border: 1px solid #2e3642;
+    border-radius: 14px;
+    background: #1d2128;
+    top: -1px;
+}
+QTabBar::tab {
+    background: #20252d;
+    color: #aeb8c6;
+    border: 1px solid #303846;
+    border-bottom: none;
+    padding: 8px 16px;
+    margin-right: 6px;
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+    min-width: 90px;
+}
+QTabBar::tab:selected {
+    background: #2c6df2;
+    color: #ffffff;
+}
+QTabBar::tab:hover:!selected {
+    background: #27303b;
+    color: #edf3ff;
+}
+QGroupBox {
+    background: #1f242c;
+    border: 1px solid #313a47;
+    border-radius: 14px;
+    margin-top: 14px;
+    padding: 12px 14px 14px 14px;
+    font-weight: 600;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 6px;
+    color: #f8fbff;
+}
+QLabel {
+    color: #e8edf5;
+}
+QLabel[muted="true"] {
+    color: #9ca8b8;
+}
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QListWidget {
+    background: #14181e;
+    color: #eff4fb;
+    border: 1px solid #364152;
+    border-radius: 10px;
+    padding: 7px 10px;
+    selection-background-color: #2c6df2;
+    selection-color: #ffffff;
+}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus, QListWidget:focus {
+    border: 1px solid #4e8cff;
+}
+QComboBox::drop-down, QSpinBox::down-button, QSpinBox::up-button, QDoubleSpinBox::down-button, QDoubleSpinBox::up-button {
+    border: none;
+    width: 22px;
+}
+QPushButton {
+    background: #2c6df2;
+    color: white;
+    border: none;
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-weight: 600;
+}
+QPushButton:hover {
+    background: #3b7bfd;
+}
+QPushButton:pressed {
+    background: #2258c5;
+}
+QPushButton:disabled {
+    background: #2a3039;
+    color: #748092;
+}
+QCheckBox {
+    spacing: 8px;
+}
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    border: 1px solid #485364;
+    background: #14181e;
+}
+QCheckBox::indicator:checked {
+    background: #2c6df2;
+    border: 1px solid #2c6df2;
+}
+QProgressBar {
+    border: 1px solid #364152;
+    border-radius: 9px;
+    background: #12161b;
+    text-align: center;
+    min-height: 18px;
+    color: #f5f8ff;
+}
+QProgressBar::chunk {
+    background: #2c6df2;
+    border-radius: 8px;
+}
+QScrollBar:vertical {
+    background: #171b21;
+    width: 12px;
+    margin: 8px 0 8px 0;
+}
+QScrollBar::handle:vertical {
+    background: #3a4454;
+    min-height: 28px;
+    border-radius: 6px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+QListWidget::item {
+    border-radius: 10px;
+    padding: 6px;
+}
+QListWidget::item:selected {
+    background: #243a64;
+    border: 1px solid #4e8cff;
+}
+QPlainTextEdit {
+    background: #11151a;
+    font-family: "Cascadia Code";
+    font-size: 10pt;
+}
+QLabel#ImagePreview {
+    border: 1px solid #364152;
+    border-radius: 16px;
+    background: #11151a;
+    color: #93a0b2;
+}
+QLabel#SectionStatus {
+    background: #202832;
+    border: 1px solid #354050;
+    border-radius: 10px;
+    padding: 6px 10px;
+    color: #f0f4fa;
+    font-weight: 600;
+}
+"""
 
 
 def set_windows_app_id() -> None:
@@ -90,11 +243,171 @@ def apply_windows_taskbar_icon(window: QMainWindow) -> None:
         pass
 
 
+class LogPlotWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setMinimumHeight(320)
+        self.plot_title = "Run Plot"
+        self.x_label = "Epoch"
+        self.y_label = "Value"
+        self.note = ""
+        self.series: list[dict] = []
+
+    def set_plot(
+        self,
+        *,
+        title: str,
+        x_label: str,
+        y_label: str,
+        series: list[dict],
+        note: str = "",
+    ) -> None:
+        self.plot_title = title
+        self.x_label = x_label
+        self.y_label = y_label
+        self.series = series
+        self.note = note
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#11151a"))
+
+        outer_rect = self.rect().adjusted(6, 6, -6, -6)
+        painter.setPen(QPen(QColor("#313a47"), 1))
+        painter.setBrush(QColor("#11151a"))
+        painter.drawRoundedRect(outer_rect, 14, 14)
+
+        title_rect = QRectF(outer_rect.left() + 16, outer_rect.top() + 12, outer_rect.width() - 32, 24)
+        painter.setPen(QColor("#eef4fb"))
+        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, self.plot_title)
+
+        note_height = 18 if self.note else 0
+        plot_rect = QRectF(
+            outer_rect.left() + 58,
+            outer_rect.top() + 56,
+            max(outer_rect.width() - 84, 10),
+            max(outer_rect.height() - 110 - note_height, 10),
+        )
+
+        if not self.series or not any(series.get("points") for series in self.series):
+            painter.setPen(QColor("#93a0b2"))
+            painter.drawText(plot_rect, Qt.AlignCenter, self.note or "No plot data available for this selection.")
+            return
+
+        x_values = [float(x) for series in self.series for x, _ in series.get("points", [])]
+        y_values = [float(y) for series in self.series for _, y in series.get("points", [])]
+        x_min = min(x_values) if x_values else 1.0
+        x_max = max(x_values) if x_values else 1.0
+        y_min = min(y_values) if y_values else 0.0
+        y_max = max(y_values) if y_values else 1.0
+
+        if x_min == x_max:
+            x_min -= 0.5
+            x_max += 0.5
+        if y_min == y_max:
+            pad = 0.1 if y_max == 0 else abs(y_max) * 0.1
+            y_min -= pad
+            y_max += pad
+        else:
+            pad = (y_max - y_min) * 0.08
+            y_min -= pad
+            y_max += pad
+
+        grid_pen = QPen(QColor("#28303b"), 1)
+        axis_pen = QPen(QColor("#556070"), 1.3)
+        label_pen = QPen(QColor("#aeb8c6"), 1)
+
+        for tick in range(5):
+            fraction = tick / 4 if 4 > 0 else 0
+            y = plot_rect.bottom() - fraction * plot_rect.height()
+            painter.setPen(grid_pen)
+            painter.drawLine(plot_rect.left(), y, plot_rect.right(), y)
+            tick_value = y_min + fraction * (y_max - y_min)
+            painter.setPen(label_pen)
+            painter.drawText(QRectF(plot_rect.left() - 52, y - 10, 46, 20), Qt.AlignRight | Qt.AlignVCenter, f"{tick_value:.3g}")
+
+        x_tick_count = min(6, max(2, int(x_max - x_min) + 1))
+        for tick in range(x_tick_count):
+            fraction = tick / (x_tick_count - 1) if x_tick_count > 1 else 0
+            x = plot_rect.left() + fraction * plot_rect.width()
+            painter.setPen(grid_pen)
+            painter.drawLine(x, plot_rect.top(), x, plot_rect.bottom())
+            tick_value = x_min + fraction * (x_max - x_min)
+            painter.setPen(label_pen)
+            painter.drawText(QRectF(x - 20, plot_rect.bottom() + 6, 40, 18), Qt.AlignHCenter | Qt.AlignTop, f"{tick_value:.0f}")
+
+        painter.setPen(axis_pen)
+        painter.drawLine(plot_rect.left(), plot_rect.bottom(), plot_rect.right(), plot_rect.bottom())
+        painter.drawLine(plot_rect.left(), plot_rect.top(), plot_rect.left(), plot_rect.bottom())
+
+        def map_point(x_value: float, y_value: float) -> QPointF:
+            x_ratio = (x_value - x_min) / (x_max - x_min)
+            y_ratio = (y_value - y_min) / (y_max - y_min)
+            return QPointF(
+                plot_rect.left() + x_ratio * plot_rect.width(),
+                plot_rect.bottom() - y_ratio * plot_rect.height(),
+            )
+
+        for series in self.series:
+            points = [(float(x), float(y)) for x, y in series.get("points", [])]
+            if not points:
+                continue
+            color = QColor(series.get("color", "#4e8cff"))
+            pen = QPen(color, 2.2)
+            painter.setPen(pen)
+            mapped_points = [map_point(x_value, y_value) for x_value, y_value in points]
+            for point_index in range(len(mapped_points) - 1):
+                painter.drawLine(mapped_points[point_index], mapped_points[point_index + 1])
+            painter.setBrush(color)
+            for point in mapped_points:
+                painter.drawEllipse(point, 3.2, 3.2)
+
+        painter.setPen(QColor("#aeb8c6"))
+        painter.drawText(QRectF(plot_rect.left(), plot_rect.bottom() + 24, plot_rect.width(), 20), Qt.AlignCenter, self.x_label)
+
+        painter.save()
+        painter.translate(plot_rect.left() - 48, plot_rect.center().y())
+        painter.rotate(-90)
+        painter.drawText(QRectF(-plot_rect.height() / 2, -16, plot_rect.height(), 20), Qt.AlignCenter, self.y_label)
+        painter.restore()
+
+        metrics = QFontMetrics(painter.font())
+        legend_x = plot_rect.left()
+        legend_y = outer_rect.top() + 32
+        max_legend_width = plot_rect.width()
+        row_height = 18
+        current_x = legend_x
+        current_y = legend_y
+        for series in self.series:
+            label = str(series.get("label", "series"))
+            color = QColor(series.get("color", "#4e8cff"))
+            item_width = 18 + metrics.horizontalAdvance(label) + 18
+            if current_x + item_width > legend_x + max_legend_width:
+                current_x = legend_x
+                current_y += row_height
+            painter.setPen(QPen(color, 5))
+            painter.drawLine(current_x, current_y + 8, current_x + 12, current_y + 8)
+            painter.setPen(QColor("#dfe7f3"))
+            painter.drawText(QRectF(current_x + 16, current_y, item_width - 16, row_height), Qt.AlignLeft | Qt.AlignVCenter, label)
+            current_x += item_width
+
+        if self.note:
+            painter.setPen(QColor("#93a0b2"))
+            painter.drawText(
+                QRectF(plot_rect.left(), outer_rect.bottom() - 28, plot_rect.width(), 20),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                self.note,
+            )
+
+
 class TrainingLauncher(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Training Launcher")
         self.resize(1080, 820)
+        self.setMinimumSize(920, 680)
         if APP_ICON_PATH.is_file():
             self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
 
@@ -132,12 +445,14 @@ class TrainingLauncher(QMainWindow):
         self._checkpoint_name_locked_to_model = True
         self._last_training_model_name = self.available_models[0] if self.available_models else ""
         self._last_predict_model_name = self.available_models[0] if self.available_models else ""
+        self._stop_request_path: Path | None = None
 
         self._init_data_controls()
         self._init_training_controls()
         self._init_prediction_controls()
         self._init_log_controls()
         self._build_ui()
+        self.apply_visual_design()
         self.refresh_command_preview()
         self.refresh_predict_page()
         self.on_predict_compact_toggled(self.predict_compact_checkbox.isChecked())
@@ -215,9 +530,11 @@ class TrainingLauncher(QMainWindow):
         self.output_text = QPlainTextEdit()
         self.output_text.setReadOnly(True)
         self.output_text.setMaximumHeight(170)
+        self.output_text.setPlaceholderText("Training logs and launch details will appear here.")
 
         self.progress_label = QLabel("Progress will appear here after training starts.")
         self.progress_label.setWordWrap(True)
+        self.progress_label.setProperty("muted", True)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -232,6 +549,7 @@ class TrainingLauncher(QMainWindow):
         self.stop_button.clicked.connect(self.stop_training)
 
         self.status_label = QLabel("Idle")
+        self.status_label.setObjectName("SectionStatus")
 
     def _init_data_controls(self) -> None:
         self.data_dir_label = QLabel(str(DEFAULT_DATA_DIR))
@@ -253,6 +571,7 @@ class TrainingLauncher(QMainWindow):
 
         self.data_status_label = QLabel("Idle")
         self.data_status_label.setWordWrap(True)
+        self.data_status_label.setObjectName("SectionStatus")
 
         self.data_task_value_label = QLabel("Idle")
         self.data_task_value_label.setWordWrap(True)
@@ -269,6 +588,7 @@ class TrainingLauncher(QMainWindow):
 
         self.data_progress_label = QLabel("Dataset status will appear here.")
         self.data_progress_label.setWordWrap(True)
+        self.data_progress_label.setProperty("muted", True)
 
         self.data_progress_bar = QProgressBar()
         self.data_progress_bar.setRange(0, 100)
@@ -278,6 +598,7 @@ class TrainingLauncher(QMainWindow):
         self.data_output_text = QPlainTextEdit()
         self.data_output_text.setReadOnly(True)
         self.data_output_text.setMaximumHeight(220)
+        self.data_output_text.setPlaceholderText("Dataset checks, downloads, and extraction details will appear here.")
 
     def _init_prediction_controls(self) -> None:
         self.predict_model_combo = QComboBox()
@@ -315,9 +636,11 @@ class TrainingLauncher(QMainWindow):
 
         self.predict_selected_label = QLabel("No images selected.")
         self.predict_selected_label.setWordWrap(True)
+        self.predict_selected_label.setProperty("muted", True)
 
         self.predict_status_label = QLabel("Ready.")
         self.predict_status_label.setWordWrap(True)
+        self.predict_status_label.setObjectName("SectionStatus")
 
         self.predict_progress_bar = QProgressBar()
         self.predict_progress_bar.setRange(0, 100)
@@ -325,13 +648,12 @@ class TrainingLauncher(QMainWindow):
         self.predict_progress_bar.setFormat("%p%")
 
         self.predict_page_label = QLabel("0 / 0")
+        self.predict_page_label.setProperty("muted", True)
 
         self.predict_image_label = QLabel("Select images and click Predict.")
+        self.predict_image_label.setObjectName("ImagePreview")
         self.predict_image_label.setAlignment(Qt.AlignCenter)
         self.predict_image_label.setMinimumHeight(420)
-        self.predict_image_label.setStyleSheet(
-            "QLabel { border: 1px solid #4a4a4a; background: #1f1f1f; color: #d0d0d0; }"
-        )
 
         self.predict_result_label = QLabel("Prediction result will appear here.")
         self.predict_result_label.setWordWrap(True)
@@ -372,7 +694,7 @@ class TrainingLauncher(QMainWindow):
         self.training_log_run_combo.currentIndexChanged.connect(self.on_training_log_run_changed)
 
         self.training_log_stage_combo = QComboBox()
-        self.training_log_stage_combo.addItems(["Summary", "Train", "Val", "Test"])
+        self.training_log_stage_combo.addItems(["Summary", "Compare", "Train", "Val", "Test"])
         self.training_log_stage_combo.currentIndexChanged.connect(self.refresh_training_log_view)
 
         self.training_log_refresh_button = QPushButton("Refresh Logs")
@@ -380,13 +702,33 @@ class TrainingLauncher(QMainWindow):
 
         self.training_log_status_label = QLabel("No training logs loaded.")
         self.training_log_status_label.setWordWrap(True)
+        self.training_log_status_label.setObjectName("SectionStatus")
+
+        self.training_plot_mode_combo = QComboBox()
+        self.training_plot_mode_combo.addItems(
+            ["Selected Run Accuracy", "Selected Run Timing", "Compare Accuracy", "Compare Timing"]
+        )
+        self.training_plot_mode_combo.currentIndexChanged.connect(self.refresh_training_log_plot)
+
+        self.training_plot_stage_combo = QComboBox()
+        self.training_plot_stage_combo.addItems(["All / Auto", "Train", "Val", "Test"])
+        self.training_plot_stage_combo.currentIndexChanged.connect(self.refresh_training_log_plot)
+
+        self.training_plot_timing_combo = QComboBox()
+        self.training_plot_timing_combo.addItems(["Total Time", "Pure Time", "Avg Pure / Batch"])
+        self.training_plot_timing_combo.currentIndexChanged.connect(self.refresh_training_log_plot)
+
+        self.training_plot_widget = LogPlotWidget()
 
         self.training_log_text = QPlainTextEdit()
         self.training_log_text.setReadOnly(True)
+        self.training_log_text.setPlaceholderText("Training run summaries and stage details will appear here.")
 
     def _build_ui(self) -> None:
-        tabs = QTabWidget(self)
-        self.setCentralWidget(tabs)
+        self.tabs = QTabWidget(self)
+        self.tabs.setDocumentMode(True)
+        self.tabs.setUsesScrollButtons(False)
+        self.setCentralWidget(self.tabs)
 
         data_tab = QWidget()
         data_layout = QVBoxLayout(data_tab)
@@ -508,21 +850,33 @@ class TrainingLauncher(QMainWindow):
         logs_controls_form.addRow("View", self.training_log_stage_combo)
         logs_layout.addWidget(logs_controls_group)
 
+        logs_plot_group = QGroupBox("Plot")
+        logs_plot_form = QFormLayout(logs_plot_group)
+        logs_plot_form.addRow("Mode", self.training_plot_mode_combo)
+        logs_plot_form.addRow("Stage", self.training_plot_stage_combo)
+        logs_plot_form.addRow("Timing Metric", self.training_plot_timing_combo)
+        logs_layout.addWidget(logs_plot_group)
+
         logs_actions = QHBoxLayout()
         logs_actions.addWidget(self.training_log_refresh_button)
         logs_actions.addWidget(self.training_log_status_label, stretch=1)
         logs_layout.addLayout(logs_actions)
+
+        logs_plot_canvas_group = QGroupBox("Run Plot")
+        logs_plot_canvas_layout = QVBoxLayout(logs_plot_canvas_group)
+        logs_plot_canvas_layout.addWidget(self.training_plot_widget)
+        logs_layout.addWidget(logs_plot_canvas_group)
 
         logs_output_group = QGroupBox("Training Run Details")
         logs_output_layout = QVBoxLayout(logs_output_group)
         logs_output_layout.addWidget(self.training_log_text)
         logs_layout.addWidget(logs_output_group, stretch=1)
 
-        tabs.addTab(training_tab, "Training")
-        tabs.addTab(predict_tab, "Predicting")
-        tabs.addTab(data_tab, "Data")
-        tabs.addTab(logs_tab, "Logs")
-        tabs.setCurrentIndex(0)
+        self.tabs.addTab(training_tab, "Training")
+        self.tabs.addTab(predict_tab, "Predicting")
+        self.tabs.addTab(data_tab, "Data")
+        self.tabs.addTab(logs_tab, "Logs")
+        self.tabs.setCurrentIndex(0)
 
         self.model_combo.currentTextChanged.connect(self.on_training_model_changed)
         self.device_combo.currentTextChanged.connect(self.refresh_command_preview)
@@ -541,6 +895,28 @@ class TrainingLauncher(QMainWindow):
         self.on_validation_toggled(self.validation_checkbox.isChecked())
         self.on_resume_toggled(self.resume_checkbox.isChecked())
         self.on_training_model_changed(self.model_combo.currentText())
+
+    def apply_visual_design(self) -> None:
+        self.setStyleSheet(APP_STYLESHEET)
+        self._set_layout_metrics(self.centralWidget().layout() if self.centralWidget() is not None else None)
+
+    def _set_layout_metrics(self, layout) -> None:
+        if layout is None:
+            return
+        if isinstance(layout, QFormLayout):
+            layout.setHorizontalSpacing(16)
+            layout.setVerticalSpacing(12)
+        else:
+            layout.setSpacing(12)
+        layout.setContentsMargins(14, 14, 14, 14)
+        for index in range(layout.count()):
+            item = layout.itemAt(index)
+            child_layout = item.layout()
+            if child_layout is not None:
+                self._set_layout_metrics(child_layout)
+            child_widget = item.widget()
+            if child_widget is not None and child_widget.layout() is not None:
+                self._set_layout_metrics(child_widget.layout())
 
     def build_command(self) -> list[str]:
         checkpoint_dir = self.selected_checkpoint_dir()
@@ -565,6 +941,8 @@ class TrainingLauncher(QMainWindow):
             format(self.lr_spin.value(), ".6f"),
             "--progress-format",
             "gui",
+            "--stop-file",
+            str(self.stop_request_path_for(checkpoint_dir)),
         ]
 
         device = self.device_combo.currentText()
@@ -621,6 +999,14 @@ class TrainingLauncher(QMainWindow):
     def selected_checkpoint_dir(self) -> Path:
         checkpoint_name = self.checkpoint_output_name() or self.model_combo.currentText()
         return DEFAULT_CHECKPOINT_DIR / checkpoint_name
+
+    def stop_request_path_for(self, checkpoint_dir: Path | None = None) -> Path:
+        target_dir = checkpoint_dir if checkpoint_dir is not None else self.selected_checkpoint_dir()
+        return target_dir / ".stop_requested"
+
+    def clear_stop_request_file(self) -> None:
+        if self._stop_request_path is not None and self._stop_request_path.exists():
+            self._stop_request_path.unlink()
 
     def refresh_checkpoint_output_options(self, preserve_text: str | None = None) -> None:
         if preserve_text is None:
@@ -825,6 +1211,10 @@ class TrainingLauncher(QMainWindow):
         if not checkpoint_name:
             QMessageBox.warning(self, "Checkpoint Name Required", "Choose or enter a checkpoint output folder name.")
             return
+        checkpoint_dir = self.selected_checkpoint_dir()
+        self._stop_request_path = self.stop_request_path_for(checkpoint_dir)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.clear_stop_request_file()
 
         self.output_text.clear()
         self._committed_output = ""
@@ -909,15 +1299,25 @@ class TrainingLauncher(QMainWindow):
                 "Start training once to create logs."
             )
             self.training_log_text.setPlainText("")
+            self.training_plot_widget.set_plot(
+                title="Run Plot",
+                x_label="Epoch",
+                y_label="Value",
+                series=[],
+                note="No run logs available yet.",
+            )
             return
 
         selected_index = 0
         for index, run in enumerate(self.training_log_runs):
             run_id = str(run.get("run_id", "unknown"))
-            model_name = str(((run.get("args") or {}) if isinstance(run.get("args"), dict) else {}).get("model", "unknown"))
+            args = (run.get("args") or {}) if isinstance(run.get("args"), dict) else {}
+            model_name = str(args.get("model", "unknown"))
             status = str(run.get("status", "unknown"))
             started = str(run.get("start_time_utc", "unknown"))
-            label = f"{started} | {model_name} | {status} | {run_id}"
+            best_eval = self.format_metric(self.infer_best_eval_acc(run))
+            final_test = self.format_metric(((run.get("summary") or {}) if isinstance(run.get("summary"), dict) else {}).get("final_test_acc"))
+            label = f"{started} | {model_name} | {status} | best={best_eval} | final_test={final_test} | {run_id}"
             self.training_log_run_combo.addItem(label, run_id)
             if previous_run_id is not None and run_id == previous_run_id:
                 selected_index = index
@@ -965,10 +1365,253 @@ class TrainingLauncher(QMainWindow):
             return "incomplete_or_interrupted"
         return status
 
+    @staticmethod
+    def safe_float(value) -> float | None:
+        if isinstance(value, (int, float)):
+            return float(value)
+        return None
+
+    @staticmethod
+    def format_metric(value) -> str:
+        numeric = TrainingLauncher.safe_float(value)
+        return f"{numeric:.4f}" if numeric is not None else "-"
+
+    @staticmethod
+    def format_ratio(numerator, denominator) -> str:
+        left = int(numerator) if isinstance(numerator, (int, float)) else 0
+        right = int(denominator) if isinstance(denominator, (int, float)) else 0
+        return f"{left}/{right}" if right > 0 else str(left)
+
+    @staticmethod
+    def infer_last_completed_epoch(run: dict) -> int:
+        summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+        if isinstance(summary.get("last_completed_epoch"), (int, float)):
+            return int(summary["last_completed_epoch"])
+        epochs = run.get("epochs") if isinstance(run.get("epochs"), list) else []
+        return len(epochs)
+
+    @staticmethod
+    def infer_eval_name(run: dict) -> str:
+        dataset = run.get("dataset") if isinstance(run.get("dataset"), dict) else {}
+        if isinstance(dataset.get("eval_name"), str):
+            return str(dataset["eval_name"])
+        expected = run.get("expected") if isinstance(run.get("expected"), dict) else {}
+        if "val_batches_per_epoch" in expected:
+            return "val"
+        if "test_batches_per_epoch" in expected:
+            return "test"
+        return "-"
+
+    @staticmethod
+    def infer_best_eval_acc(run: dict) -> float | None:
+        summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+        best = summary.get("best_eval_acc") if isinstance(summary, dict) else None
+        if isinstance(best, (int, float)):
+            return float(best)
+        epochs = run.get("epochs") if isinstance(run.get("epochs"), list) else []
+        best_value: float | None = None
+        for epoch_record in epochs:
+            if not isinstance(epoch_record, dict):
+                continue
+            for key, stage in epoch_record.items():
+                if key in {"epoch", "lr", "best_eval_acc_after_epoch", "is_best_checkpoint"}:
+                    continue
+                if isinstance(stage, dict) and isinstance(stage.get("acc"), (int, float)):
+                    value = float(stage["acc"])
+                    if best_value is None or value > best_value:
+                        best_value = value
+        return best_value
+
+    @staticmethod
+    def stage_color(stage_name: str, fallback_index: int = 0) -> str:
+        fixed = {
+            "train": "#f59e0b",
+            "val": "#22c55e",
+            "test": "#4e8cff",
+        }
+        if stage_name in fixed:
+            return fixed[stage_name]
+        palette = ["#4e8cff", "#f97316", "#14b8a6", "#ef4444", "#a855f7", "#eab308", "#10b981", "#f43f5e"]
+        return palette[fallback_index % len(palette)]
+
+    @staticmethod
+    def timing_value_from_stage(stage: dict, timing_metric: str) -> float | None:
+        timing = stage.get("timing", {}) if isinstance(stage, dict) else {}
+        if not isinstance(timing, dict):
+            return None
+        if timing_metric == "total":
+            return float(timing["total_seconds"]) if isinstance(timing.get("total_seconds"), (int, float)) else None
+        if timing_metric == "pure":
+            return float(timing["pure_seconds"]) if isinstance(timing.get("pure_seconds"), (int, float)) else None
+        pure_seconds = timing.get("pure_seconds")
+        batches = timing.get("batches")
+        if isinstance(pure_seconds, (int, float)) and isinstance(batches, (int, float)) and float(batches) > 0:
+            return float(pure_seconds) / float(batches)
+        return None
+
+    def extract_stage_points(self, run: dict, stage_name: str, value_kind: str, timing_metric: str | None = None) -> list[tuple[float, float]]:
+        epochs = run.get("epochs") if isinstance(run.get("epochs"), list) else []
+        stage_key = stage_name.lower()
+        points: list[tuple[float, float]] = []
+        for epoch_record in epochs:
+            if not isinstance(epoch_record, dict):
+                continue
+            epoch_index = epoch_record.get("epoch")
+            stage = epoch_record.get(stage_key)
+            if not isinstance(epoch_index, (int, float)) or not isinstance(stage, dict):
+                continue
+            if value_kind == "accuracy":
+                value = float(stage["acc"]) if isinstance(stage.get("acc"), (int, float)) else None
+            else:
+                value = self.timing_value_from_stage(stage, timing_metric or "total")
+            if value is not None:
+                points.append((float(epoch_index), float(value)))
+
+        if stage_key == "test" and not points:
+            final_test = run.get("final_test") if isinstance(run.get("final_test"), dict) else None
+            if isinstance(final_test, dict):
+                epoch_index = float(self.infer_last_completed_epoch(run))
+                if value_kind == "accuracy":
+                    value = final_test.get("acc")
+                    if isinstance(value, (int, float)):
+                        points.append((epoch_index, float(value)))
+                else:
+                    value = self.timing_value_from_stage(final_test, timing_metric or "total")
+                    if value is not None:
+                        points.append((epoch_index, value))
+        return points
+
+    def current_selected_run(self) -> dict | None:
+        if not self.training_log_runs:
+            return None
+        run_id = self.training_log_run_combo.currentData()
+        for run in self.training_log_runs:
+            if str(run.get("run_id", "")) == str(run_id):
+                return run
+        return self.training_log_runs[0] if self.training_log_runs else None
+
+    def run_display_name(self, run: dict, include_stage: str | None = None) -> str:
+        args = run.get("args") if isinstance(run.get("args"), dict) else {}
+        started = str(run.get("start_time_utc", "-"))[:10]
+        model = str(args.get("model", "run"))
+        checkpoint_name = Path(str(args.get("checkpoint_dir", "-"))).name
+        base = f"{started} {model} ({checkpoint_name})"
+        return f"{base} [{include_stage}]" if include_stage else base
+
+    def build_selected_run_plot(self, run: dict, *, value_kind: str, timing_metric: str) -> dict:
+        stage_choice = self.training_plot_stage_combo.currentText().strip().lower()
+        stages = ["train", "val", "test"] if stage_choice.startswith("all") else [stage_choice]
+        series: list[dict] = []
+        for index, stage_name in enumerate(stages):
+            points = self.extract_stage_points(run, stage_name, value_kind, timing_metric)
+            if not points:
+                continue
+            series.append({"label": stage_name, "color": self.stage_color(stage_name, index), "points": points})
+
+        timing_label = {"total": "Total Time (s)", "pure": "Pure Time (s)", "avg": "Avg Pure / Batch (s)"}[timing_metric]
+        return {
+            "title": "Selected Run Accuracy" if value_kind == "accuracy" else "Selected Run Timing",
+            "x_label": "Epoch",
+            "y_label": "Accuracy" if value_kind == "accuracy" else timing_label,
+            "series": series,
+            "note": "All available stage curves are shown together." if stage_choice.startswith("all") else "",
+        }
+
+    def build_compare_plot(self, *, value_kind: str, timing_metric: str) -> dict:
+        stage_choice = self.training_plot_stage_combo.currentText().strip().lower()
+        series: list[dict] = []
+        for index, run in enumerate(self.training_log_runs):
+            stage_name = self.infer_eval_name(run) if stage_choice.startswith("all") else stage_choice
+            points = self.extract_stage_points(run, stage_name, value_kind, timing_metric)
+            if not points:
+                continue
+            series.append(
+                {
+                    "label": self.run_display_name(run, include_stage=stage_name),
+                    "color": self.stage_color(f"compare_{index}", index),
+                    "points": points,
+                }
+            )
+
+        timing_label = {"total": "Total Time (s)", "pure": "Pure Time (s)", "avg": "Avg Pure / Batch (s)"}[timing_metric]
+        note = (
+            "Auto stage uses each run's epoch-wise evaluation stage and leaves missing epochs blank."
+            if stage_choice.startswith("all")
+            else "Missing epochs are left blank for runs that start later or end earlier."
+        )
+        return {
+            "title": "Compare Accuracy Across Runs" if value_kind == "accuracy" else "Compare Timing Across Runs",
+            "x_label": "Epoch",
+            "y_label": "Accuracy" if value_kind == "accuracy" else timing_label,
+            "series": series,
+            "note": note,
+        }
+
+    def refresh_training_log_plot(self) -> None:
+        mode = self.training_plot_mode_combo.currentText().strip().lower()
+        timing_metric_label = self.training_plot_timing_combo.currentText().strip().lower()
+        timing_metric = "avg" if "avg" in timing_metric_label else ("pure" if "pure" in timing_metric_label else "total")
+
+        self.training_plot_timing_combo.setEnabled("timing" in mode)
+        if "compare" in mode:
+            plot = self.build_compare_plot(
+                value_kind="accuracy" if "accuracy" in mode else "timing",
+                timing_metric=timing_metric,
+            )
+        else:
+            selected_run = self.current_selected_run()
+            if selected_run is None:
+                plot = {
+                    "title": "Run Plot",
+                    "x_label": "Epoch",
+                    "y_label": "Value",
+                    "series": [],
+                    "note": "No run selected.",
+                }
+            else:
+                plot = self.build_selected_run_plot(
+                    selected_run,
+                    value_kind="accuracy" if "accuracy" in mode else "timing",
+                    timing_metric=timing_metric,
+                )
+        self.training_plot_widget.set_plot(**plot)
+
+    def render_compare_runs(self) -> str:
+        if not self.training_log_runs:
+            return "No run logs available."
+
+        header = (
+            f"{'Started':<22} {'Model':<12} {'Status':<14} {'Progress':<9} "
+            f"{'BestEval':<10} {'FinalTest':<10} {'Eval':<6} {'Batch':<6} {'LR':<10} {'Checkpoint'}"
+        )
+        separator = "-" * len(header)
+        lines = [header, separator]
+        for run in self.training_log_runs:
+            args = run.get("args") if isinstance(run.get("args"), dict) else {}
+            summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+            started = str(run.get("start_time_utc", "-"))[:19]
+            model = str(args.get("model", "-"))[:12]
+            status = self.normalize_run_status(run)[:14]
+            progress = self.format_ratio(self.infer_last_completed_epoch(run), args.get("planned_epochs_this_run"))
+            best_eval = self.format_metric(self.infer_best_eval_acc(run))
+            final_test = self.format_metric(summary.get("final_test_acc"))
+            eval_name = self.infer_eval_name(run)[:6]
+            batch_size = str(args.get("batch_size", "-"))[:6]
+            lr = str(args.get("lr", "-"))[:10]
+            checkpoint_name = Path(str(args.get("checkpoint_dir", "-"))).name[:20]
+            lines.append(
+                f"{started:<22} {model:<12} {status:<14} {progress:<9} "
+                f"{best_eval:<10} {final_test:<10} {eval_name:<6} {batch_size:<6} {lr:<10} {checkpoint_name}"
+            )
+        return "\n".join(lines)
+
     def render_run_summary(self, run: dict) -> str:
         args = run.get("args") if isinstance(run.get("args"), dict) else {}
+        dataset = run.get("dataset") if isinstance(run.get("dataset"), dict) else {}
+        model_info = run.get("model") if isinstance(run.get("model"), dict) else {}
         expected = run.get("expected") if isinstance(run.get("expected"), dict) else {}
         epochs = run.get("epochs") if isinstance(run.get("epochs"), list) else []
+        summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
         timing_summary = run.get("timing_summary") if isinstance(run.get("timing_summary"), dict) else {}
         artifacts = run.get("artifacts") if isinstance(run.get("artifacts"), dict) else {}
         best_ckpt = artifacts.get("best_checkpoint") if isinstance(artifacts.get("best_checkpoint"), dict) else {}
@@ -981,12 +1624,41 @@ class TrainingLauncher(QMainWindow):
         lines = [
             f"Run ID: {run.get('run_id', 'unknown')}",
             f"Status: {self.normalize_run_status(run)}",
+            f"Status Reason: {run.get('status_reason', '-')}",
             f"Started (UTC): {run.get('start_time_utc', '-')}",
             f"Ended (UTC): {run.get('end_time_utc', '-')}",
             f"Model: {args.get('model', '-')}",
             f"Device: {args.get('device', '-')}",
             f"Command: {run.get('command', '-')}",
             f"Planned Epochs / Completed Epochs: {progress_text}",
+            "",
+            "Dataset Summary:",
+            f"- data_root: {args.get('data_root', '-')}",
+            f"- eval_name: {dataset.get('eval_name', '-')}",
+            f"- num_classes: {dataset.get('num_classes', '-')}",
+            f"- train_examples: {dataset.get('train_examples', '-')}",
+            f"- eval_examples: {dataset.get('eval_examples', '-')}",
+            f"- test_examples: {dataset.get('test_examples', '-')}",
+            f"- validation_split: {dataset.get('use_validation_split', '-')}",
+            f"- validation_proportion: {dataset.get('validation_proportion', '-')}",
+            "",
+            "Model Summary:",
+            f"- total_params: {model_info.get('total_params', '-')}",
+            f"- trainable_params: {model_info.get('trainable_params', '-')}",
+            f"- frozen_params: {model_info.get('frozen_params', '-')}",
+            f"- batch_size: {args.get('batch_size', '-')}",
+            f"- lr: {args.get('lr', '-')}",
+            f"- checkpoint_dir: {args.get('checkpoint_dir', '-')}",
+            "",
+            "Run Summary:",
+            f"- best_eval_acc: {self.format_metric(summary.get('best_eval_acc'))}",
+            f"- best_eval_epoch: {summary.get('best_eval_epoch', '-')}",
+            f"- last_completed_epoch: {summary.get('last_completed_epoch', '-')}",
+            f"- last_eval_acc: {self.format_metric(summary.get('last_eval_acc'))}",
+            f"- last_eval_loss: {self.format_metric(summary.get('last_eval_loss'))}",
+            f"- final_test_acc: {self.format_metric(summary.get('final_test_acc'))}",
+            f"- final_test_loss: {self.format_metric(summary.get('final_test_loss'))}",
+            "",
             f"Expected Train Batches/Epoch: {expected.get('train_batches_per_epoch', '-')}",
             f"Expected Val Batches/Epoch: {expected.get('val_batches_per_epoch', '-')}",
             f"Expected Test Batches/Epoch: {expected.get('test_batches_per_epoch', '-')}",
@@ -1026,15 +1698,18 @@ class TrainingLauncher(QMainWindow):
         stage_key = stage_name.lower()
         if stage_key == "test":
             final_test = run.get("final_test") if isinstance(run.get("final_test"), dict) else None
-            if not final_test:
-                return "No test record in this run."
-            timing = final_test.get("timing", {})
-            return (
-                f"Final test: loss={final_test.get('loss', '-')}, acc={final_test.get('acc', '-')}, "
-                f"total_time={timing.get('total_seconds', '-')}, "
-                f"pure_time={timing.get('pure_seconds', '-')}, "
-                f"batches={timing.get('batches', '-')}"
-            )
+            if final_test:
+                timing = final_test.get("timing", {})
+                final_text = (
+                    f"Final test: loss={final_test.get('loss', '-')}, acc={final_test.get('acc', '-')}, "
+                    f"total_time={timing.get('total_seconds', '-')}, "
+                    f"pure_time={timing.get('pure_seconds', '-')}, "
+                    f"batches={timing.get('batches', '-')}"
+                )
+                epoch_test_text = self.render_stage_epochs({**run, "final_test": None}, "test")
+                if epoch_test_text != "No test record in this run.":
+                    return final_text + "\n\nPer-epoch test:\n" + epoch_test_text
+                return final_text
 
         if not epochs:
             return "No epoch records in this run."
@@ -1048,10 +1723,14 @@ class TrainingLauncher(QMainWindow):
             if not isinstance(stage, dict):
                 continue
             timing = stage.get("timing", {})
+            lr_text = self.format_metric(epoch_record.get("lr"))
+            best_text = self.format_metric(epoch_record.get("best_eval_acc_after_epoch"))
+            best_flag = "yes" if epoch_record.get("is_best_checkpoint") else "no"
             lines.append(
                 (
                     f"Epoch {epoch_idx}: "
                     f"loss={stage.get('loss', '-')}, acc={stage.get('acc', '-')}, "
+                    f"lr={lr_text}, best_eval_acc={best_text}, saved_best={best_flag}, "
                     f"total_time={timing.get('total_seconds', '-')}, "
                     f"pure_time={timing.get('pure_seconds', '-')}, "
                     f"batches={timing.get('batches', '-')}"
@@ -1078,16 +1757,28 @@ class TrainingLauncher(QMainWindow):
         self.training_log_status_label.setText(status_text)
 
         selected_view = self.training_log_stage_combo.currentText().strip().lower()
+        if selected_view == "compare":
+            self.training_log_text.setPlainText(self.render_compare_runs())
+            self.refresh_training_log_plot()
+            return
         if selected_view == "summary":
             self.training_log_text.setPlainText(self.render_run_summary(selected_run))
+            self.refresh_training_log_plot()
             return
         self.training_log_text.setPlainText(self.render_stage_epochs(selected_run, selected_view))
+        self.refresh_training_log_plot()
 
     def stop_training(self) -> None:
         if self.process.state() == QProcess.NotRunning:
             return
-        self.append_output("\nStopping training process...\n")
-        self.process.kill()
+        if self._stop_request_path is None:
+            self._stop_request_path = self.stop_request_path_for()
+        self._stop_request_path.parent.mkdir(parents=True, exist_ok=True)
+        self._stop_request_path.write_text("stop requested\n", encoding="utf-8")
+        self.append_output("\nGraceful stop requested. Waiting for the current step to finish...\n")
+        self.status_label.setText("Stopping")
+        self.progress_label.setText("Graceful stop requested. Training will stop after the current batch.")
+        self.stop_button.setEnabled(False)
 
     def handle_output(self) -> None:
         data = self.process.readAllStandardOutput().data().decode("utf-8", errors="replace")
@@ -1110,6 +1801,7 @@ class TrainingLauncher(QMainWindow):
 
     def on_process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         self.set_running_state(False)
+        self.clear_stop_request_file()
         self.refresh_checkpoint_output_options(preserve_text=self.checkpoint_output_name())
         self.refresh_training_log_runs()
         status_text = "NormalExit" if exit_status == QProcess.NormalExit else "CrashExit"
@@ -1150,6 +1842,7 @@ class TrainingLauncher(QMainWindow):
 
     def on_process_error(self, error: QProcess.ProcessError) -> None:
         self.set_running_state(False)
+        self.clear_stop_request_file()
         self.refresh_training_log_runs()
         self.status_label.setText("Error")
         self.progress_label.setText(f"Process error: {error}")
@@ -1603,8 +2296,8 @@ def main() -> None:
     if APP_ICON_PATH.is_file():
         app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
     window = TrainingLauncher()
+    window.showMaximized()
     QTimer.singleShot(0, lambda: apply_windows_taskbar_icon(window))
-    window.show()
     sys.exit(app.exec())
 
 
