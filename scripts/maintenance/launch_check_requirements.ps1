@@ -7,13 +7,15 @@ $launchScript = Join-Path $projectRoot "scripts\maintenance\launch_check_require
 $powershellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 
 function Resolve-PythonLauncher {
+    # Try pythonw directly (never a Store stub)
     $pythonwCmd = Get-Command pythonw -ErrorAction SilentlyContinue
-    if ($pythonwCmd) {
+    if ($pythonwCmd -and $pythonwCmd.Source -notlike "*WindowsApps*") {
         return @{ FilePath = $pythonwCmd.Source; PrefixArgs = @() }
     }
 
+    # Try python but skip Windows Store stubs (WindowsApps)
     $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd) {
+    if ($pythonCmd -and $pythonCmd.Source -notlike "*WindowsApps*") {
         $pythonwCandidate = Join-Path (Split-Path -Parent $pythonCmd.Source) "pythonw.exe"
         if (Test-Path $pythonwCandidate) {
             return @{ FilePath = $pythonwCandidate; PrefixArgs = @() }
@@ -21,14 +23,24 @@ function Resolve-PythonLauncher {
         return @{ FilePath = $pythonCmd.Source; PrefixArgs = @() }
     }
 
+    # Try 'py' launcher — resolve real exe path
+    $pyCmd = Get-Command py -ErrorAction SilentlyContinue
+    if ($pyCmd) {
+        $realExe = & py -c "import sys; print(sys.executable)" 2>$null
+        if ($realExe -and (Test-Path $realExe.Trim())) {
+            $realExe = $realExe.Trim()
+            $pythonwCandidate = Join-Path (Split-Path -Parent $realExe) "pythonw.exe"
+            if (Test-Path $pythonwCandidate) {
+                return @{ FilePath = $pythonwCandidate; PrefixArgs = @() }
+            }
+            return @{ FilePath = $realExe; PrefixArgs = @() }
+        }
+        return @{ FilePath = $pyCmd.Source; PrefixArgs = @("-3") }
+    }
+
     $pywCmd = Get-Command pyw -ErrorAction SilentlyContinue
     if ($pywCmd) {
         return @{ FilePath = $pywCmd.Source; PrefixArgs = @("-3") }
-    }
-
-    $pyCmd = Get-Command py -ErrorAction SilentlyContinue
-    if ($pyCmd) {
-        return @{ FilePath = $pyCmd.Source; PrefixArgs = @("-3") }
     }
 
     return $null

@@ -5,13 +5,40 @@ $launcherPath = Join-Path $projectRoot "scripts\maintenance\launch_check_require
 $powershellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 $pythonwExe = $null
 
+# Resolve real Python executable, skipping the Windows Store stub (WindowsApps).
+function Resolve-RealPythonExe {
+    # 1. Try 'python' but skip WindowsApps stubs
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd -and $pythonCmd.Source -notlike "*WindowsApps*") {
+        return $pythonCmd.Source
+    }
+    # 2. Try 'py' launcher (Python Launcher for Windows)
+    $pyCmd = Get-Command py -ErrorAction SilentlyContinue
+    if ($pyCmd) {
+        $realExe = & py -c "import sys; print(sys.executable)" 2>$null
+        if ($realExe -and (Test-Path $realExe)) {
+            return $realExe.Trim()
+        }
+    }
+    # 3. Try 'python3'
+    $py3Cmd = Get-Command python3 -ErrorAction SilentlyContinue
+    if ($py3Cmd -and $py3Cmd.Source -notlike "*WindowsApps*") {
+        return $py3Cmd.Source
+    }
+    return $null
+}
+
 try {
-    $pythonExe = (Get-Command python -ErrorAction Stop).Source
-    $pythonwCandidate = Join-Path (Split-Path -Parent $pythonExe) "pythonw.exe"
-    if (Test-Path $pythonwCandidate) {
-        $pythonwExe = $pythonwCandidate
+    $pythonExe = Resolve-RealPythonExe
+    if ($pythonExe) {
+        $pythonwCandidate = Join-Path (Split-Path -Parent $pythonExe) "pythonw.exe"
+        if (Test-Path $pythonwCandidate) {
+            $pythonwExe = $pythonwCandidate
+        } else {
+            $pythonwExe = $pythonExe
+        }
     } else {
-        $pythonwExe = $pythonExe
+        Write-Warning "Python was not found in PATH. Launch Training GUI shortcut will not be updated this run."
     }
 } catch {
     Write-Warning "Python was not found in PATH. Launch Training GUI shortcut will not be updated this run."
