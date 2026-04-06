@@ -56,6 +56,7 @@ TRAINING_SCRIPT = PROJECT_ROOT / "scripts" / "entry" / "training.py"
 PREDICTING_SCRIPT = PROJECT_ROOT / "scripts" / "pipeline" / "predicting.py"
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_DATA_ROOT = PROJECT_ROOT / "data" / "food-101"
+DEFAULT_TEST_SPLITS_ROOT = PROJECT_ROOT / "data" / "test_splits"
 DEFAULT_CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
 APP_ICON_PATH = PROJECT_ROOT / "scripts" / "assets" / "training_launcher_icon.ico"
 APP_ID = "MLWorkbench.TrainingLauncher"
@@ -712,6 +713,9 @@ class TrainingLauncher(QMainWindow):
         self.predict_resize_timer.setSingleShot(True)
         self.predict_resize_timer.timeout.connect(self._refresh_predict_after_resize)
         self.predict_detected_model_name: str | None = None
+        self.test_split_thread: QThread | None = None
+        self.test_split_worker: TestSplitEvaluationWorker | None = None
+        self.test_split_detected_model_name: str | None = None
         self._last_export_notebook_path: Path | None = None
         self.available_models = discover_model_names()
         self._checkpoint_name_locked_to_model = True
@@ -722,12 +726,14 @@ class TrainingLauncher(QMainWindow):
         self._init_data_controls()
         self._init_training_controls()
         self._init_prediction_controls()
+        self._init_test_split_controls()
         self._init_log_controls()
         self._build_ui()
         self.apply_visual_design()
         self.refresh_training_settings_summary()
         self.refresh_command_preview()
         self.update_predict_detected_model()
+        self.update_test_split_detected_model()
         self.refresh_predict_compare_summary()
         self.refresh_predict_page()
         self.on_predict_compact_toggled(self.predict_compact_checkbox.isChecked())
@@ -1013,6 +1019,48 @@ class TrainingLauncher(QMainWindow):
         self.predict_display_stack.addWidget(single_predict_page)
         self.predict_display_stack.addWidget(compact_predict_page)
 
+    def _init_test_split_controls(self) -> None:
+        self.test_split_device_combo = QComboBox()
+        self.test_split_device_combo.addItems(["auto", "cpu", "cuda"])
+
+        self.test_split_image_size_spin = QSpinBox()
+        self.test_split_image_size_spin.setRange(32, 2048)
+        self.test_split_image_size_spin.setValue(224)
+
+        self.test_split_checkpoint_edit = QLineEdit(str(DEFAULT_CHECKPOINT_DIR / "efficientnet_baseline" / "best.pth"))
+        self.test_split_checkpoint_edit.editingFinished.connect(self.update_test_split_detected_model)
+
+        self.test_split_checkpoint_browse_button = QPushButton("Browse...")
+        self.test_split_checkpoint_browse_button.clicked.connect(self.choose_test_split_checkpoint)
+
+        self.test_split_detected_model_label = QLabel("Model will be auto-detected from the checkpoint.")
+        self.test_split_detected_model_label.setWordWrap(True)
+        self.test_split_detected_model_label.setProperty("muted", True)
+
+        self.test_split_root_edit = QLineEdit(str(DEFAULT_TEST_SPLITS_ROOT))
+        self.test_split_root_browse_button = QPushButton("Browse...")
+        self.test_split_root_browse_button.clicked.connect(self.choose_test_splits_root)
+
+        self.test_split_run_button = QPushButton("Evaluate Test Splits")
+        self.test_split_run_button.clicked.connect(self.run_test_split_evaluation)
+
+        self.test_split_status_label = QLabel("Ready.")
+        self.test_split_status_label.setWordWrap(True)
+        self.test_split_status_label.setObjectName("SectionStatus")
+
+        self.test_split_progress_bar = QProgressBar()
+        self.test_split_progress_bar.setRange(0, 100)
+        self.test_split_progress_bar.setValue(0)
+        self.test_split_progress_bar.setFormat("%p%")
+
+        self.test_split_result_label = QLabel("No evaluation has been run yet.")
+        self.test_split_result_label.setWordWrap(True)
+        self.test_split_result_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        self.test_split_output_text = QPlainTextEdit()
+        self.test_split_output_text.setReadOnly(True)
+        self.test_split_output_text.setPlaceholderText("Per-split metrics and output file paths will appear here.")
+
     def _init_log_controls(self) -> None:
         self.training_log_runs: list[dict] = []
         self.training_log_available_list = QListWidget()
@@ -1246,6 +1294,41 @@ class TrainingLauncher(QMainWindow):
         predict_layout.addWidget(self.predict_progress_bar)
         predict_layout.addWidget(self.predict_display_stack, stretch=1)
 
+        test_split_tab = QWidget()
+        test_split_layout = QVBoxLayout(test_split_tab)
+
+        test_split_config_group = QGroupBox("Test Split Evaluation")
+        test_split_form = QFormLayout(test_split_config_group)
+        test_split_form.addRow("Detected Model", self.test_split_detected_model_label)
+        checkpoint_layout = QHBoxLayout()
+        checkpoint_layout.addWidget(self.test_split_checkpoint_edit, stretch=1)
+        checkpoint_layout.addWidget(self.test_split_checkpoint_browse_button)
+        test_split_form.addRow("Checkpoint", checkpoint_layout)
+        root_layout = QHBoxLayout()
+        root_layout.addWidget(self.test_split_root_edit, stretch=1)
+        root_layout.addWidget(self.test_split_root_browse_button)
+        test_split_form.addRow("Test Splits Root", root_layout)
+        test_split_form.addRow("Device", self.test_split_device_combo)
+        test_split_form.addRow("Image Size", self.test_split_image_size_spin)
+        test_split_layout.addWidget(test_split_config_group)
+
+        test_split_controls = QHBoxLayout()
+        test_split_controls.addWidget(self.test_split_run_button)
+        test_split_controls.addStretch(1)
+        test_split_layout.addLayout(test_split_controls)
+        test_split_layout.addWidget(self.test_split_status_label)
+        test_split_layout.addWidget(self.test_split_progress_bar)
+
+        test_split_result_group = QGroupBox("Evaluation Summary")
+        test_split_result_layout = QVBoxLayout(test_split_result_group)
+        test_split_result_layout.addWidget(self.test_split_result_label)
+        test_split_layout.addWidget(test_split_result_group)
+
+        test_split_output_group = QGroupBox("Per-Split Results")
+        test_split_output_layout = QVBoxLayout(test_split_output_group)
+        test_split_output_layout.addWidget(self.test_split_output_text)
+        test_split_layout.addWidget(test_split_output_group, stretch=1)
+
         logs_tab = QWidget()
         logs_layout = QVBoxLayout(logs_tab)
         logs_splitter = QSplitter(Qt.Horizontal)
@@ -1323,6 +1406,7 @@ class TrainingLauncher(QMainWindow):
 
         self.tabs.addTab(training_tab, "Training")
         self.tabs.addTab(predict_tab, "Predicting")
+        self.tabs.addTab(test_split_tab, "Test Splits")
         self.tabs.addTab(data_tab, "Data")
         self.tabs.addTab(logs_tab, "Logs")
         self.tabs.setCurrentIndex(0)
@@ -1900,6 +1984,30 @@ class TrainingLauncher(QMainWindow):
 
     def default_predict_checkpoint_path(self) -> Path:
         return DEFAULT_CHECKPOINT_DIR / self.predict_model_combo.currentText() / "best.pth"
+
+    def update_test_split_detected_model(self) -> None:
+        checkpoint_text = self.test_split_checkpoint_edit.text().strip()
+        checkpoint_path = Path(checkpoint_text).expanduser() if checkpoint_text else None
+        detected_model: str | None = None
+        if checkpoint_path is not None and checkpoint_path.is_file():
+            try:
+                from pipeline.predicting import guess_model_name_from_checkpoint_path
+
+                detected_model = guess_model_name_from_checkpoint_path(checkpoint_path.resolve())
+            except Exception:
+                detected_model = None
+        self.test_split_detected_model_name = detected_model
+        if detected_model is not None and detected_model in self.available_models:
+            self.test_split_detected_model_label.setText(detected_model)
+            self.test_split_detected_model_label.setProperty("muted", False)
+        elif checkpoint_text:
+            self.test_split_detected_model_label.setText("Could not auto-detect model type from this checkpoint.")
+            self.test_split_detected_model_label.setProperty("muted", False)
+        else:
+            self.test_split_detected_model_label.setText("Model will be auto-detected from the checkpoint.")
+            self.test_split_detected_model_label.setProperty("muted", True)
+        self.test_split_detected_model_label.style().unpolish(self.test_split_detected_model_label)
+        self.test_split_detected_model_label.style().polish(self.test_split_detected_model_label)
 
     def current_predict_model_name(self) -> str | None:
         return self.predict_detected_model_name if self.predict_detected_model_name in self.available_models else None
@@ -3398,6 +3506,24 @@ class TrainingLauncher(QMainWindow):
             self.predict_checkpoint_edit.setText(selected_path)
             self.update_predict_detected_model()
 
+    def choose_test_split_checkpoint(self) -> None:
+        start_dir = self._resolve_dialog_dir(self.test_split_checkpoint_edit.text().strip(), DEFAULT_CHECKPOINT_DIR)
+        selected_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Evaluation Checkpoint",
+            str(start_dir),
+            "PyTorch Checkpoints (*.pth *.pt);;All Files (*.*)",
+        )
+        if selected_path:
+            self.test_split_checkpoint_edit.setText(selected_path)
+            self.update_test_split_detected_model()
+
+    def choose_test_splits_root(self) -> None:
+        start_dir = self._resolve_dialog_dir(self.test_split_root_edit.text().strip(), DEFAULT_TEST_SPLITS_ROOT)
+        selected_dir = QFileDialog.getExistingDirectory(self, "Select Test Splits Root", str(start_dir))
+        if selected_dir:
+            self.test_split_root_edit.setText(selected_dir)
+
     def choose_predict_images(self) -> None:
         selected_paths = self.select_multiple_files(
             title="Select Images to Predict",
@@ -3995,6 +4121,15 @@ class TrainingLauncher(QMainWindow):
         self.predict_compare_clear_button.setEnabled(not running and self.predict_compare_checkbox.isChecked() and bool(self.predict_compare_models))
         self.predict_gradcam_button.setEnabled(not running and bool(self.predict_results) and 0 <= self.current_predict_index < len(self.predict_results) and isinstance(self.predict_results[self.current_predict_index], dict) and self.is_predict_compare_result(self.predict_results[self.current_predict_index]) if self.predict_results else False)
 
+    def set_test_split_running_state(self, running: bool) -> None:
+        self.test_split_run_button.setEnabled(not running)
+        self.test_split_checkpoint_browse_button.setEnabled(not running)
+        self.test_split_root_browse_button.setEnabled(not running)
+        self.test_split_device_combo.setEnabled(not running)
+        self.test_split_image_size_spin.setEnabled(not running)
+        self.test_split_checkpoint_edit.setEnabled(not running)
+        self.test_split_root_edit.setEnabled(not running)
+
     def on_prediction_progress(self, processed: int, total: int) -> None:
         self.predict_progress_bar.setRange(0, max(total, 1))
         self.predict_progress_bar.setValue(processed)
@@ -4139,6 +4274,91 @@ class TrainingLauncher(QMainWindow):
             except Exception:
                 pass
         QMessageBox.critical(self, "Prediction Failed", detail)
+
+    def run_test_split_evaluation(self) -> None:
+        if self.test_split_thread is not None and self.test_split_thread.isRunning():
+            return
+        checkpoint_path = Path(self.test_split_checkpoint_edit.text().strip()).expanduser()
+        test_splits_root = Path(self.test_split_root_edit.text().strip()).expanduser()
+        if not checkpoint_path.is_file():
+            QMessageBox.warning(self, "Invalid Checkpoint", f"Checkpoint file does not exist:\n{checkpoint_path}")
+            return
+        if not test_splits_root.is_dir():
+            QMessageBox.warning(self, "Invalid Test Splits Root", f"Directory does not exist:\n{test_splits_root}")
+            return
+
+        self.test_split_status_label.setText("Preparing test split evaluation...")
+        self.test_split_progress_bar.setRange(0, 0)
+        self.test_split_progress_bar.setFormat("Working...")
+        self.test_split_output_text.clear()
+        self.set_test_split_running_state(True)
+
+        self.test_split_thread = QThread(self)
+        self.test_split_worker = TestSplitEvaluationWorker(
+            checkpoint_path=checkpoint_path.resolve(),
+            model_name=self.test_split_detected_model_name,
+            test_splits_root=test_splits_root.resolve(),
+            image_size=self.test_split_image_size_spin.value(),
+            device=self.test_split_device_combo.currentText(),
+        )
+        self.test_split_worker.moveToThread(self.test_split_thread)
+        self.test_split_thread.started.connect(self.test_split_worker.run)
+        self.test_split_worker.status.connect(self.on_test_split_status)
+        self.test_split_worker.progress.connect(self.on_test_split_progress)
+        self.test_split_worker.finished.connect(self.on_test_split_finished)
+        self.test_split_worker.failed.connect(self.on_test_split_failed)
+        self.test_split_worker.finished.connect(self.test_split_thread.quit)
+        self.test_split_worker.failed.connect(self.test_split_thread.quit)
+        self.test_split_thread.finished.connect(self.test_split_thread.deleteLater)
+        self.test_split_thread.start()
+
+    def on_test_split_status(self, message: str, indeterminate: bool) -> None:
+        self.test_split_status_label.setText(message)
+        if indeterminate:
+            self.test_split_progress_bar.setRange(0, 0)
+            self.test_split_progress_bar.setFormat("Working...")
+
+    def on_test_split_progress(self, processed: int, total: int) -> None:
+        self.test_split_progress_bar.setRange(0, max(total, 1))
+        self.test_split_progress_bar.setValue(processed)
+        self.test_split_progress_bar.setFormat(f"{processed}/{total} (%p%)")
+
+    def on_test_split_finished(self, payload: dict, json_path: str, csv_path: str) -> None:
+        splits = payload.get("splits", []) if isinstance(payload, dict) else []
+        lines = []
+        for item in splits:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"{item.get('split', '-')}: "
+                f"acc={float(item.get('accuracy', 0.0)):.4f}, "
+                f"correct={int(item.get('correct_images', 0))}/{int(item.get('evaluated_images', 0))}, "
+                f"avg_conf={float(item.get('avg_confidence', 0.0)):.4f}"
+            )
+        self.test_split_output_text.setPlainText(
+            "\n".join(lines + ["", f"JSON: {json_path}", f"CSV: {csv_path}"])
+        )
+        self.test_split_result_label.setText(
+            f"Model: {payload.get('model_name', '-')}\n"
+            f"Clean Accuracy: {float(payload.get('clean_accuracy', 0.0)):.4f}\n"
+            f"Robustness Average: {float(payload.get('robustness_average', 0.0)):.4f}\n"
+            f"Total Time: {float(payload.get('total_seconds', 0.0)):.2f}s"
+        )
+        self.test_split_status_label.setText("Test split evaluation finished.")
+        self.test_split_progress_bar.setRange(0, 100)
+        self.test_split_progress_bar.setValue(100)
+        self.set_test_split_running_state(False)
+        self.test_split_worker = None
+        self.test_split_thread = None
+
+    def on_test_split_failed(self, error_message: str) -> None:
+        self.test_split_status_label.setText("Test split evaluation failed.")
+        self.test_split_progress_bar.setRange(0, 100)
+        self.test_split_progress_bar.setValue(0)
+        self.set_test_split_running_state(False)
+        self.test_split_worker = None
+        self.test_split_thread = None
+        QMessageBox.critical(self, "Test Split Evaluation Failed", error_message)
 
 
 class PredictionWorker(QObject):
@@ -4319,6 +4539,47 @@ class GradCamComparisonWorker(QObject):
             self.finished.emit(self.request_key, overlays)
         except Exception as exc:
             self.failed.emit(self.request_key, str(exc))
+
+
+class TestSplitEvaluationWorker(QObject):
+    status = Signal(str, bool)
+    progress = Signal(int, int)
+    finished = Signal(dict, str, str)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        *,
+        checkpoint_path: Path,
+        model_name: str | None,
+        test_splits_root: Path,
+        image_size: int,
+        device: str,
+    ) -> None:
+        super().__init__()
+        self.checkpoint_path = checkpoint_path
+        self.model_name = model_name
+        self.test_splits_root = test_splits_root
+        self.image_size = image_size
+        self.device = device
+
+    def run(self) -> None:
+        try:
+            from pipeline.evaluate_test_splits import evaluate_test_splits
+
+            payload, json_path, csv_path = evaluate_test_splits(
+                checkpoint_path=self.checkpoint_path,
+                model_name=self.model_name,
+                test_splits_root=self.test_splits_root,
+                image_size=self.image_size,
+                device=self.device,
+                output_dir=PROJECT_ROOT / "logs" / "test_split_evaluations",
+                status_callback=lambda message, indeterminate: self.status.emit(message, indeterminate),
+                progress_callback=lambda processed, total: self.progress.emit(processed, total),
+            )
+            self.finished.emit(payload, str(json_path), str(csv_path))
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 def main() -> None:
