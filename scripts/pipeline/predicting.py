@@ -19,12 +19,17 @@ def default_checkpoint_path() -> Path:
 def parse_args() -> argparse.Namespace:
     available_models = discover_model_names()
     parser = argparse.ArgumentParser(description="Predict classes for one or more images.")
-    parser.add_argument("image_paths", nargs="+", type=Path, help="Image paths to predict.")
+    parser.add_argument("image_paths", nargs="*", type=Path, help="Image paths to predict.")
+    parser.add_argument(
+        "--input-list",
+        type=Path,
+        default=None,
+        help="Optional JSON file containing a list of image paths.",
+    )
     parser.add_argument(
         "--model",
-        default=available_models[0],
-        choices=available_models,
-        help="Model type to load.",
+        default=None,
+        help="Model type to load. If omitted, try to infer it from the checkpoint.",
     )
     parser.add_argument(
         "--checkpoint",
@@ -52,10 +57,71 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def normalize_model_name(model_name: str | None) -> str | None:
+    if not isinstance(model_name, str):
+        return None
+    normalized = model_name.strip().lower()
+    if not normalized:
+        return None
+    for available_model in discover_model_names():
+        if available_model.lower() == normalized:
+            return available_model
+    return None
+
+
+def guess_model_name_from_checkpoint_path(checkpoint_path: Path) -> str | None:
+    path_text = " ".join(
+        [
+            checkpoint_path.name.lower(),
+            checkpoint_path.stem.lower(),
+            checkpoint_path.parent.name.lower(),
+        ]
+    )
+    for candidate in discover_model_names():
+        if candidate.lower() in path_text:
+            return candidate
+    return None
+
+
+def infer_model_name_from_checkpoint(checkpoint_path: Path) -> str | None:
+    import torch
+
+    guessed = guess_model_name_from_checkpoint_path(checkpoint_path)
+    if guessed is not None:
+        return guessed
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    direct_name = normalize_model_name(checkpoint.get("model_name") if isinstance(checkpoint, dict) else None)
+    if direct_name is not None:
+        return direct_name
+
+    state_dict = checkpoint.get("model_state_dict") if isinstance(checkpoint, dict) else None
+    if isinstance(state_dict, dict):
+        keys = [str(key) for key in state_dict.keys()]
+        if any(key.startswith("features.") for key in keys):
+            for candidate in discover_model_names():
+                if "efficientnet" in candidate:
+                    return candidate
+        if any(key.startswith("layer1.") or key.startswith("conv1.") for key in keys):
+            for candidate in discover_model_names():
+                if "resnet18" in candidate:
+                    return candidate
+
+    return guess_model_name_from_checkpoint_path(checkpoint_path)
+
+
 def load_model(checkpoint_path: Path, model_name: str, device: str):
     import torch
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    resolved_device = device if device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
+    checkpoint = torch.load(checkpoint_path, map_location=resolved_device)
+    checkpoint_model_name = normalize_model_name(checkpoint.get("model_name") if isinstance(checkpoint, dict) else None)
+    requested_model_name = normalize_model_name(model_name)
+    if checkpoint_model_name is not None and requested_model_name is not None and checkpoint_model_name != requested_model_name:
+        raise ValueError(
+            f"Checkpoint model mismatch: checkpoint is '{checkpoint_model_name}', but UI selected '{requested_model_name}'. "
+            f"Choose the matching checkpoint for that model."
+        )
     class_to_idx = checkpoint["class_to_idx"]
     num_classes = checkpoint["num_classes"]
 
@@ -63,7 +129,7 @@ def load_model(checkpoint_path: Path, model_name: str, device: str):
     model = model_module.build_model(
         num_classes=num_classes,
         freeze_backbone=False,
-        device=device,
+        device=resolved_device,
     )
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -185,23 +251,60 @@ def main() -> None:
     args = parse_args()
     import torch
 
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    requested_device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    device = requested_device if requested_device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint_path = args.checkpoint.expanduser().resolve()
 
     if not checkpoint_path.is_file():
         raise SystemExit(f"Checkpoint not found: {checkpoint_path}")
 
-    model, class_to_idx = load_model(checkpoint_path, args.model, device)
+    model_name = args.model
+    if model_name is not None:
+        model_name = normalize_model_name(model_name)
+    if model_name is None:
+        model_name = infer_model_name_from_checkpoint(checkpoint_path)
+    if model_name is None:
+        raise SystemExit(f"Could not determine model type for checkpoint: {checkpoint_path}")
+
+    model, class_to_idx = load_model(checkpoint_path, model_name, device)
     idx_to_class = {idx: name for name, idx in class_to_idx.items()}
     transform = build_transform(args.image_size)
 
+    raw_image_paths = list(args.image_paths)
+    if args.input_list is not None:
+        input_list_path = args.input_list.expanduser().resolve()
+        if not input_list_path.is_file():
+            raise SystemExit(f"Input list not found: {input_list_path}")
+        try:
+            loaded_paths = json.loads(input_list_path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:
+            raise SystemExit(f"Could not read input list: {input_list_path}\n{exc}") from exc
+        if not isinstance(loaded_paths, list):
+            raise SystemExit(f"Input list must be a JSON array: {input_list_path}")
+        raw_image_paths = [Path(str(item)) for item in loaded_paths]
+
+    if not raw_image_paths:
+        raise SystemExit("Provide one or more image paths, or use --input-list.")
+
     valid_image_paths: list[Path] = []
-    for image_path in args.image_paths:
-        resolved_path = image_path.expanduser().resolve()
-        if not resolved_path.is_file():
-            print(f"Skipping missing image: {resolved_path}")
+    for image_path in raw_image_paths:
+        candidate_path = image_path.expanduser()
+        try:
+            resolved_path = candidate_path.resolve(strict=False)
+        except Exception:
+            resolved_path = candidate_path
+        try:
+            from PIL import Image
+
+            with Image.open(resolved_path) as image:
+                image.verify()
+        except Exception as exc:
+            print(f"Skipping unreadable image: {resolved_path} ({exc})")
             continue
         valid_image_paths.append(resolved_path)
+
+    if not valid_image_paths:
+        raise SystemExit("No readable images were provided.")
 
     results = predict_images_batch(
         model,

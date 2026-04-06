@@ -167,6 +167,47 @@ def count_parameters(model: nn.Module) -> tuple[int, int]:
     return total_params, trainable_params
 
 
+def build_error_analysis(
+    *,
+    pair_counts: dict[tuple[int, int], int],
+    pair_confidence_sums: dict[tuple[int, int], float],
+    top_confidence_errors: list[dict[str, object]],
+    class_names: list[str],
+    total_examples: int,
+    correct_examples: int,
+    top_pairs_limit: int = 30,
+    top_confidence_limit: int = 20,
+) -> dict[str, object]:
+    confusion_pairs: list[dict[str, object]] = []
+    for (true_idx, pred_idx), count in sorted(pair_counts.items(), key=lambda item: (-item[1], item[0][0], item[0][1])):
+        avg_conf = pair_confidence_sums[(true_idx, pred_idx)] / max(count, 1)
+        confusion_pairs.append(
+            {
+                "true_idx": int(true_idx),
+                "pred_idx": int(pred_idx),
+                "true_label": class_names[true_idx],
+                "pred_label": class_names[pred_idx],
+                "count": int(count),
+                "avg_confidence": float(avg_conf),
+            }
+        )
+
+    misclassified_total = max(total_examples - correct_examples, 0)
+    return {
+        "total_examples": int(total_examples),
+        "correct_examples": int(correct_examples),
+        "misclassified_examples": int(misclassified_total),
+        "accuracy": float(correct_examples / total_examples) if total_examples > 0 else 0.0,
+        "class_names": list(class_names),
+        "confusion_pairs": confusion_pairs,
+        "top_misclassifications": confusion_pairs[:top_pairs_limit],
+        "top_confidence_errors": sorted(
+            top_confidence_errors,
+            key=lambda item: (-float(item.get("confidence", 0.0)), str(item.get("true_label", "")), str(item.get("pred_label", ""))),
+        )[:top_confidence_limit],
+    }
+
+
 class TrainingRunLogger:
     def __init__(
         self,
@@ -187,6 +228,7 @@ class TrainingRunLogger:
         eval_examples: int,
         test_examples: int,
         num_classes: int,
+        class_names: list[str],
         total_params: int,
         trainable_params: int,
     ) -> None:
@@ -196,7 +238,7 @@ class TrainingRunLogger:
         self.path = run_logs_dir / f"{run_id}.json"
         self._finalized = False
         self.data: dict[str, object] = {
-            "schema_version": 2,
+            "schema_version": 3,
             "run_id": run_id,
             "status": "running",
             "start_time_utc": now_iso_utc(),
@@ -224,6 +266,7 @@ class TrainingRunLogger:
             "dataset": {
                 "num_classes": int(num_classes),
                 "class_count_from_mapping": int(num_classes),
+                "class_names": list(class_names),
                 "train_examples": int(train_examples),
                 "eval_examples": int(eval_examples),
                 "test_examples": int(test_examples),
@@ -257,6 +300,11 @@ class TrainingRunLogger:
                 "final_test_loss": None,
             },
             "timing_summary": None,
+            "analysis": {
+                "last_eval_stage": eval_name,
+                "last_eval": None,
+                "final_test": None,
+            },
             "artifacts": {
                 "best_checkpoint": {
                     "path": str(best_checkpoint_path),
@@ -288,6 +336,7 @@ class TrainingRunLogger:
         eval_loss: float,
         eval_acc: float,
         eval_timing: dict[str, float],
+        eval_analysis: dict[str, object],
         lr: float,
         best_acc_after_epoch: float,
         is_best_checkpoint: bool,
@@ -321,6 +370,9 @@ class TrainingRunLogger:
             summary["best_eval_acc"] = float(best_acc_after_epoch)
             if is_best_checkpoint:
                 summary["best_eval_epoch"] = int(epoch)
+        analysis = self.data["analysis"]
+        assert isinstance(analysis, dict)
+        analysis["last_eval"] = eval_analysis
         self.write()
 
     def mark_best_checkpoint(self, *, epoch: int, best_acc: float, path: Path) -> None:
@@ -341,16 +393,20 @@ class TrainingRunLogger:
         last["final_signature"] = file_signature(path)
         self.write()
 
-    def set_final_test(self, *, loss: float, acc: float, timing: dict[str, float]) -> None:
+    def set_final_test(self, *, loss: float, acc: float, timing: dict[str, float], analysis: dict[str, object]) -> None:
         self.data["final_test"] = {
             "loss": float(loss),
             "acc": float(acc),
             "timing": timing,
+            "analysis": analysis,
         }
         summary = self.data["summary"]
         assert isinstance(summary, dict)
         summary["final_test_loss"] = float(loss)
         summary["final_test_acc"] = float(acc)
+        analysis_root = self.data["analysis"]
+        assert isinstance(analysis_root, dict)
+        analysis_root["final_test"] = analysis
         self.write()
 
     def finalize(
@@ -406,6 +462,7 @@ def main() -> None:
     )
     eval_loader = val_loader if args.use_validation_split else test_loader
     eval_name = "val" if args.use_validation_split else "test"
+    class_names = [name for name, _ in sorted(class_to_idx.items(), key=lambda item: item[1])]
 
     model_module = load_model_module(args.model)
     model = model_module.build_model(
@@ -480,6 +537,7 @@ def main() -> None:
         eval_examples=eval_examples,
         test_examples=test_examples,
         num_classes=num_classes,
+        class_names=class_names,
         total_params=total_params,
         trainable_params=trainable_params,
     )
@@ -500,11 +558,12 @@ def main() -> None:
                 progress_format=args.progress_format,
                 stop_file=stop_file,
             )
-            eval_loss, eval_acc, eval_timing = evaluate(
+            eval_loss, eval_acc, eval_timing, eval_analysis = evaluate(
                 model,
                 eval_loader,
                 loss_fn,
                 device,
+                class_names=class_names,
                 epoch=epoch + 1,
                 num_epochs=num_epochs,
                 progress_format=args.progress_format,
@@ -552,6 +611,7 @@ def main() -> None:
                 eval_loss=eval_loss,
                 eval_acc=eval_acc,
                 eval_timing=eval_timing,
+                eval_analysis=eval_analysis,
                 lr=current_lr,
                 best_acc_after_epoch=best_acc,
                 is_best_checkpoint=is_best_checkpoint,
@@ -572,11 +632,12 @@ def main() -> None:
             )
 
         if args.use_validation_split:
-            final_test_loss, final_test_acc, test_timing = evaluate(
+            final_test_loss, final_test_acc, test_timing, test_analysis = evaluate(
                 model,
                 test_loader,
                 loss_fn,
                 device,
+                class_names=class_names,
                 progress_format=args.progress_format,
                 stage_name="test",
                 stop_file=stop_file,
@@ -584,7 +645,7 @@ def main() -> None:
             stage_totals["test"]["total_seconds"] += test_timing["total_seconds"]
             stage_totals["test"]["pure_seconds"] += test_timing["pure_seconds"]
             stage_totals["test"]["batches"] += test_timing["batches"]
-            run_logger.set_final_test(loss=final_test_loss, acc=final_test_acc, timing=test_timing)
+            run_logger.set_final_test(loss=final_test_loss, acc=final_test_acc, timing=test_timing, analysis=test_analysis)
             test_avg_pure_per_batch = test_timing["pure_seconds"] / max(test_timing["batches"], 1)
             print(
                 f"Final test: test_loss={final_test_loss:.4f}, test_acc={final_test_acc:.4f}, "
@@ -774,6 +835,7 @@ def evaluate(
     dataloader,
     loss_fn,
     device,
+    class_names: list[str] | None = None,
     epoch: int | None = None,
     num_epochs: int | None = None,
     progress_format: str = "tqdm",
@@ -785,6 +847,11 @@ def evaluate(
     total_loss = 0.0
     correct = 0
     total = 0
+    pair_counts: dict[tuple[int, int], int] = {}
+    pair_confidence_sums: dict[tuple[int, int], float] = {}
+    top_confidence_errors: list[dict[str, object]] = []
+    if class_names is None:
+        class_names = [str(index) for index in range(getattr(dataloader.dataset, "num_classes", 0))]
 
     total_steps = len(dataloader)
     title = stage_name.capitalize()
@@ -800,9 +867,29 @@ def evaluate(
             outputs = model(images)
             loss = loss_fn(outputs,labels)
             total_loss += loss.item() * images.size(0)
+            probs = torch.softmax(outputs, dim=1)
             preds = outputs.argmax(dim=1)
             correct += (preds == labels).sum().item()
             total += labels.size(0)
+            confidences = probs.gather(1, preds.unsqueeze(1)).squeeze(1)
+
+            labels_cpu = labels.detach().cpu().tolist()
+            preds_cpu = preds.detach().cpu().tolist()
+            confidences_cpu = confidences.detach().cpu().tolist()
+            for true_idx, pred_idx, confidence in zip(labels_cpu, preds_cpu, confidences_cpu):
+                pair_key = (int(true_idx), int(pred_idx))
+                pair_counts[pair_key] = pair_counts.get(pair_key, 0) + 1
+                pair_confidence_sums[pair_key] = pair_confidence_sums.get(pair_key, 0.0) + float(confidence)
+                if int(true_idx) != int(pred_idx):
+                    top_confidence_errors.append(
+                        {
+                            "true_idx": int(true_idx),
+                            "pred_idx": int(pred_idx),
+                            "true_label": class_names[int(true_idx)] if int(true_idx) < len(class_names) else str(true_idx),
+                            "pred_label": class_names[int(pred_idx)] if int(pred_idx) < len(class_names) else str(pred_idx),
+                            "confidence": float(confidence),
+                        }
+                    )
             if total > 0:
                 avg_loss = total_loss / total
                 accuracy = correct / total
@@ -828,7 +915,15 @@ def evaluate(
         "pure_seconds": pure_seconds,
         "batches": total_steps,
     }
-    return avg_loss, accuracy, timing
+    analysis = build_error_analysis(
+        pair_counts=pair_counts,
+        pair_confidence_sums=pair_confidence_sums,
+        top_confidence_errors=top_confidence_errors,
+        class_names=class_names,
+        total_examples=total,
+        correct_examples=correct,
+    )
+    return avg_loss, accuracy, timing, analysis
 
 if __name__ == "__main__":
     main()
