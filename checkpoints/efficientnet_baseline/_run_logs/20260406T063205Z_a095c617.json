@@ -1,0 +1,323 @@
+{
+  "schema_version": 2,
+  "run_id": "20260406T063205Z_a095c617",
+  "status": "failed",
+  "start_time_utc": "2026-04-06T06:32:05+00:00",
+  "end_time_utc": "2026-04-06T07:37:23+00:00",
+  "error_message": "OSError: [Errno 22] Invalid argument",
+  "status_reason": "OSError",
+  "command": "C:\\Users\\18447\\DATA586Project\\scripts\\pipeline\\training.py --model efficientnet_baseline --data-root C:\\Users\\18447\\DATA586Project\\data\\food-101 --checkpoint-dir C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline --epochs 20 --batch-size 32 --num-workers 4 --image-size 224 --lr 0.001000 --progress-format tqdm --freeze-backbone --use-validation-split --validation-proportion 0.10",
+  "args": {
+    "model": "efficientnet_baseline",
+    "data_root": "C:\\Users\\18447\\DATA586Project\\data\\food-101",
+    "checkpoint_dir": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline",
+    "epochs": 20,
+    "start_epoch": 0,
+    "planned_epochs_this_run": 20,
+    "batch_size": 32,
+    "num_workers": 4,
+    "image_size": 224,
+    "lr": 0.001,
+    "device": "cuda",
+    "freeze_backbone": true,
+    "use_validation_split": true,
+    "validation_proportion": 0.1,
+    "resume": null
+  },
+  "dataset": {
+    "num_classes": 101,
+    "class_count_from_mapping": 101,
+    "train_examples": 68175,
+    "eval_examples": 7575,
+    "test_examples": 25250,
+    "eval_name": "val",
+    "use_validation_split": true,
+    "validation_proportion": 0.1
+  },
+  "model": {
+    "name": "efficientnet_baseline",
+    "total_params": 20306869,
+    "trainable_params": 129381,
+    "frozen_params": 20177488,
+    "checkpoint_dir": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline",
+    "best_checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline\\best.pth",
+    "last_checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline\\last.pth"
+  },
+  "expected": {
+    "train_batches_per_epoch": 2131,
+    "val_batches_per_epoch": 237,
+    "final_test_batches": 790
+  },
+  "epochs": [
+    {
+      "epoch": 1,
+      "train": {
+        "loss": 2.8486401421428384,
+        "acc": 0.3458599193252659,
+        "timing": {
+          "total_seconds": 250.21887119999155,
+          "pure_seconds": 250.21357579994947,
+          "batches": 2131
+        }
+      },
+      "val": {
+        "loss": 2.308046345537645,
+        "acc": 0.4370957095709571,
+        "timing": {
+          "total_seconds": 54.542167800012976,
+          "pure_seconds": 54.53855820000172,
+          "batches": 237
+        }
+      },
+      "lr": 0.001,
+      "best_eval_acc_after_epoch": 0.4370957095709571,
+      "is_best_checkpoint": true
+    },
+    {
+      "epoch": 2,
+      "train": {
+        "loss": 2.3694525001527276,
+        "acc": 0.42517051705170517,
+        "timing": {
+          "total_seconds": 279.97400769998785,
+          "pure_seconds": 279.9716907000402,
+          "batches": 2131
+        }
+      },
+      "val": {
+        "loss": 24.667575133578612,
+        "acc": 0.446996699669967,
+        "timing": {
+          "total_seconds": 43.750945900101215,
+          "pure_seconds": 43.747671400080435,
+          "batches": 237
+        }
+      },
+      "lr": 0.001,
+      "best_eval_acc_after_epoch": 0.446996699669967,
+      "is_best_checkpoint": true
+    },
+    {
+      "epoch": 3,
+      "train": {
+        "loss": 2.2900266679967327,
+        "acc": 0.4393105977264393,
+        "timing": {
+          "total_seconds": 308.07644799991976,
+          "pure_seconds": 308.0740559999831,
+          "batches": 2131
+        }
+      },
+      "val": {
+        "loss": 51.782402309694696,
+        "acc": 0.4637623762376238,
+        "timing": {
+          "total_seconds": 45.68537149997428,
+          "pure_seconds": 45.682924299966544,
+          "batches": 237
+        }
+      },
+      "lr": 0.001,
+      "best_eval_acc_after_epoch": 0.4637623762376238,
+      "is_best_checkpoint": true
+    },
+    {
+      "epoch": 4,
+      "train": {
+        "loss": 2.251093017279468,
+        "acc": 0.44922625595892923,
+        "timing": {
+          "total_seconds": 276.32497689989395,
+          "pure_seconds": 276.32209579995833,
+          "batches": 2131
+        }
+      },
+      "val": {
+        "loss": 7.87062049717793,
+        "acc": 0.46917491749174917,
+        "timing": {
+          "total_seconds": 37.087291700067,
+          "pure_seconds": 37.08457150007598,
+          "batches": 237
+        }
+      },
+      "lr": 0.001,
+      "best_eval_acc_after_epoch": 0.46917491749174917,
+      "is_best_checkpoint": true
+    },
+    {
+      "epoch": 5,
+      "train": {
+        "loss": 2.232376347000799,
+        "acc": 0.4517785111844518,
+        "timing": {
+          "total_seconds": 236.74507780000567,
+          "pure_seconds": 236.7429691000143,
+          "batches": 2131
+        }
+      },
+      "val": {
+        "loss": 2.1264814654120516,
+        "acc": 0.4743234323432343,
+        "timing": {
+          "total_seconds": 45.5007987000281,
+          "pure_seconds": 45.49804370000493,
+          "batches": 237
+        }
+      },
+      "lr": 0.001,
+      "best_eval_acc_after_epoch": 0.4743234323432343,
+      "is_best_checkpoint": true
+    },
+    {
+      "epoch": 6,
+      "train": {
+        "loss": 2.2119409463831388,
+        "acc": 0.4591712504583792,
+        "timing": {
+          "total_seconds": 240.4496802999638,
+          "pure_seconds": 240.4469615999842,
+          "batches": 2131
+        }
+      },
+      "val": {
+        "loss": 11.692114957268089,
+        "acc": 0.4782838283828383,
+        "timing": {
+          "total_seconds": 40.799858600017615,
+          "pure_seconds": 40.79797920002602,
+          "batches": 237
+        }
+      },
+      "lr": 0.001,
+      "best_eval_acc_after_epoch": 0.4782838283828383,
+      "is_best_checkpoint": true
+    },
+    {
+      "epoch": 7,
+      "train": {
+        "loss": 2.2103143714503313,
+        "acc": 0.4568096809680968,
+        "timing": {
+          "total_seconds": 168.89919460006058,
+          "pure_seconds": 168.89690940000582,
+          "batches": 2131
+        }
+      },
+      "val": {
+        "loss": 2.274945585011649,
+        "acc": 0.4756435643564356,
+        "timing": {
+          "total_seconds": 32.5603148000082,
+          "pure_seconds": 32.5585917000426,
+          "batches": 237
+        }
+      },
+      "lr": 0.001,
+      "best_eval_acc_after_epoch": 0.4782838283828383,
+      "is_best_checkpoint": false
+    },
+    {
+      "epoch": 8,
+      "train": {
+        "loss": 2.2002281797155163,
+        "acc": 0.45845251191785846,
+        "timing": {
+          "total_seconds": 159.51815080002416,
+          "pure_seconds": 159.51617550000083,
+          "batches": 2131
+        }
+      },
+      "val": {
+        "loss": 14.008175212809748,
+        "acc": 0.4761716171617162,
+        "timing": {
+          "total_seconds": 31.143571299966425,
+          "pure_seconds": 31.142019900027663,
+          "batches": 237
+        }
+      },
+      "lr": 0.001,
+      "best_eval_acc_after_epoch": 0.4782838283828383,
+      "is_best_checkpoint": false
+    },
+    {
+      "epoch": 9,
+      "train": {
+        "loss": 2.196911131761255,
+        "acc": 0.4618115144847818,
+        "timing": {
+          "total_seconds": 149.89316450001206,
+          "pure_seconds": 149.89162340003531,
+          "batches": 2131
+        }
+      },
+      "val": {
+        "loss": 10.318180235525956,
+        "acc": 0.47313531353135313,
+        "timing": {
+          "total_seconds": 32.538288999930955,
+          "pure_seconds": 32.53674959996715,
+          "batches": 237
+        }
+      },
+      "lr": 0.001,
+      "best_eval_acc_after_epoch": 0.4782838283828383,
+      "is_best_checkpoint": false
+    }
+  ],
+  "final_test": null,
+  "summary": {
+    "best_eval_acc": 0.4782838283828383,
+    "best_eval_epoch": 6,
+    "last_completed_epoch": 9,
+    "last_eval_acc": 0.47313531353135313,
+    "last_eval_loss": 10.318180235525956,
+    "final_test_acc": null,
+    "final_test_loss": null
+  },
+  "timing_summary": {
+    "total_wall_time_seconds": 3924.8308109999634,
+    "total_pure_execution_time_seconds": 2433.6631668001646,
+    "initialization_and_overhead_time_seconds": 1491.1676441997988,
+    "stage_totals": {
+      "train": {
+        "total_seconds": 2070.0995717998594,
+        "pure_seconds": 2070.0760572999716,
+        "batches": 19179.0
+      },
+      "val": {
+        "total_seconds": 363.60860930010676,
+        "pure_seconds": 363.58710950019304,
+        "batches": 2133.0
+      },
+      "test": {
+        "total_seconds": 0.0,
+        "pure_seconds": 0.0,
+        "batches": 0.0
+      }
+    }
+  },
+  "artifacts": {
+    "best_checkpoint": {
+      "path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline\\best.pth",
+      "initial_signature": {
+        "exists": false
+      },
+      "final_signature": {
+        "exists": true,
+        "size": 83122441,
+        "mtime_ns": 1775458985912604400
+      },
+      "saved_epoch": 6,
+      "saved_best_acc": 0.4782838283828383
+    },
+    "last_checkpoint": {
+      "path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline\\last.pth",
+      "initial_signature": {
+        "exists": false
+      },
+      "final_signature": null
+    }
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "schema_version": 2,
+  "run_id": "20260406T061924Z_5aea2d71",
+  "status": "failed",
+  "start_time_utc": "2026-04-06T06:19:24+00:00",
+  "end_time_utc": "2026-04-06T07:37:23+00:00",
+  "error_message": "OSError: [Errno 22] Invalid argument",
+  "status_reason": "OSError",
+  "command": "C:\\Users\\18447\\DATA586Project\\scripts\\pipeline\\training.py --model efficientnet_baseline --data-root C:\\Users\\18447\\DATA586Project\\data\\food-101 --checkpoint-dir C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline --epochs 20 --batch-size 32 --num-workers 4 --image-size 224 --lr 0.001000 --progress-format tqdm --freeze-backbone --use-validation-split --validation-proportion 0.15",
+  "args": {
+    "model": "efficientnet_baseline",
+    "data_root": "C:\\Users\\18447\\DATA586Project\\data\\food-101",
+    "checkpoint_dir": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline",
+    "epochs": 20,
+    "start_epoch": 0,
+    "planned_epochs_this_run": 20,
+    "batch_size": 32,
+    "num_workers": 4,
+    "image_size": 224,
+    "lr": 0.001,
+    "device": "cuda",
+    "freeze_backbone": true,
+    "use_validation_split": true,
+    "validation_proportion": 0.15,
+    "resume": null
+  },
+  "dataset": {
+    "num_classes": 101,
+    "class_count_from_mapping": 101,
+    "train_examples": 64438,
+    "eval_examples": 11312,
+    "test_examples": 25250,
+    "eval_name": "val",
+    "use_validation_split": true,
+    "validation_proportion": 0.15
+  },
+  "model": {
+    "name": "efficientnet_baseline",
+    "total_params": 20306869,
+    "trainable_params": 129381,
+    "frozen_params": 20177488,
+    "checkpoint_dir": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline",
+    "best_checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline\\best.pth",
+    "last_checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline\\last.pth"
+  },
+  "expected": {
+    "train_batches_per_epoch": 2014,
+    "val_batches_per_epoch": 354,
+    "final_test_batches": 790
+  },
+  "epochs": [],
+  "final_test": null,
+  "summary": {
+    "best_eval_acc": null,
+    "best_eval_epoch": null,
+    "last_completed_epoch": 0,
+    "last_eval_acc": null,
+    "last_eval_loss": null,
+    "final_test_acc": null,
+    "final_test_loss": null
+  },
+  "timing_summary": {
+    "total_wall_time_seconds": 4686.8921222999925,
+    "total_pure_execution_time_seconds": 0.0,
+    "initialization_and_overhead_time_seconds": 4686.8921222999925,
+    "stage_totals": {
+      "train": {
+        "total_seconds": 0.0,
+        "pure_seconds": 0.0,
+        "batches": 0.0
+      },
+      "val": {
+        "total_seconds": 0.0,
+        "pure_seconds": 0.0,
+        "batches": 0.0
+      },
+      "test": {
+        "total_seconds": 0.0,
+        "pure_seconds": 0.0,
+        "batches": 0.0
+      }
+    }
+  },
+  "artifacts": {
+    "best_checkpoint": {
+      "path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline\\best.pth",
+      "initial_signature": {
+        "exists": false
+      },
+      "final_signature": null,
+      "saved_epoch": null,
+      "saved_best_acc": null
+    },
+    "last_checkpoint": {
+      "path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_baseline\\last.pth",
+      "initial_signature": {
+        "exists": false
+      },
+      "final_signature": null
+    }
+  }
+}
