@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from importlib.util import module_from_spec, spec_from_file_location
-from types import ModuleType
 from pathlib import Path
+from types import ModuleType
 
 
-MODEL_DIR = Path(__file__).resolve().parents[2] / "model"
+MODEL_DIR = Path(__file__).resolve().parents[1] / "model"
 IGNORED_MODEL_FILES = {"import_data.py", "__init__.py", "_transfer_strategies.py"}
 
 
@@ -14,8 +14,7 @@ def discover_model_names() -> list[str]:
     for path in sorted(MODEL_DIR.glob("*.py")):
         if path.name in IGNORED_MODEL_FILES or path.name.startswith("_"):
             continue
-        key = path.stem.lower()
-        names.setdefault(key, path.stem)
+        names.setdefault(path.stem.lower(), path.stem)
     return sorted(names.keys())
 
 
@@ -42,4 +41,3 @@ def load_model_module(model_name: str) -> ModuleType:
             f"Model module '{module_stem}' must define both build_model and build_optimizer."
         )
     return module
-

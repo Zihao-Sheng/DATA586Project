@@ -1,0 +1,67 @@
+{
+  "checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\resnet18_lora\\best.pth",
+  "model_name": "resnet18_lora",
+  "test_splits_root": "C:\\Users\\18447\\DATA586Project\\data\\test_splits",
+  "image_size": 224,
+  "device": "cuda",
+  "generated_at_utc": "2026-04-07T02:16:33+00:00",
+  "total_seconds": 957.4625225000054,
+  "clean_accuracy": 0.5333465346534654,
+  "robustness_average": 0.398439603960396,
+  "splits": [
+    {
+      "split": "blur_little",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 11891,
+      "accuracy": 0.4709306930693069,
+      "avg_confidence": 0.4043029900691887
+    },
+    {
+      "split": "blur_medium",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 8713,
+      "accuracy": 0.34506930693069304,
+      "avg_confidence": 0.3087906923350131
+    },
+    {
+      "split": "clean",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 13467,
+      "accuracy": 0.5333465346534654,
+      "avg_confidence": 0.4731963790640383
+    },
+    {
+      "split": "downsampled",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 5497,
+      "accuracy": 0.2177029702970297,
+      "avg_confidence": 0.23285644705453426
+    },
+    {
+      "split": "masked",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 12294,
+      "accuracy": 0.4868910891089109,
+      "avg_confidence": 0.4248371509492102
+    },
+    {
+      "split": "noise_rotation",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 11908,
+      "accuracy": 0.4716039603960396,
+      "avg_confidence": 0.4206631505199441
+    }
+  ]
+}
