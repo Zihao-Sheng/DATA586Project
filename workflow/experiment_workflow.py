@@ -1251,18 +1251,23 @@ def show_model_confusions_paginated_interactive(
     first = entries[0]
     first_labels = list(first["labels"])
     first_matrix = first["matrix"]
+    first_ticks = list(range(len(first_labels)))
     fig = go.Figure(
         data=[
             go.Heatmap(
                 z=first_matrix,
-                x=first_labels,
-                y=first_labels,
+                x=first_ticks,
+                y=first_ticks,
                 colorscale="Blues",
                 zmin=0,
                 zmax=max_value,
                 text=first_matrix,
                 texttemplate="%{text}",
-                hovertemplate="True: %{y}<br>Pred: %{x}<br>Count: %{z}<extra></extra>",
+                hovertemplate="True: %{customdata[0]}<br>Pred: %{customdata[1]}<br>Count: %{z}<extra></extra>",
+                customdata=[
+                    [[first_labels[r], first_labels[c]] for c in range(len(first_labels))]
+                    for r in range(len(first_labels))
+                ],
                 colorbar={"len": 0.72, "thickness": 14, "x": 1.01},
             )
         ]
@@ -1280,9 +1285,16 @@ def show_model_confusions_paginated_interactive(
                 "args": [
                     {
                         "z": [matrix],
-                        "x": [labels],
-                        "y": [labels],
+                        "x": [list(range(len(labels)))],
+                        "y": [list(range(len(labels)))],
                         "text": [matrix],
+                        "customdata": [
+                            [
+                                [labels[r], labels[c]]
+                                for c in range(len(labels))
+                            ]
+                            for r in range(len(labels))
+                        ],
                     },
                     {
                         "annotations": [
@@ -1298,8 +1310,23 @@ def show_model_confusions_paginated_interactive(
                                 "font": {"size": 16, "color": "#2f4369"},
                             }
                         ],
-                        "xaxis": {"categoryorder": "array", "categoryarray": labels},
-                        "yaxis": {"categoryorder": "array", "categoryarray": labels},
+                        "xaxis": {
+                            "tickmode": "array",
+                            "tickvals": list(range(len(labels))),
+                            "ticktext": labels,
+                            "range": [-0.5, len(labels) - 0.5],
+                            "tickangle": 45,
+                            "constrain": "domain",
+                        },
+                        "yaxis": {
+                            "tickmode": "array",
+                            "tickvals": list(range(len(labels))),
+                            "ticktext": labels,
+                            "range": [len(labels) - 0.5, -0.5],
+                            "scaleanchor": "x",
+                            "scaleratio": 1,
+                            "constrain": "domain",
+                        },
                     },
                 ],
             }
@@ -1344,14 +1371,18 @@ def show_model_confusions_paginated_interactive(
     fig.update_xaxes(
         tickangle=45,
         automargin=False,
-        categoryorder="array",
-        categoryarray=first_labels,
+        tickmode="array",
+        tickvals=first_ticks,
+        ticktext=first_labels,
+        range=[-0.5, len(first_labels) - 0.5],
         constrain="domain",
     )
     fig.update_yaxes(
         automargin=False,
-        categoryorder="array",
-        categoryarray=first_labels,
+        tickmode="array",
+        tickvals=first_ticks,
+        ticktext=first_labels,
+        range=[len(first_labels) - 0.5, -0.5],
         scaleanchor="x",
         scaleratio=1,
         constrain="domain",
