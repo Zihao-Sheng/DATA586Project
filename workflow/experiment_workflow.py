@@ -13,7 +13,6 @@ import torch.nn as nn
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 from workflow.data import data_import
-from workflow.log_analysis import display_confusion_matrix, plot_efficiency_tradeoff
 from workflow.model_registry import discover_model_names, load_model_module
 from workflow.predicting import (
     build_transform,
@@ -704,15 +703,6 @@ def plot_training_history(
     plt.show()
 
 
-def show_confusion_matrix(training_log_path: str | Path, view: str = "summary", top_k: int = 10) -> None:
-    display_confusion_matrix([Path(training_log_path).expanduser().resolve()], view=view, top_k=top_k)
-
-
-def plot_efficiency_compare(training_log_paths: list[str | Path], x_metric: str = "Train Wall Time") -> None:
-    resolved = [Path(path).expanduser().resolve() for path in training_log_paths]
-    plot_efficiency_tradeoff(resolved, x_metric=x_metric)
-
-
 def compare_test_split_results(test_split_json_paths: list[str | Path]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for path in test_split_json_paths:
@@ -733,39 +723,706 @@ def compare_test_split_results(test_split_json_paths: list[str | Path]) -> list[
     return rows
 
 
-def plot_test_split_comparison(test_split_json_paths: list[str | Path]) -> list[dict[str, object]]:
-    import matplotlib.pyplot as plt
+def get_latest_workflow_runs() -> tuple["pd.DataFrame", "pd.DataFrame"]:
+    import pandas as pd
+
+    runs_df = pd.DataFrame(list_workflow_runs())
+    if runs_df.empty:
+        raise RuntimeError("No workflow logs found under logs/workflow_runs")
+    runs_df = runs_df.sort_values(["generated_at_utc", "model_name"], ascending=[False, True]).reset_index(drop=True)
+    latest_df = runs_df.drop_duplicates(subset=["model_name"], keep="first").reset_index(drop=True)
+    latest_df["is_baseline"] = latest_df["model_name"].astype(str).str.contains("baseline", case=False, na=False)
+    latest_df["model_type"] = latest_df["is_baseline"].map({True: "Baseline (linear probe)", False: "Custom"})
+    print(f"Total workflow runs: {len(runs_df)}")
+    print(f"Latest unique models: {len(latest_df)}")
+    return runs_df, latest_df
+
+
+def build_split_analysis_from_latest(latest_df: "pd.DataFrame", *, show_tables: bool = True) -> dict[str, object]:
+    import pandas as pd
+
+    test_split_json_paths = [
+        str(Path(path).expanduser().resolve())
+        for path in latest_df["test_split_json"].dropna().tolist()
+        if Path(str(path)).exists()
+    ]
+    split_rows = compare_test_split_results(test_split_json_paths)
+    split_df = pd.DataFrame(split_rows)
+    if split_df.empty:
+        raise RuntimeError("No test split summary json found.")
+
+    type_lookup = dict(zip(latest_df["model_name"], latest_df["model_type"]))
+    split_df["model_type"] = split_df["model_name"].map(type_lookup)
+    split_cols = sorted([col for col in split_df.columns if isinstance(col, str) and col.startswith("split::")])
+    clean_and_agg_df = split_df[
+        ["model_name", "model_type", "clean_accuracy", "robustness_average", "total_seconds"]
+    ].sort_values("clean_accuracy", ascending=False)
+    variant_df = split_df[["model_name", "model_type", *split_cols]].sort_values("model_name")
+    merged_df = split_df[
+        [
+            "model_name",
+            "model_type",
+            "clean_accuracy",
+            "robustness_average",
+            "total_seconds",
+            *split_cols,
+        ]
+    ].sort_values("clean_accuracy", ascending=False)
+
+    if show_tables:
+        from IPython.display import display
+
+        print("Model Summary + Robustness by Variant")
+        display(merged_df)
+
+    return {
+        "test_split_json_paths": test_split_json_paths,
+        "split_df": split_df,
+        "clean_and_agg_df": clean_and_agg_df,
+        "variant_df": variant_df,
+        "merged_df": merged_df,
+    }
+
+
+def plot_test_split_comparison_interactive(test_split_json_paths: list[str | Path]) -> list[dict[str, object]]:
+    import pandas as pd
 
     rows = compare_test_split_results(test_split_json_paths)
     if not rows:
         print("No test split summaries available.")
         return rows
 
-    model_names = [str(row.get("model_name", f"model-{index+1}")) for index, row in enumerate(rows)]
-    split_names = sorted(
-        {
-            key.split("::", 1)[1]
-            for row in rows
-            for key in row.keys()
-            if isinstance(key, str) and key.startswith("split::")
-        }
-    )
-    if not split_names:
+    plot_df = pd.DataFrame(rows)
+    split_cols = sorted([col for col in plot_df.columns if isinstance(col, str) and col.startswith("split::")])
+    if not split_cols:
         print("No split metrics available.")
         return rows
 
-    plt.figure(figsize=(max(9, len(split_names) * 1.6), 5.5))
-    for row, model_name in zip(rows, model_names):
-        values = [float(row.get(f"split::{split_name}", 0.0) or 0.0) for split_name in split_names]
-        plt.plot(split_names, values, marker="o", label=model_name)
-    plt.ylabel("Accuracy")
-    plt.title("Test Split Comparison")
-    plt.xticks(rotation=30, ha="right")
-    plt.grid(alpha=0.25)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
+    long_df = plot_df.melt(
+        id_vars=["model_name"],
+        value_vars=split_cols,
+        var_name="split",
+        value_name="accuracy",
+    )
+    long_df["split"] = long_df["split"].str.replace("split::", "", regex=False)
+
+    try:
+        import plotly.express as px
+
+        fig = px.line(
+            long_df,
+            x="split",
+            y="accuracy",
+            color="model_name",
+            markers=True,
+            title="Test Split Comparison",
+        )
+        fig.update_layout(xaxis_title="Test Variant", yaxis_title="Accuracy")
+        fig.show()
+    except Exception as exc:
+        print(f"Plotly unavailable or failed: {exc}")
+        print("Showing pivot table instead:")
+        print(long_df.pivot(index="model_name", columns="split", values="accuracy"))
     return rows
+
+
+def plot_efficiency_compare_interactive(training_log_paths: list[str | Path]) -> list[dict[str, object]]:
+    import json
+
+    import pandas as pd
+
+    resolved_paths = [Path(path).expanduser().resolve() for path in training_log_paths]
+    rows: list[dict[str, object]] = []
+    for path in resolved_paths:
+        if not path.is_file():
+            continue
+        run = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(run, dict):
+            continue
+        summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+        model = run.get("model") if isinstance(run.get("model"), dict) else {}
+        timing_summary = run.get("timing_summary") if isinstance(run.get("timing_summary"), dict) else {}
+        stage_totals = timing_summary.get("stage_totals") if isinstance(timing_summary.get("stage_totals"), dict) else {}
+        train_timing = stage_totals.get("train") if isinstance(stage_totals.get("train"), dict) else {}
+        final_test = run.get("final_test") if isinstance(run.get("final_test"), dict) else {}
+        final_test_timing = final_test.get("timing") if isinstance(final_test.get("timing"), dict) else {}
+
+        pure = final_test_timing.get("pure_seconds")
+        batches = final_test_timing.get("batches")
+        test_avg_pure_per_batch = (
+            float(pure) / float(batches)
+            if isinstance(pure, (int, float)) and isinstance(batches, (int, float)) and batches
+            else None
+        )
+        rows.append(
+            {
+                "model_name": str((run.get("args") or {}).get("model", summary.get("model_name", "run"))),
+                "final_test_acc": summary.get("final_test_acc", summary.get("best_eval_acc")),
+                "train_wall_time": train_timing.get("total_seconds"),
+                "trainable_params": model.get("trainable_params"),
+                "test_avg_pure_per_batch": test_avg_pure_per_batch,
+                "log_path": str(path),
+            }
+        )
+
+    eff_df = pd.DataFrame(rows).dropna(subset=["final_test_acc"])
+    if eff_df.empty:
+        print("No training run logs available for efficiency analysis.")
+        return rows
+
+    # Explicitly keep max/min visual diameter around 3x.
+    valid = eff_df["trainable_params"].apply(lambda value: isinstance(value, (int, float)))
+    if valid.any():
+        rank_pct = eff_df.loc[valid, "trainable_params"].astype(float).rank(method="average", pct=True)
+        d_min, d_max = 10.0, 30.0
+        diameter = d_min + (d_max - d_min) * rank_pct
+        eff_df.loc[valid, "size_metric"] = diameter**2
+        eff_df.loc[~valid, "size_metric"] = (d_min * 1.4) ** 2
+    else:
+        eff_df["size_metric"] = 14.0**2
+
+    try:
+        import plotly.express as px
+
+        def draw_scatter(df: pd.DataFrame, x_col: str, title: str, x_label: str) -> None:
+            plot_data = df.dropna(subset=[x_col, "size_metric"]).copy()
+            if plot_data.empty:
+                print(f"No data for {title}")
+                return
+            fig = px.scatter(
+                plot_data,
+                x=x_col,
+                y="final_test_acc",
+                size="size_metric",
+                color="model_name",
+                size_max=30,
+                title=title,
+                hover_data=["trainable_params", "log_path"],
+            )
+            fig.update_traces(marker={"opacity": 0.88, "line": {"width": 1, "color": "#1f2937"}, "sizemin": 10})
+            fig.update_layout(xaxis_title=x_label, yaxis_title="Accuracy")
+            fig.show()
+
+        draw_scatter(eff_df, "train_wall_time", "Performance vs Train Wall Time", "Train Wall Time (s)")
+        draw_scatter(eff_df, "trainable_params", "Performance vs Trainable Params", "Trainable Params")
+        draw_scatter(
+            eff_df,
+            "test_avg_pure_per_batch",
+            "Inference Speed vs Performance",
+            "Test Avg Pure / Batch (s)",
+        )
+    except Exception as exc:
+        print(f"Plotly unavailable or failed: {exc}")
+        print(eff_df[["model_name", "final_test_acc", "train_wall_time", "trainable_params", "test_avg_pure_per_batch"]])
+    return rows
+
+
+def _load_epoch_curves_from_training_logs(
+    training_log_paths: list[str | Path],
+    *,
+    max_epochs: int = 20,
+) -> "pd.DataFrame":
+    import json
+
+    import pandas as pd
+
+    resolved_paths = [Path(path).expanduser().resolve() for path in training_log_paths]
+    rows: list[dict[str, object]] = []
+    for path in resolved_paths:
+        if not path.is_file():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            continue
+        model_name = str(((payload.get("args") or {}).get("model")) or ((payload.get("summary") or {}).get("model_name")) or path.stem)
+        epochs = payload.get("epochs")
+        if not isinstance(epochs, list):
+            continue
+        for item in epochs:
+            if not isinstance(item, dict):
+                continue
+            epoch = item.get("epoch")
+            if not isinstance(epoch, (int, float)):
+                continue
+            epoch_int = int(epoch)
+            if epoch_int < 1 or epoch_int > max_epochs:
+                continue
+            train = item.get("train") if isinstance(item.get("train"), dict) else {}
+            val = item.get("val") if isinstance(item.get("val"), dict) else {}
+            train_timing = train.get("timing") if isinstance(train.get("timing"), dict) else {}
+            val_timing = val.get("timing") if isinstance(val.get("timing"), dict) else {}
+            rows.append(
+                {
+                    "model_name": model_name,
+                    "epoch": epoch_int,
+                    "train_acc": train.get("acc"),
+                    "val_acc": val.get("acc"),
+                    "train_time": train_timing.get("total_seconds"),
+                    "val_time": val_timing.get("total_seconds"),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def show_model_epoch_dynamics_paginated_interactive(
+    training_log_paths: list[str | Path],
+    *,
+    max_epochs: int = 20,
+    page_size: int = 1,
+) -> None:
+    # Keep `page_size` for backward compatibility; this function now uses
+    # a single interactive figure with a model dropdown (same style as confusion matrix).
+    curves = _load_epoch_curves_from_training_logs(training_log_paths, max_epochs=max_epochs)
+    if curves.empty:
+        print("No epoch-level curves found in training logs.")
+        return
+    model_names = sorted(curves["model_name"].dropna().astype(str).unique().tolist())
+    if not model_names:
+        print("No model curves available.")
+        return
+
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except Exception:
+        print("Plotly unavailable.")
+        return
+
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=("Accuracy (Train vs Val)", "Timing (Train vs Val)"),
+        horizontal_spacing=0.12,
+    )
+
+    trace_count_per_model = 4
+    all_traces_visible: list[bool] = []
+    for model_index, model_name in enumerate(model_names):
+        df = curves[curves["model_name"] == model_name].sort_values("epoch")
+        visible = model_index == 0
+        fig.add_trace(
+            go.Scatter(
+                x=df["epoch"],
+                y=df["train_acc"],
+                mode="lines+markers",
+                name="Train Acc",
+                line={"color": "#2563eb", "width": 2},
+                marker={"size": 6},
+                visible=visible,
+                legendgroup="train_acc",
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df["epoch"],
+                y=df["val_acc"],
+                mode="lines+markers",
+                name="Val Acc",
+                line={"color": "#16a34a", "width": 2},
+                marker={"size": 6},
+                visible=visible,
+                legendgroup="val_acc",
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df["epoch"],
+                y=df["train_time"],
+                mode="lines+markers",
+                name="Train Time",
+                line={"color": "#dc2626", "width": 2},
+                marker={"size": 6},
+                visible=visible,
+                legendgroup="train_time",
+            ),
+            row=1,
+            col=2,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df["epoch"],
+                y=df["val_time"],
+                mode="lines+markers",
+                name="Val Time",
+                line={"color": "#f59e0b", "width": 2},
+                marker={"size": 6},
+                visible=visible,
+                legendgroup="val_time",
+            ),
+            row=1,
+            col=2,
+        )
+        all_traces_visible.extend([visible] * trace_count_per_model)
+
+    buttons = []
+    total_traces = len(model_names) * trace_count_per_model
+    for model_index, model_name in enumerate(model_names):
+        visible = [False] * total_traces
+        start = model_index * trace_count_per_model
+        for trace_idx in range(start, start + trace_count_per_model):
+            visible[trace_idx] = True
+        buttons.append(
+            {
+                "label": model_name,
+                "method": "update",
+                "args": [
+                    {"visible": visible},
+                    {
+                        "annotations": [
+                            {
+                                "xref": "paper",
+                                "yref": "paper",
+                                "x": 0.0,
+                                "y": 1.16,
+                                "xanchor": "left",
+                                "yanchor": "top",
+                                "text": f"<b>{model_name}</b> (first {max_epochs} epochs)",
+                                "showarrow": False,
+                                "font": {"size": 16, "color": "#2f4369"},
+                            }
+                        ]
+                    },
+                ],
+            }
+        )
+
+    fig.update_layout(
+        title="",
+        width=960,
+        height=520,
+        margin={"l": 55, "r": 25, "t": 120, "b": 95},
+        legend={"orientation": "h", "y": -0.18, "x": 0.5, "xanchor": "center"},
+        updatemenus=[
+            {
+                "buttons": buttons,
+                "direction": "down",
+                "showactive": True,
+                "x": 1.0,
+                "xanchor": "right",
+                "y": 1.16,
+                "yanchor": "top",
+                "bgcolor": "white",
+                "bordercolor": "#cbd5e1",
+                "borderwidth": 1,
+                "pad": {"t": 0, "r": 0, "b": 0, "l": 0},
+            }
+        ],
+        annotations=[
+            {
+                "xref": "paper",
+                "yref": "paper",
+                "x": 0.0,
+                "y": 1.16,
+                "xanchor": "left",
+                "yanchor": "top",
+                "text": f"<b>{model_names[0]}</b> (first {max_epochs} epochs)",
+                "showarrow": False,
+                "font": {"size": 16, "color": "#2f4369"},
+            }
+        ],
+    )
+    fig.update_xaxes(title_text="Epoch", row=1, col=1, range=[1, max_epochs], tickmode="linear", dtick=1)
+    fig.update_xaxes(title_text="Epoch", row=1, col=2, range=[1, max_epochs], tickmode="linear", dtick=1)
+    fig.update_yaxes(title_text="Accuracy", row=1, col=1)
+    fig.update_yaxes(title_text="Seconds", row=1, col=2)
+    fig.show()
+
+
+def plot_val_accuracy_all_models_interactive(training_log_paths: list[str | Path], *, max_epochs: int = 20) -> None:
+    curves = _load_epoch_curves_from_training_logs(training_log_paths, max_epochs=max_epochs)
+    if curves.empty:
+        print("No epoch-level curves found in training logs.")
+        return
+    try:
+        import plotly.express as px
+    except Exception as exc:
+        print(f"Plotly unavailable: {exc}")
+        return
+    val_df = curves.dropna(subset=["val_acc"]).sort_values(["model_name", "epoch"])
+    if val_df.empty:
+        print("No val accuracy curves available.")
+        return
+    fig = px.line(
+        val_df,
+        x="epoch",
+        y="val_acc",
+        color="model_name",
+        markers=True,
+        title=f"Validation Accuracy Across Models (first {max_epochs} epochs)",
+    )
+    fig.update_traces(line={"width": 2}, marker={"size": 6})
+    fig.update_layout(
+        width=1080,
+        height=500,
+        margin={"l": 60, "r": 240, "t": 70, "b": 60},
+        legend={
+            "orientation": "v",
+            "y": 1.0,
+            "yanchor": "top",
+            "x": 1.02,
+            "xanchor": "left",
+            "font": {"size": 12},
+        },
+        legend_title_text="",
+    )
+    fig.update_xaxes(title_text="Epoch")
+    fig.update_yaxes(title_text="Validation Accuracy")
+    fig.show()
+
+
+def plot_final_test_accuracy_model_comparison_interactive(training_log_paths: list[str | Path]) -> None:
+    import json
+
+    import pandas as pd
+
+    rows: list[dict[str, object]] = []
+    for path in [Path(p).expanduser().resolve() for p in training_log_paths]:
+        if not path.is_file():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            continue
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        rows.append(
+            {
+                "model_name": str(((payload.get("args") or {}).get("model")) or (summary.get("model_name") or path.stem)),
+                "final_test_acc": summary.get("final_test_acc", summary.get("best_eval_acc")),
+            }
+        )
+    df = pd.DataFrame(rows).dropna(subset=["final_test_acc"]).sort_values("final_test_acc", ascending=False)
+    if df.empty:
+        print("No final test accuracy data available.")
+        return
+    try:
+        import plotly.express as px
+    except Exception as exc:
+        print(f"Plotly unavailable: {exc}")
+        return
+    fig = px.bar(df, x="model_name", y="final_test_acc", title="Final Test Accuracy Comparison")
+    fig.update_layout(width=920, height=420, margin={"l": 60, "r": 20, "t": 60, "b": 90})
+    fig.update_xaxes(tickangle=-25, title_text="Model")
+    fig.update_yaxes(title_text="Final Test Accuracy")
+    fig.show()
+
+
+def show_model_confusions_paginated_interactive(
+    latest_df: "pd.DataFrame",
+    *,
+    top_k: int = 10,
+    page_size: int = 1,
+) -> None:
+    from workflow.log_analysis import confusion_matrix_from_run, load_runs
+
+    rows = latest_df.sort_values("model_name").drop_duplicates(subset=["model_name"], keep="first").reset_index(drop=True)
+    entries: list[dict[str, object]] = []
+    for _, row in rows.iterrows():
+        training_log = Path(str(row["training_run_log"])).expanduser().resolve()
+        runs = load_runs([training_log])
+        if len(runs) != 1:
+            continue
+        labels, matrix = confusion_matrix_from_run(runs[0], view="summary", top_k=top_k)
+        if not labels:
+            continue
+        entries.append(
+            {
+                "model_name": str(row["model_name"]),
+                "training_log": str(training_log),
+                "labels": labels,
+                "matrix": matrix,
+            }
+        )
+
+    if not entries:
+        print("No confusion matrix data available.")
+        return
+
+    try:
+        import plotly.graph_objects as go
+    except Exception as exc:
+        print(f"Plotly unavailable: {exc}")
+        return
+
+    # Keep a single figure visible; switch model by dropdown.
+    max_value = max(max(max(row) for row in item["matrix"]) for item in entries)
+    first = entries[0]
+    first_labels = list(first["labels"])
+    first_matrix = first["matrix"]
+    fig = go.Figure(
+        data=[
+            go.Heatmap(
+                z=first_matrix,
+                x=first_labels,
+                y=first_labels,
+                colorscale="Blues",
+                zmin=0,
+                zmax=max_value,
+                text=first_matrix,
+                texttemplate="%{text}",
+                hovertemplate="True: %{y}<br>Pred: %{x}<br>Count: %{z}<extra></extra>",
+                colorbar={"len": 0.72, "thickness": 14, "x": 1.01},
+            )
+        ]
+    )
+
+    buttons = []
+    for item in entries:
+        model_name = str(item["model_name"])
+        labels = item["labels"]
+        matrix = item["matrix"]
+        buttons.append(
+            {
+                "label": model_name,
+                "method": "update",
+                "args": [
+                    {
+                        "z": [matrix],
+                        "x": [labels],
+                        "y": [labels],
+                        "text": [matrix],
+                    },
+                    {
+                        "annotations": [
+                            {
+                                "xref": "paper",
+                                "yref": "paper",
+                                "x": 0.0,
+                                "y": 1.16,
+                                "xanchor": "left",
+                                "yanchor": "top",
+                                "text": f"<b>{model_name}</b> Confusion Matrix (Top-{len(labels)})",
+                                "showarrow": False,
+                                "font": {"size": 16, "color": "#2f4369"},
+                            }
+                        ],
+                        "xaxis": {"categoryorder": "array", "categoryarray": labels},
+                        "yaxis": {"categoryorder": "array", "categoryarray": labels},
+                    },
+                ],
+            }
+        )
+
+    fig.update_layout(
+        title="",
+        xaxis_title="Predicted",
+        yaxis_title="True",
+        width=860,
+        height=700,
+        margin={"l": 95, "r": 35, "t": 120, "b": 95},
+        updatemenus=[
+            {
+                "buttons": buttons,
+                "direction": "down",
+                "showactive": True,
+                "x": 1.0,
+                "xanchor": "right",
+                "y": 1.16,
+                "yanchor": "top",
+                "pad": {"t": 0, "r": 0, "b": 0, "l": 0},
+                "bgcolor": "white",
+                "bordercolor": "#cbd5e1",
+                "borderwidth": 1,
+            }
+        ],
+        annotations=[
+            {
+                "xref": "paper",
+                "yref": "paper",
+                "x": 0.0,
+                "y": 1.16,
+                "xanchor": "left",
+                "yanchor": "top",
+                "text": f"<b>{first['model_name']}</b> Confusion Matrix (Top-{len(first['labels'])})",
+                "showarrow": False,
+                "font": {"size": 16, "color": "#2f4369"},
+            }
+        ],
+    )
+    fig.update_xaxes(
+        tickangle=45,
+        automargin=False,
+        categoryorder="array",
+        categoryarray=first_labels,
+        constrain="domain",
+    )
+    fig.update_yaxes(
+        automargin=False,
+        categoryorder="array",
+        categoryarray=first_labels,
+        scaleanchor="x",
+        scaleratio=1,
+        constrain="domain",
+    )
+    fig.show()
+
+
+def build_model_specs_from_checkpoints(
+    model_names: list[str] | None = None,
+    checkpoint_root: str | Path | None = None,
+) -> list[tuple[str, str]]:
+    root = Path(checkpoint_root).expanduser().resolve() if checkpoint_root is not None else (PROJECT_ROOT / "checkpoints")
+    names = model_names or discover_model_names()
+    specs: list[tuple[str, str]] = []
+    for name in sorted(names):
+        path = root / name / "best.pth"
+        if path.exists():
+            specs.append((name, str(path.resolve())))
+    return specs
+
+
+def show_gradcam_compare_all_models(
+    image_path: str | Path | None,
+    *,
+    model_specs: list[tuple[str, str | Path]] | None = None,
+    image_size: int = 128,
+    device: str = "cpu",
+) -> None:
+    if image_path is None:
+        print("Set SAMPLE_IMAGE_PATH first, then rerun this cell.")
+        return
+    specs = model_specs or build_model_specs_from_checkpoints()
+    if not specs:
+        print("No checkpoint paths found under checkpoints/<model_name>/best.pth")
+        return
+    print(f"Running Grad-CAM compare on {len(specs)} models")
+    show_gradcam_compare(image_path=image_path, model_specs=specs, image_size=image_size, device=device)
+
+
+def print_rubric_summary(clean_and_agg_df: "pd.DataFrame", variant_df: "pd.DataFrame") -> None:
+    from IPython.display import display
+
+    baseline_best = clean_and_agg_df[clean_and_agg_df["model_type"] == "Baseline (linear probe)"]
+    custom_best = clean_and_agg_df[clean_and_agg_df["model_type"] == "Custom"]
+    b_row = baseline_best.iloc[0] if not baseline_best.empty else None
+    c_row = custom_best.iloc[0] if not custom_best.empty else None
+
+    print("[1] Performance on clean test set")
+    if b_row is not None:
+        print(f"- Baseline best: {b_row['model_name']} | clean_accuracy={float(b_row['clean_accuracy']):.4f}")
+    if c_row is not None:
+        print(f"- Custom best:   {c_row['model_name']} | clean_accuracy={float(c_row['clean_accuracy']):.4f}")
+
+    print("\n[2] Robustness scores on each test set variant")
+    variant_cols = [col for col in variant_df.columns if isinstance(col, str) and col.startswith("split::")]
+    display(variant_df[["model_name", "model_type", *variant_cols]])
+
+    print("\n[3] Aggregate robustness")
+    display(
+        clean_and_agg_df[["model_name", "model_type", "robustness_average"]].sort_values(
+            "robustness_average", ascending=False
+        )
+    )
+
+    print("\n[4] Trade-off plots")
+    print("- See Step 5: performance vs wall time / trainable params / inference speed")
+
+    print("\n[5] Failure interpretation checklist")
+    print("- Use Step 6 confusion matrices to identify dominant confusions")
+    print("- Use Step 7 Grad-CAM to compare attention regions across model types")
+    print("- Explain which transformed variants cause the largest accuracy drops")
 
 
 def show_gradcam_compare(
@@ -877,7 +1534,7 @@ def show_prediction_compare(
 def show_workflow_summary_table(
     workflow_summaries_or_paths: list[dict[str, object] | str | Path] | dict[str, object] | str | Path,
 ) -> list[dict[str, object]]:
-    from IPython.display import HTML, display
+    from IPython.display import display
 
     items = workflow_summaries_or_paths
     if not isinstance(items, list):
@@ -905,28 +1562,32 @@ def show_workflow_summary_table(
     if not rows:
         return rows
 
-    headers = ["Model", "Best Eval", "Final Test", "Clean", "Robustness Avg", "Trainable Params"]
-    body_rows = []
-    for row in rows:
-        body_rows.append(
-            "<tr style='border-bottom:1px solid #e2e8f0;'>"
-            f"<td style='padding:8px 10px;'>{row.get('model_name', '-')}</td>"
-            f"<td style='padding:8px 10px;'>{_format_table_value(row.get('best_eval_acc'))}</td>"
-            f"<td style='padding:8px 10px;'>{_format_table_value(row.get('final_test_acc'))}</td>"
-            f"<td style='padding:8px 10px;'>{_format_table_value(row.get('clean_accuracy'))}</td>"
-            f"<td style='padding:8px 10px;'>{_format_table_value(row.get('robustness_average'))}</td>"
-            f"<td style='padding:8px 10px;'>{_format_table_int(row.get('trainable_params'))}</td>"
-            "</tr>"
+    try:
+        import pandas as pd
+
+        df = pd.DataFrame(rows)
+        display_df = pd.DataFrame(
+            {
+                "Model": df["model_name"],
+                "Best Eval": df["best_eval_acc"].map(_format_table_value),
+                "Final Test": df["final_test_acc"].map(_format_table_value),
+                "Clean": df["clean_accuracy"].map(_format_table_value),
+                "Robustness Avg": df["robustness_average"].map(_format_table_value),
+                "Trainable Params": df["trainable_params"].map(_format_table_int),
+            }
         )
-    html = (
-        "<table style='border-collapse:collapse;width:100%;font-family:Segoe UI,Arial,sans-serif;font-size:13px;'>"
-        "<thead><tr>"
-        + "".join(f"<th style='text-align:left;padding:8px 10px;border-bottom:2px solid #cbd5e1;background:#f8fafc;'>{header}</th>" for header in headers)
-        + "</tr></thead><tbody>"
-        + "".join(body_rows)
-        + "</tbody></table>"
-    )
-    display(HTML(html))
+        display(display_df)
+    except Exception:
+        # Fallback in environments without pandas.
+        for row in rows:
+            print(
+                f"{row.get('model_name', '-')}: "
+                f"best_eval={_format_table_value(row.get('best_eval_acc'))}, "
+                f"final_test={_format_table_value(row.get('final_test_acc'))}, "
+                f"clean={_format_table_value(row.get('clean_accuracy'))}, "
+                f"robustness={_format_table_value(row.get('robustness_average'))}, "
+                f"trainable={_format_table_int(row.get('trainable_params'))}"
+            )
     return rows
 
 
