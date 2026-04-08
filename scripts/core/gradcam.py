@@ -120,14 +120,13 @@ def overlay_heatmap_on_image(image, heatmap: np.ndarray):
     heatmap_image = Image.fromarray(np.uint8(np.clip(heatmap, 0.0, 1.0) * 255.0), mode="L").resize(image.size)
     heatmap_array = np.asarray(heatmap_image, dtype=np.float32) / 255.0
 
-    emphasis = np.clip(heatmap_array ** 0.72, 0.0, 1.0)
+    emphasis = np.clip(heatmap_array ** 0.55, 0.0, 1.0)
     color = np.zeros((*heatmap_array.shape, 3), dtype=np.float32)
-    color[..., 0] = np.clip(0.32 + emphasis * 0.68, 0.0, 1.0)
-    color[..., 1] = np.clip((emphasis - 0.18) / 0.62, 0.0, 1.0) * 0.96
-    color[..., 2] = np.clip((emphasis - 0.84) / 0.16, 0.0, 1.0) * 0.25
-
-    alpha = np.clip(emphasis * 0.36, 0.0, 0.36)[..., None]
-    boosted_image = np.clip(image_array * 1.04, 0.0, 1.0)
+    color[..., 0] = np.clip(0.10 + emphasis * 1.10, 0.0, 1.0)
+    color[..., 1] = np.clip((emphasis - 0.10) / 0.50, 0.0, 1.0) * 0.90
+    color[..., 2] = np.clip((emphasis - 0.70) / 0.25, 0.0, 1.0) * 0.40
+    alpha = np.clip(0.12 + emphasis * 0.58, 0.0, 0.70)[..., None]
+    boosted_image = np.clip(image_array * 1.08, 0.0, 1.0)
     overlay = np.clip(boosted_image * (1.0 - alpha) + color * alpha, 0.0, 1.0)
     return Image.fromarray(np.uint8(overlay * 255.0))
 

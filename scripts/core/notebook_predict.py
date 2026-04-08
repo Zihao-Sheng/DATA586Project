@@ -129,13 +129,21 @@ def display_gradcam_comparison(
     resolved_device = device if device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
     resolved_image = image_path.expanduser().resolve()
     original = Image.open(resolved_image).convert("RGB")
-    cards = [("Original", _image_tag_for_pil(original))]
+    actual_label = resolved_image.parent.name.replace("_", " ").title() if resolved_image.parent.name else "Unknown"
+    cards: list[dict[str, str]] = []
     for model_name, checkpoint_path in model_specs:
-        model, _ = load_model(checkpoint_path.expanduser().resolve(), model_name, resolved_device)
+        model, class_to_idx = load_model(checkpoint_path.expanduser().resolve(), model_name, resolved_device)
         model.eval()
         target_layer = find_last_conv_layer(model)
         if target_layer is None:
-            cards.append((model_name, _image_tag_for_pil(original)))
+            cards.append(
+                {
+                    "model_name": model_name,
+                    "image_html": _image_tag_for_pil(original),
+                    "prediction_label": "Grad-CAM unavailable",
+                    "confidence_label": "",
+                }
+            )
             continue
         activations = {}
         gradients = {}
@@ -151,23 +159,78 @@ def display_gradcam_comparison(
         try:
             tensor = build_transform(image_size)(original).unsqueeze(0).to(resolved_device)
             output = model(tensor)
+            probabilities = torch.softmax(output, dim=1)
             pred_index = int(output.argmax(dim=1).item())
+            idx_to_class = {idx: name for name, idx in class_to_idx.items()}
+            predicted_class = idx_to_class.get(pred_index, str(pred_index))
+            confidence = float(probabilities[0, pred_index].item())
             model.zero_grad(set_to_none=True)
             output[:, pred_index].sum().backward()
             if "value" in activations and "value" in gradients:
                 heatmap = build_heatmap(activations["value"], gradients["value"])
                 overlay = overlay_heatmap_on_image(original, heatmap)
-                cards.append((model_name, _image_tag_for_pil(overlay)))
+                cards.append(
+                    {
+                        "model_name": model_name,
+                        "image_html": _image_tag_for_pil(overlay),
+                        "prediction_label": predicted_class.replace("_", " ").title(),
+                        "confidence_label": f"Confidence {confidence:.1%}",
+                    }
+                )
             else:
-                cards.append((model_name, _image_tag_for_pil(original)))
+                cards.append(
+                    {
+                        "model_name": model_name,
+                        "image_html": _image_tag_for_pil(original),
+                        "prediction_label": predicted_class.replace("_", " ").title(),
+                        "confidence_label": f"Confidence {confidence:.1%}",
+                    }
+                )
         finally:
             forward_handle.remove()
             backward_handle.remove()
-
-    html = "<div style=\"display:flex;gap:14px;flex-wrap:wrap;\">" + "".join(
-        f"<div style='width:220px;'><div style='font-weight:700;margin-bottom:8px;color:#0f172a;'>{escape(label)}</div>{image_html}</div>"
-        for label, image_html in cards
-    ) + "</div>"
+    original_card = f"""
+    <div style="display:flex;justify-content:center;margin-bottom:24px;">
+      <div style="width:min(360px, 100%);">
+        <div style="font-weight:800;font-size:18px;line-height:1.3;margin-bottom:10px;color:#f8fafc;background:linear-gradient(135deg,#0f172a,#334155);padding:10px 14px;border-radius:12px;text-align:center;letter-spacing:.02em;">
+          Original Image
+        </div>
+        <div style="border:1px solid #475569;border-radius:16px;padding:14px;background:#111827;box-shadow:0 10px 30px rgba(15,23,42,.28);">
+          {_image_tag_for_pil(original)}
+          <div style="margin-top:12px;text-align:center;">
+            <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:#f8fafc;color:#111827;font-weight:800;font-size:14px;box-shadow:0 2px 8px rgba(15,23,42,.15);">
+              Food: {escape(actual_label)}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+    comparison_cards = "".join(
+        f"""
+        <div style="border:1px solid #334155;border-radius:16px;padding:12px;background:#0f172a;box-shadow:0 10px 26px rgba(15,23,42,.24);">
+          <div style="font-weight:800;font-size:16px;line-height:1.3;margin-bottom:10px;color:#ffffff;background:linear-gradient(135deg,#1e293b,#475569);padding:10px 12px;border-radius:12px;text-align:center;text-shadow:0 1px 2px rgba(0,0,0,.55);">
+            {escape(card["model_name"])}
+          </div>
+          {card["image_html"]}
+          <div style="margin-top:10px;display:flex;flex-direction:column;gap:6px;align-items:center;">
+            <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:#f8fafc;color:#111827;font-weight:800;font-size:14px;box-shadow:0 2px 8px rgba(15,23,42,.18);text-align:center;">
+              Pred: {escape(card["prediction_label"])}
+            </div>
+            {"<div style='display:inline-block;padding:5px 10px;border-radius:999px;background:#dbeafe;color:#0f172a;font-weight:700;font-size:13px;box-shadow:0 2px 8px rgba(15,23,42,.14);text-align:center;'>" + escape(card["confidence_label"]) + "</div>" if card["confidence_label"] else ""}
+          </div>
+        </div>
+        """
+        for card in cards
+    )
+    html = f"""
+    <div style="max-width:1400px;">
+      {original_card}
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;align-items:start;">
+        {comparison_cards}
+      </div>
+    </div>
+    """
     display(HTML(html))
 
 
@@ -249,7 +312,7 @@ def _build_compare_compact_html(results: list[dict[str, object]], model_names: l
     for result in results:
         image_path = Path(str(result["image_path"]))
         actual_label = result.get("actual_label")
-        actual_text = escape(str(actual_label)) if actual_label is not None else "Unknown"
+        actual_text = escape(str(actual_label).replace("_", " ").title()) if actual_label is not None else "Unknown"
         comparisons = result.get("comparisons") if isinstance(result.get("comparisons"), dict) else {}
         lines = []
         for model_name in model_names:
@@ -258,18 +321,28 @@ def _build_compare_compact_html(results: list[dict[str, object]], model_names: l
                 continue
             status = entry.get("is_correct")
             status_text = "Correct" if status is True else ("Wrong" if status is False else "Unknown")
+            status_bg = "#dcfce7" if status is True else ("#fee2e2" if status is False else "#e2e8f0")
+            status_fg = "#166534" if status is True else ("#991b1b" if status is False else "#334155")
             lines.append(
-                f"<div style='font-size:12px;color:#334155;margin-top:4px;'><b>{escape(model_name)}</b>: "
-                f"{escape(str(entry.get('predicted_class', '-')))} ({float(entry.get('confidence', 0.0)):.2%}, {status_text})</div>"
+                f"<div style='display:flex;justify-content:space-between;gap:10px;align-items:center;padding:8px 10px;border-radius:10px;background:#f8fafc;border:1px solid #e2e8f0;margin-top:8px;'>"
+                f"<div style='min-width:0;'>"
+                f"<div style='font-size:12px;font-weight:800;color:#0f172a;'>{escape(model_name)}</div>"
+                f"<div style='font-size:12px;color:#334155;'>{escape(str(entry.get('predicted_class', '-')).replace('_', ' ').title())}</div>"
+                f"</div>"
+                f"<div style='text-align:right;flex-shrink:0;'>"
+                f"<div style='font-size:12px;font-weight:700;color:#0f172a;'>{float(entry.get('confidence', 0.0)):.2%}</div>"
+                f"<div style='display:inline-block;margin-top:4px;padding:3px 8px;border-radius:999px;background:{status_bg};color:{status_fg};font-size:11px;font-weight:800;'>{status_text}</div>"
+                f"</div>"
+                f"</div>"
             )
         cards.append(
             f"""
-            <div style="border:1px solid #cbd5e1;border-radius:14px;padding:12px;background:#ffffff;box-shadow:0 4px 14px rgba(15,23,42,.06);">
+            <div style="border:1px solid #cbd5e1;border-radius:16px;padding:12px;background:#ffffff;box-shadow:0 8px 22px rgba(15,23,42,.08);">
               <div style="aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#f8fafc;border-radius:10px;margin-bottom:10px;">
                 {_image_tag_for_path(image_path)}
               </div>
-              <div style="font-weight:700;color:#0f172a;margin-bottom:4px;">{escape(image_path.name)}</div>
-              <div style="color:#475569;font-size:13px;margin-bottom:6px;">Ground Truth: {actual_text}</div>
+              <div style="font-weight:800;color:#0f172a;margin-bottom:4px;">{escape(image_path.name)}</div>
+              <div style="display:inline-block;padding:5px 10px;border-radius:999px;background:#eff6ff;color:#0f172a;font-size:12px;font-weight:800;margin-bottom:8px;">Ground Truth: {actual_text}</div>
               {''.join(lines)}
             </div>
             """

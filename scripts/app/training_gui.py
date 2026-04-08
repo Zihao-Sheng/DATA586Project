@@ -8,7 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPointF, QProcess, QRectF, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QPointF, QProcess, QRect, QRectF, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -313,6 +313,26 @@ class LogPlotWidget(QWidget):
         self.note = note
         self.update()
 
+    def _build_x_ticks(self, x_min: float, x_max: float, max_ticks: int = 6) -> list[float]:
+        if x_max <= x_min:
+            return [x_min]
+        if float(x_min).is_integer() and float(x_max).is_integer():
+            start = int(round(x_min))
+            end = int(round(x_max))
+            span = max(end - start, 0)
+            if span <= max_ticks - 1:
+                return [float(value) for value in range(start, end + 1)]
+            step = max(1, round(span / (max_ticks - 1)))
+            ticks = [start]
+            current = start
+            while current + step < end:
+                current += step
+                ticks.append(current)
+            if ticks[-1] != end:
+                ticks.append(end)
+            return [float(value) for value in ticks]
+        return [x_min + (x_max - x_min) * (index / max(max_ticks - 1, 1)) for index in range(max_ticks)]
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -372,15 +392,15 @@ class LogPlotWidget(QWidget):
             painter.setPen(label_pen)
             painter.drawText(QRectF(plot_rect.left() - 52, y - 10, 46, 20), Qt.AlignRight | Qt.AlignVCenter, f"{tick_value:.3g}")
 
-        x_tick_count = min(6, max(2, int(x_max - x_min) + 1))
-        for tick in range(x_tick_count):
-            fraction = tick / (x_tick_count - 1) if x_tick_count > 1 else 0
+        x_ticks = self._build_x_ticks(x_min, x_max)
+        for tick_value in x_ticks:
+            fraction = (tick_value - x_min) / (x_max - x_min) if x_max > x_min else 0.0
             x = plot_rect.left() + fraction * plot_rect.width()
             painter.setPen(grid_pen)
             painter.drawLine(x, plot_rect.top(), x, plot_rect.bottom())
-            tick_value = x_min + fraction * (x_max - x_min)
             painter.setPen(label_pen)
-            painter.drawText(QRectF(x - 20, plot_rect.bottom() + 6, 40, 18), Qt.AlignHCenter | Qt.AlignTop, f"{tick_value:.0f}")
+            tick_text = f"{tick_value:.0f}" if float(tick_value).is_integer() else f"{tick_value:.3g}"
+            painter.drawText(QRectF(x - 20, plot_rect.bottom() + 6, 40, 18), Qt.AlignHCenter | Qt.AlignTop, tick_text)
 
         painter.setPen(axis_pen)
         painter.drawLine(plot_rect.left(), plot_rect.bottom(), plot_rect.right(), plot_rect.bottom())
@@ -464,6 +484,11 @@ class ScatterPlotWidget(QWidget):
         self.note = note
         self.update()
 
+    def _build_x_ticks(self, x_min: float, x_max: float, max_ticks: int = 6) -> list[float]:
+        if x_max <= x_min:
+            return [x_min]
+        return [x_min + (x_max - x_min) * (index / max(max_ticks - 1, 1)) for index in range(max_ticks)]
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -527,12 +552,11 @@ class ScatterPlotWidget(QWidget):
             painter.setPen(label_pen)
             painter.drawText(QRectF(plot_rect.left() - 64, y - 10, 58, 20), Qt.AlignRight | Qt.AlignVCenter, f"{tick_value:.3g}")
 
-        for tick in range(5):
-            fraction = tick / 4 if 4 > 0 else 0
+        for tick_value in self._build_x_ticks(x_min, x_max, max_ticks=5):
+            fraction = (tick_value - x_min) / (x_max - x_min) if x_max > x_min else 0.0
             x = plot_rect.left() + fraction * plot_rect.width()
             painter.setPen(grid_pen)
             painter.drawLine(x, plot_rect.top(), x, plot_rect.bottom())
-            tick_value = x_min + fraction * (x_max - x_min)
             painter.setPen(label_pen)
             painter.drawText(QRectF(x - 24, plot_rect.bottom() + 6, 48, 18), Qt.AlignHCenter | Qt.AlignTop, f"{tick_value:.3g}")
 
@@ -592,6 +616,50 @@ class ConfusionMatrixWidget(QWidget):
         self.note = note
         self.update()
 
+    def _elide_label(self, label: str, max_chars: int = 12) -> str:
+        if len(label) <= max_chars:
+            return label
+        return label[: max_chars - 2] + ".."
+
+    def _cell_color(self, value: int, max_value: int, diagonal: bool) -> QColor:
+        import math
+
+        normalized = 0.0
+        if max_value > 0 and value > 0:
+            normalized = math.log1p(float(value)) / math.log1p(float(max_value))
+        normalized = max(0.0, min(normalized, 1.0))
+
+        # Soft but readable heatmap: deep blue -> sky blue -> warm amber.
+        stops = (
+            ((12, 18, 28), 0.00),
+            ((22, 44, 88), 0.16),
+            ((41, 87, 148), 0.34),
+            ((86, 145, 196), 0.56),
+            ((163, 201, 226), 0.76),
+            ((232, 196, 123), 0.90),
+            ((243, 156, 74), 1.00),
+        )
+
+        for stop_index in range(len(stops) - 1):
+            start_rgb, start_pos = stops[stop_index]
+            end_rgb, end_pos = stops[stop_index + 1]
+            if normalized <= end_pos:
+                span = max(end_pos - start_pos, 1e-9)
+                ratio = (normalized - start_pos) / span
+                red = int(start_rgb[0] + (end_rgb[0] - start_rgb[0]) * ratio)
+                green = int(start_rgb[1] + (end_rgb[1] - start_rgb[1]) * ratio)
+                blue = int(start_rgb[2] + (end_rgb[2] - start_rgb[2]) * ratio)
+                if diagonal and value > 0:
+                    red = min(red + 8, 255)
+                    green = min(green + 8, 255)
+                    blue = min(blue + 8, 255)
+                return QColor(red, green, blue)
+
+        last_rgb = stops[-1][0]
+        if diagonal and value > 0:
+            return QColor(min(last_rgb[0] + 8, 255), min(last_rgb[1] + 8, 255), min(last_rgb[2] + 8, 255))
+        return QColor(*last_rgb)
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -611,46 +679,107 @@ class ConfusionMatrixWidget(QWidget):
             painter.drawText(outer_rect.adjusted(24, 48, -24, -24), Qt.AlignCenter, self.note or "No confusion matrix data available.")
             return
 
-        matrix_rect = QRectF(outer_rect.left() + 110, outer_rect.top() + 68, max(outer_rect.width() - 138, 10), max(outer_rect.height() - 112, 10))
+        top_label_band = 64
+        left_label_band = 110
+        right_legend_band = 64
+        bottom_band = 64
+        matrix_rect = QRectF(
+            outer_rect.left() + left_label_band,
+            outer_rect.top() + top_label_band,
+            max(outer_rect.width() - left_label_band - right_legend_band - 24, 10),
+            max(outer_rect.height() - top_label_band - bottom_band - 24, 10),
+        )
         size = len(self.labels)
         cell_size = min(matrix_rect.width() / max(size, 1), matrix_rect.height() / max(size, 1))
         grid_width = cell_size * size
         grid_height = cell_size * size
-        start_x = matrix_rect.left()
+        start_x = matrix_rect.left() + max((matrix_rect.width() - grid_width) / 2.0, 0.0)
         start_y = matrix_rect.top()
         max_value = max(max(row) for row in self.matrix) if self.matrix else 1
 
+        panel_rect = QRectF(start_x - 10, start_y - 10, grid_width + 20, grid_height + 20)
+        painter.setPen(QPen(QColor("#273244"), 1))
+        painter.setBrush(QColor("#0f141c"))
+        painter.drawRoundedRect(panel_rect, 10, 10)
+
+        # Draw the heatmap as pixel-aligned solid cells so Qt smoothing does not wash the colors out.
+        painter.setRenderHint(QPainter.Antialiasing, False)
         for row_index, row in enumerate(self.matrix):
             for col_index, value in enumerate(row):
-                intensity = 0.15 + (0.85 * (float(value) / max(max_value, 1)))
-                color = QColor.fromRgbF(0.173, 0.427, 0.949, intensity)
-                cell_rect = QRectF(start_x + col_index * cell_size, start_y + row_index * cell_size, cell_size, cell_size)
-                painter.fillRect(cell_rect, color)
-                painter.setPen(QPen(QColor("#1e293b"), 1))
+                diagonal = row_index == col_index
+                color = self._cell_color(value, max_value, diagonal)
+                x0 = round(start_x + col_index * cell_size)
+                y0 = round(start_y + row_index * cell_size)
+                x1 = round(start_x + (col_index + 1) * cell_size)
+                y1 = round(start_y + (row_index + 1) * cell_size)
+                cell_rect = QRect(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(color)
+                painter.drawRect(cell_rect)
+                border_color = QColor("#50627a") if diagonal else QColor("#243041")
+                painter.setPen(QPen(border_color, 0.8))
+                painter.setBrush(Qt.NoBrush)
                 painter.drawRect(cell_rect)
                 if cell_size >= 28:
-                    painter.setPen(QColor("#f8fbff"))
+                    import math
+                    normalized = 0.0 if max_value <= 0 or value <= 0 else math.log1p(float(value)) / math.log1p(float(max_value))
+                    text_color = QColor("#18212f") if normalized >= 0.72 else QColor("#f8fbff")
+                    painter.setPen(text_color)
                     painter.drawText(cell_rect, Qt.AlignCenter, str(value))
+        painter.setRenderHint(QPainter.Antialiasing, True)
 
-        painter.setPen(QColor("#aeb8c6"))
+        painter.setPen(QColor("#b6c4d6"))
         for index, label in enumerate(self.labels):
-            short_label = label if len(label) <= 14 else label[:12] + ".."
-            x_rect = QRectF(start_x + index * cell_size, start_y - 28, cell_size, 24)
-            y_rect = QRectF(start_x - 100, start_y + index * cell_size, 96, cell_size)
-            painter.drawText(x_rect, Qt.AlignHCenter | Qt.AlignBottom, short_label)
+            short_label = self._elide_label(label)
+            x_rect = QRectF(start_x + index * cell_size, start_y - 58, cell_size, 52)
+            y_rect = QRectF(start_x - 106, start_y + index * cell_size, 100, cell_size)
+            painter.save()
+            painter.translate(x_rect.center().x(), x_rect.bottom())
+            painter.rotate(-35)
+            painter.drawText(QRectF(-cell_size * 0.45, -18, cell_size * 0.9, 18), Qt.AlignLeft | Qt.AlignVCenter, short_label)
+            painter.restore()
             painter.drawText(y_rect, Qt.AlignRight | Qt.AlignVCenter, short_label)
 
         painter.setPen(QColor("#dfe7f3"))
-        painter.drawText(QRectF(start_x, start_y + grid_height + 12, grid_width, 20), Qt.AlignCenter, "Predicted Label")
+        painter.drawText(QRectF(start_x, start_y + grid_height + 14, grid_width, 20), Qt.AlignCenter, "Predicted Label")
         painter.save()
-        painter.translate(start_x - 84, start_y + grid_height / 2)
+        painter.translate(start_x - 94, start_y + grid_height / 2)
         painter.rotate(-90)
         painter.drawText(QRectF(-grid_height / 2, -16, grid_height, 20), Qt.AlignCenter, "True Label")
         painter.restore()
 
+        legend_x = start_x + grid_width + 16
+        legend_y = start_y + 2
+        legend_height = min(180.0, grid_height)
+        legend_rect = QRectF(legend_x, legend_y, 24, legend_height)
+        if legend_rect.right() <= outer_rect.right() - 8:
+            slot_rect = legend_rect.adjusted(-4, -4, 4, 4)
+            painter.setPen(QPen(QColor("#425168"), 1))
+            painter.setBrush(QColor("#101826"))
+            painter.drawRoundedRect(slot_rect, 5, 5)
+            painter.setRenderHint(QPainter.Antialiasing, False)
+            steps = max(int(legend_height), 1)
+            for step in range(steps):
+                ratio = 1.0 - (step / max(steps - 1, 1))
+                sample_color = self._cell_color(int(round(ratio * max_value)), max_value, diagonal=False)
+                y0 = round(legend_rect.top() + step)
+                y1 = round(legend_rect.top() + step + 1)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(sample_color)
+                painter.drawRect(QRect(round(legend_rect.left()), y0, max(1, round(legend_rect.width())), max(1, y1 - y0)))
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(QPen(QColor("#5d7391"), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(legend_rect)
+            painter.setPen(QColor("#9fb1c8"))
+            painter.drawText(QRectF(legend_rect.right() + 8, legend_rect.top() - 8, 42, 18), Qt.AlignLeft | Qt.AlignVCenter, str(max_value))
+            painter.drawText(QRectF(legend_rect.right() + 8, legend_rect.center().y() - 9, 42, 18), Qt.AlignLeft | Qt.AlignVCenter, str(max_value // 2))
+            painter.drawText(QRectF(legend_rect.right() + 8, legend_rect.bottom() - 10, 42, 18), Qt.AlignLeft | Qt.AlignVCenter, "0")
+            painter.drawText(QRectF(legend_rect.left() - 2, legend_rect.top() - 26, 64, 18), Qt.AlignLeft | Qt.AlignVCenter, "Count")
+
         if self.note:
             painter.setPen(QColor("#93a0b2"))
-            painter.drawText(QRectF(start_x, outer_rect.bottom() - 24, grid_width, 20), Qt.AlignLeft | Qt.AlignVCenter, self.note)
+            painter.drawText(QRectF(start_x, outer_rect.bottom() - 28, min(grid_width + 120, outer_rect.width() - 32), 20), Qt.AlignLeft | Qt.AlignVCenter, self.note)
 
 
 class TrainingLauncher(QMainWindow):
