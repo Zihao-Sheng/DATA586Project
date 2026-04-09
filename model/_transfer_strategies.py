@@ -61,6 +61,23 @@ def enable_bn_tuning(model: nn.Module, classifier_modules: list[nn.Module]) -> N
         unfreeze_module(module)
 
 
+def enable_bn_tuning_with_last_feature_stages(
+    model: nn.Module,
+    features: nn.Sequential | nn.ModuleList,
+    classifier_modules: list[nn.Module],
+    num_last_stages: int,
+) -> None:
+    freeze_all(model)
+    for module in model.modules():
+        if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.SyncBatchNorm)):
+            unfreeze_module(module)
+    if num_last_stages > 0:
+        for module in list(features.children())[-num_last_stages:]:
+            unfreeze_module(module)
+    for module in classifier_modules:
+        unfreeze_module(module)
+
+
 class ConvAdapter(nn.Module):
     def __init__(self, channels: int, bottleneck_ratio: float = 0.25) -> None:
         super().__init__()
@@ -217,6 +234,28 @@ def build_efficientnet_bn_tuning(num_classes: int, device: str | torch.device) -
     return _finalize_model(model, device)
 
 
+def build_efficientnet_bn_last1(num_classes: int, device: str | torch.device) -> nn.Module:
+    model = load_efficientnet_v2_s_classifier(num_classes)
+    enable_bn_tuning_with_last_feature_stages(
+        model,
+        model.features,
+        [model.classifier[1]],
+        num_last_stages=1,
+    )
+    return _finalize_model(model, device)
+
+
+def build_efficientnet_bn_last2(num_classes: int, device: str | torch.device) -> nn.Module:
+    model = load_efficientnet_v2_s_classifier(num_classes)
+    enable_bn_tuning_with_last_feature_stages(
+        model,
+        model.features,
+        [model.classifier[1]],
+        num_last_stages=2,
+    )
+    return _finalize_model(model, device)
+
+
 def build_efficientnet_full_finetune(num_classes: int, device: str | torch.device) -> nn.Module:
     model = load_efficientnet_v2_s_classifier(num_classes)
     unfreeze_all(model)
@@ -234,6 +273,8 @@ def strategy_builder(backbone: str, strategy: str) -> Callable[[int, str | torch
         ("efficientnet", "lora"): build_efficientnet_lora,
         ("efficientnet", "tsa"): build_efficientnet_adapters,
         ("efficientnet", "bn_tuning"): build_efficientnet_bn_tuning,
+        ("efficientnet", "bn_last1"): build_efficientnet_bn_last1,
+        ("efficientnet", "bn_last2"): build_efficientnet_bn_last2,
         ("efficientnet", "full_finetune"): build_efficientnet_full_finetune,
     }
     return registry[(backbone, strategy)]
