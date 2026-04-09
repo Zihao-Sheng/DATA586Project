@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -660,6 +661,69 @@ def load_workflow_summary(path: str | Path) -> dict[str, object]:
     return json.loads(Path(path).expanduser().resolve().read_text(encoding="utf-8"))
 
 
+def build_model_specs_from_latest_df(latest_df: "pd.DataFrame") -> list[tuple[str, str]]:
+    specs: list[tuple[str, str]] = []
+    if latest_df is None or latest_df.empty:
+        return specs
+    rows = latest_df.sort_values("model_name").reset_index(drop=True)
+    for _, row in rows.iterrows():
+        model_name = str(row.get("model_name", "") or "").strip()
+        summary_path = row.get("path")
+        if not model_name or not summary_path:
+            continue
+        try:
+            summary = load_workflow_summary(summary_path)
+        except Exception:
+            continue
+        artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
+        best_checkpoint = artifacts.get("best_checkpoint") if isinstance(artifacts.get("best_checkpoint"), dict) else {}
+        checkpoint_path = best_checkpoint.get("path")
+        if checkpoint_path and Path(str(checkpoint_path)).expanduser().resolve().exists():
+            specs.append((model_name, str(Path(str(checkpoint_path)).expanduser().resolve())))
+    return specs
+
+
+def sample_test_split_images(
+    test_splits_root: str | Path,
+    *,
+    split_order: list[str] | None = None,
+    seed: int = 42,
+) -> list[dict[str, str]]:
+    root = Path(test_splits_root).expanduser().resolve()
+    requested_order = split_order or [
+        "clean",
+        "blur_little",
+        "blur_medium",
+        "downsampled",
+        "masked",
+        "noise_rotation",
+    ]
+    rng = random.Random(seed)
+    supported_suffixes = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    samples: list[dict[str, str]] = []
+    for split_name in requested_order:
+        split_dir = root / split_name
+        if not split_dir.is_dir():
+            continue
+        candidates = sorted(
+            path
+            for path in split_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() in supported_suffixes
+        )
+        if not candidates:
+            continue
+        chosen = candidates[rng.randrange(len(candidates))]
+        samples.append(
+            {
+                "split": split_name,
+                "image_path": str(chosen.resolve()),
+                "class_name": chosen.parent.name,
+                "filename": chosen.name,
+            }
+        )
+    return samples
+
+
 def plot_training_history(
     workflow_summary_or_path: dict[str, object] | str | Path,
     metric: str = "accuracy",
@@ -738,21 +802,70 @@ def get_latest_workflow_runs() -> tuple["pd.DataFrame", "pd.DataFrame"]:
     return runs_df, latest_df
 
 
-def build_split_analysis_from_latest(latest_df: "pd.DataFrame", *, show_tables: bool = True) -> dict[str, object]:
+def _infer_model_type_from_name(model_name: object) -> str:
+    text = str(model_name or "")
+    return "Baseline (linear probe)" if "baseline" in text.lower() else "Custom"
+
+
+def build_model_family_path_groups(
+    latest_df: "pd.DataFrame",
+    *,
+    groups: list[tuple[str, str]] | None = None,
+) -> dict[str, dict[str, object]]:
+    group_specs = groups or [("ResNet18", "resnet18"), ("EfficientNet", "efficientnet")]
+    grouped: dict[str, dict[str, object]] = {}
+    for label, keyword in group_specs:
+        mask = latest_df["model_name"].astype(str).str.contains(keyword, case=False, na=False)
+        subset = latest_df[mask].copy().sort_values("model_name").reset_index(drop=True)
+        grouped[label] = {
+            "label": label,
+            "keyword": keyword,
+            "latest_df": subset,
+            "workflow_summary_paths": [
+                str(Path(path).expanduser().resolve())
+                for path in subset["path"].dropna().tolist()
+                if Path(str(path)).exists()
+            ],
+            "training_log_paths": [
+                str(Path(path).expanduser().resolve())
+                for path in subset["training_run_log"].dropna().tolist()
+                if Path(str(path)).exists()
+            ],
+            "test_split_json_paths": [
+                str(Path(path).expanduser().resolve())
+                for path in subset["test_split_json"].dropna().tolist()
+                if Path(str(path)).exists()
+            ],
+        }
+    return grouped
+
+
+def build_split_analysis_from_paths(
+    test_split_json_paths: list[str | Path],
+    *,
+    latest_df: "pd.DataFrame | None" = None,
+    show_tables: bool = True,
+) -> dict[str, object]:
     import pandas as pd
 
-    test_split_json_paths = [
+    resolved_paths = [
         str(Path(path).expanduser().resolve())
-        for path in latest_df["test_split_json"].dropna().tolist()
-        if Path(str(path)).exists()
+        for path in test_split_json_paths
+        if Path(str(path)).expanduser().resolve().exists()
     ]
-    split_rows = compare_test_split_results(test_split_json_paths)
+    split_rows = compare_test_split_results(resolved_paths)
     split_df = pd.DataFrame(split_rows)
     if split_df.empty:
         raise RuntimeError("No test split summary json found.")
 
-    type_lookup = dict(zip(latest_df["model_name"], latest_df["model_type"]))
-    split_df["model_type"] = split_df["model_name"].map(type_lookup)
+    if latest_df is not None and not latest_df.empty:
+        type_lookup = dict(zip(latest_df["model_name"], latest_df["model_type"]))
+        split_df["model_type"] = split_df["model_name"].map(type_lookup).fillna(
+            split_df["model_name"].map(_infer_model_type_from_name)
+        )
+    else:
+        split_df["model_type"] = split_df["model_name"].map(_infer_model_type_from_name)
+
     split_cols = sorted([col for col in split_df.columns if isinstance(col, str) and col.startswith("split::")])
     clean_and_agg_df = split_df[
         ["model_name", "model_type", "clean_accuracy", "robustness_average", "total_seconds"]
@@ -776,12 +889,25 @@ def build_split_analysis_from_latest(latest_df: "pd.DataFrame", *, show_tables: 
         display(merged_df)
 
     return {
-        "test_split_json_paths": test_split_json_paths,
+        "test_split_json_paths": resolved_paths,
         "split_df": split_df,
         "clean_and_agg_df": clean_and_agg_df,
         "variant_df": variant_df,
         "merged_df": merged_df,
     }
+
+
+def build_split_analysis_from_latest(latest_df: "pd.DataFrame", *, show_tables: bool = True) -> dict[str, object]:
+    test_split_json_paths = [
+        str(Path(path).expanduser().resolve())
+        for path in latest_df["test_split_json"].dropna().tolist()
+        if Path(str(path)).exists()
+    ]
+    return build_split_analysis_from_paths(
+        test_split_json_paths,
+        latest_df=latest_df,
+        show_tables=show_tables,
+    )
 
 
 def plot_test_split_comparison_interactive(test_split_json_paths: list[str | Path]) -> list[dict[str, object]]:

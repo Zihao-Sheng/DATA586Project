@@ -8,13 +8,14 @@ import time
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPointF, QProcess, QRect, QRectF, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QProcess, QRect, QRectF, QSize, QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
+    QDockWidget,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -50,6 +51,8 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
+from core import run_log_compat
+from app import app_themes, global_job_queue
 from core.model_registry import discover_model_names
 
 
@@ -71,167 +74,8 @@ LR_LOADFROMFILE = 0x00000010
 LR_DEFAULTSIZE = 0x00000040
 NEW_CHECKPOINT_NAME_LABEL = "New checkpoint name..."
 RUN_LOG_DIRNAME = "_run_logs"
-APP_STYLESHEET = """
-QMainWindow, QWidget {
-    background: #17191d;
-    color: #eef2f7;
-    font-family: "Segoe UI";
-    font-size: 10.5pt;
-}
-QTabWidget::pane {
-    border: 1px solid #2e3642;
-    border-radius: 14px;
-    background: #1d2128;
-    top: -1px;
-}
-QTabBar::tab {
-    background: #20252d;
-    color: #aeb8c6;
-    border: 1px solid #303846;
-    border-bottom: none;
-    padding: 8px 16px;
-    margin-right: 6px;
-    border-top-left-radius: 10px;
-    border-top-right-radius: 10px;
-    min-width: 90px;
-}
-QTabBar::tab:selected {
-    background: #2c6df2;
-    color: #ffffff;
-}
-QTabBar::tab:hover:!selected {
-    background: #27303b;
-    color: #edf3ff;
-}
-QGroupBox {
-    background: #1f242c;
-    border: 1px solid #313a47;
-    border-radius: 14px;
-    margin-top: 14px;
-    padding: 12px 14px 14px 14px;
-    font-weight: 600;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 12px;
-    padding: 0 6px;
-    color: #f8fbff;
-}
-QLabel {
-    color: #e8edf5;
-}
-QLabel[muted="true"] {
-    color: #9ca8b8;
-}
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QListWidget {
-    background: #14181e;
-    color: #eff4fb;
-    border: 1px solid #364152;
-    border-radius: 10px;
-    padding: 4px 10px;
-    selection-background-color: #2c6df2;
-    selection-color: #ffffff;
-}
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
-    min-height: 28px;
-}
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus, QListWidget:focus {
-    border: 1px solid #4e8cff;
-}
-QComboBox::drop-down, QSpinBox::down-button, QSpinBox::up-button, QDoubleSpinBox::down-button, QDoubleSpinBox::up-button {
-    border: none;
-    width: 22px;
-}
-QPushButton {
-    background: #2c6df2;
-    color: white;
-    border: none;
-    border-radius: 10px;
-    padding: 8px 14px;
-    min-height: 18px;
-    font-weight: 600;
-}
-QPushButton:hover {
-    background: #3b7bfd;
-}
-QPushButton:pressed {
-    background: #2258c5;
-}
-QPushButton:disabled {
-    background: #2a3039;
-    color: #748092;
-}
-QCheckBox {
-    spacing: 8px;
-}
-QCheckBox::indicator {
-    width: 18px;
-    height: 18px;
-    border-radius: 5px;
-    border: 1px solid #485364;
-    background: #14181e;
-}
-QCheckBox::indicator:checked {
-    background: #2c6df2;
-    border: 1px solid #2c6df2;
-}
-QProgressBar {
-    border: 1px solid #364152;
-    border-radius: 9px;
-    background: #12161b;
-    text-align: center;
-    min-height: 18px;
-    color: #f5f8ff;
-}
-QProgressBar::chunk {
-    background: #2c6df2;
-    border-radius: 8px;
-}
-QScrollBar:vertical {
-    background: #171b21;
-    width: 12px;
-    margin: 8px 0 8px 0;
-}
-QScrollBar::handle:vertical {
-    background: #3a4454;
-    min-height: 28px;
-    border-radius: 6px;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    height: 0px;
-}
-QListWidget::item {
-    border-radius: 8px;
-    padding: 6px 8px;
-    margin: 4px 6px;
-}
-QListWidget::item:selected {
-    background: #22314a;
-    border: 1px solid #365c9a;
-}
-QListWidget::item:hover:!selected {
-    background: #1a2331;
-}
-QPlainTextEdit {
-    background: #11151a;
-    font-family: "Cascadia Code";
-    font-size: 10pt;
-}
-QLabel#ImagePreview {
-    border: 1px solid #364152;
-    border-radius: 16px;
-    background: #11151a;
-    color: #93a0b2;
-}
-QLabel#SectionStatus {
-    background: #202832;
-    border: 1px solid #354050;
-    border-radius: 10px;
-    padding: 6px 10px;
-    color: #f0f4fa;
-    font-weight: 600;
-}
-"""
+SETTINGS_ORG = "DATA586Project"
+SETTINGS_APP = "TrainingLauncher"
 
 
 def set_windows_app_id() -> None:
@@ -854,13 +698,18 @@ class TrainingLauncher(QMainWindow):
         self._last_training_model_name = self.available_models[0] if self.available_models else ""
         self._last_predict_model_name = self.available_models[0] if self.available_models else ""
         self._stop_request_path: Path | None = None
+        self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        saved_theme = str(self.settings.value("ui/theme", app_themes.DEFAULT_THEME_KEY))
+        self.current_theme_key = saved_theme if saved_theme in app_themes.THEMES else app_themes.DEFAULT_THEME_KEY
 
         self._init_data_controls()
         self._init_training_controls()
         self._init_prediction_controls()
         self._init_test_split_controls()
         self._init_log_controls()
+        self._init_global_ui_controls()
         self._build_ui()
+        self._install_wheel_guards()
         self.apply_visual_design()
         self.refresh_training_settings_summary()
         self.refresh_command_preview()
@@ -871,9 +720,22 @@ class TrainingLauncher(QMainWindow):
         self.on_predict_compact_toggled(self.predict_compact_checkbox.isChecked())
         self.refresh_training_log_runs()
 
+    def _init_global_ui_controls(self) -> None:
+        self.theme_label = QLabel("Theme")
+        self.theme_label.setProperty("muted", True)
+        self.theme_combo = QComboBox()
+        for key, display_name in app_themes.theme_display_names():
+            self.theme_combo.addItem(display_name, key)
+        current_index = self.theme_combo.findData(self.current_theme_key)
+        if current_index >= 0:
+            self.theme_combo.setCurrentIndex(current_index)
+        self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
+
     def _init_training_controls(self) -> None:
         self.model_combo = QComboBox()
         self.model_combo.addItems(self.available_models)
+        self.model_combo.setToolTip("Choose which model architecture to train.")
+        self.model_combo.setMinimumHeight(34)
 
         self.device_combo = QComboBox()
         self.device_combo.addItems(["auto", "cpu", "cuda"])
@@ -894,29 +756,67 @@ class TrainingLauncher(QMainWindow):
         self.image_size_spin.setRange(32, 2_048)
         self.image_size_spin.setValue(224)
 
+        self.train_transforms_preset_combo = QComboBox()
+        self.train_transforms_preset_combo.addItems(["baseline", "standard", "robust", "downsample_focus", "custom"])
+        self.train_transforms_preset_combo.setCurrentText("baseline")
+        self.train_transforms_preset_combo.setToolTip("Preset for training-time augmentation. Validation and test transforms stay deterministic.")
+
         self.lr_spin = QDoubleSpinBox()
         self.lr_spin.setRange(0.0, 10.0)
         self.lr_spin.setDecimals(6)
         self.lr_spin.setSingleStep(0.0001)
         self.lr_spin.setValue(0.001)
 
+        self.optimizer_combo = QComboBox()
+        self.optimizer_combo.addItems(["sgd", "adam", "adamw"])
+        self.optimizer_combo.setCurrentText("adam")
+        self.optimizer_combo.setToolTip("Optimizer used for trainable parameters.")
+
+        self.scheduler_combo = QComboBox()
+        self.scheduler_combo.addItems(["none", "cosine", "step", "plateau"])
+        self.scheduler_combo.setCurrentText("none")
+
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 2_147_483_647)
+        self.seed_spin.setValue(42)
+
+        self.mild_blur_enabled = False
+        self.mild_blur_prob = 0.10
+        self.custom_downsample_enabled = True
+        self.custom_downsample_prob = 0.65
+        self.custom_downsample_min_scale = 0.18
+        self.custom_downsample_max_scale = 0.55
+        self.custom_mild_blur_enabled = False
+        self.custom_mild_blur_prob = 0.10
+        self.custom_random_erasing_enabled = True
+        self.custom_random_erasing_prob = 0.08
+        self.custom_color_jitter_enabled = True
+        self.custom_horizontal_flip_enabled = True
+
         self.freeze_checkbox = QCheckBox("Freeze backbone")
         self.freeze_checkbox.setChecked(True)
+        self.freeze_checkbox.setToolTip("Train the classifier head while keeping most pretrained backbone weights frozen.")
+
+        self.amp_checkbox = QCheckBox("Use AMP")
+        self.amp_checkbox.setChecked(False)
+        self.amp_checkbox.setToolTip("Enable automatic mixed precision when supported by the selected device.")
 
         self.validation_checkbox = QCheckBox("Use validation split")
         self.validation_checkbox.setChecked(False)
+        self.validation_checkbox.setToolTip("Reserve part of the training data for validation instead of training on the full set.")
 
         self.validation_proportion_spin = QDoubleSpinBox()
         self.validation_proportion_spin.setRange(0.01, 0.99)
         self.validation_proportion_spin.setDecimals(2)
         self.validation_proportion_spin.setSingleStep(0.01)
         self.validation_proportion_spin.setValue(0.10)
+        self.validation_proportion_spin.setToolTip("Fraction of the training set to use as validation data when validation split is enabled.")
 
         self.resume_checkbox = QCheckBox("Resume from checkpoint")
         self.resume_checkbox.setChecked(False)
 
         self.resume_path_edit = QLineEdit()
-        self.resume_path_edit.setPlaceholderText(str(DEFAULT_CHECKPOINT_DIR))
+        self.resume_path_edit.setPlaceholderText("Select a checkpoint file such as best.pth or last.pth")
 
         self.resume_browse_button = QPushButton("Browse...")
         self.resume_browse_button.clicked.connect(self.choose_resume_path)
@@ -927,28 +827,46 @@ class TrainingLauncher(QMainWindow):
         self.checkpoint_output_combo = QComboBox()
         self.checkpoint_output_combo.setEditable(True)
         self.refresh_checkpoint_output_options()
+        self.checkpoint_output_combo.setToolTip("Name of the checkpoint folder for this run. Existing names can be reused to resume or continue work.")
+        self.checkpoint_output_combo.setMinimumHeight(34)
+        checkpoint_line_edit = self.checkpoint_output_combo.lineEdit()
+        if checkpoint_line_edit is not None:
+            checkpoint_line_edit.setPlaceholderText("e.g. resnet18_baseline_trial1")
 
         self.data_root_label = QLabel(str(DEFAULT_DATA_ROOT))
         self.data_root_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.data_root_label.setWordWrap(True)
+        self.data_root_label.setProperty("muted", True)
+        self.data_root_label.setProperty("readonlyDisplay", True)
 
         self.checkpoint_dir_label = QLabel(str(self.selected_checkpoint_dir()))
         self.checkpoint_dir_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.checkpoint_dir_label.setWordWrap(True)
+        self.checkpoint_dir_label.setProperty("muted", True)
+        self.checkpoint_dir_label.setProperty("readonlyDisplay", True)
 
         self.command_preview = QLabel()
         self.command_preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.command_preview.setWordWrap(True)
+        self.command_preview.setProperty("muted", True)
+        self.command_preview.setProperty("codeblock", True)
+        self.command_preview.setTextFormat(Qt.PlainText)
+
+        self.command_preview_toggle = QCheckBox("Show command preview")
+        self.command_preview_toggle.setChecked(False)
+        self.command_preview_toggle.setToolTip("Expand to inspect the exact command that will be launched.")
 
         self.training_settings_button = QPushButton("⚙")
-        self.training_settings_button.setText("Settings")
-        self.training_settings_button.setToolTip("Advanced training settings")
+        self.training_settings_button.setText("Advanced")
+        self.training_settings_button.setToolTip("Open advanced training settings")
         self.training_settings_button.setFixedHeight(32)
         self.training_settings_button.clicked.connect(self.open_training_settings_dialog)
 
         self.training_settings_summary = QLabel()
         self.training_settings_summary.setWordWrap(True)
+        self.training_settings_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.training_settings_summary.setProperty("muted", True)
+        self.training_settings_summary.setProperty("readonlyDisplay", True)
 
         self.export_include_paths_checkbox = QCheckBox("Include path setup")
         self.export_include_paths_checkbox.setChecked(True)
@@ -976,13 +894,225 @@ class TrainingLauncher(QMainWindow):
 
         self.train_button = QPushButton("Train")
         self.train_button.clicked.connect(self.start_training)
+        self.train_button.setMinimumWidth(104)
+        self.train_queue_button = QPushButton("Add to Queue")
+        self.train_queue_button.clicked.connect(self.add_current_training_config_to_queue)
+        self.train_queue_button.setMinimumWidth(118)
 
         self.stop_button = QPushButton("Stop")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_training)
+        self.stop_button.setMinimumWidth(88)
 
         self.status_label = QLabel("Idle")
         self.status_label.setObjectName("SectionStatus")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setMinimumWidth(132)
+        self.global_queue_jobs: list[dict[str, object]] = []
+        self.global_queue_list = QListWidget()
+        self.global_queue_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.global_queue_list.setMinimumHeight(220)
+        self.global_queue_list.itemSelectionChanged.connect(self.on_global_queue_selection_changed)
+        self.queue_remove_button = QPushButton("Remove Selected")
+        self.queue_remove_button.clicked.connect(self.remove_selected_global_queue_job)
+        self.queue_duplicate_button = QPushButton("Duplicate Selected")
+        self.queue_duplicate_button.clicked.connect(self.duplicate_selected_global_queue_job)
+        self.queue_follow_on_test_split_button = QPushButton("Add Follow-on Test Split")
+        self.queue_follow_on_test_split_button.clicked.connect(self.add_follow_on_test_split_for_selected_job)
+        self.queue_follow_on_test_split_button.setEnabled(False)
+        self.queue_move_up_button = QPushButton("Move Up")
+        self.queue_move_up_button.clicked.connect(self.move_selected_global_queue_job_up)
+        self.queue_move_down_button = QPushButton("Move Down")
+        self.queue_move_down_button.clicked.connect(self.move_selected_global_queue_job_down)
+        self.queue_run_button = QPushButton("Run Queue")
+        self.queue_run_button.clicked.connect(self.run_global_queue)
+        self.queue_stop_button = QPushButton("Stop Current / Pause")
+        self.queue_stop_button.clicked.connect(self.stop_current_global_job)
+        self.queue_stop_button.setEnabled(False)
+        self.queue_clear_finished_button = QPushButton("Clear Finished")
+        self.queue_clear_finished_button.clicked.connect(self.clear_finished_global_queue_jobs)
+        self.global_queue_status_label = QLabel("Queue is empty.")
+        self.global_queue_status_label.setWordWrap(True)
+        self.global_queue_status_label.setProperty("muted", True)
+        self.global_queue_running = False
+        self.global_queue_stop_requested = False
+        self.active_queue_job_id: str | None = None
+        self.active_queue_job_type: str | None = None
+        self.active_job_origin = "manual"
+        self.active_job_config_snapshot: dict[str, object] | None = None
+        self.training_stop_requested = False
+        self.global_queue_button = QPushButton("Queue")
+        self.global_queue_button.setCheckable(True)
+        self.global_queue_button.setChecked(True)
+        self.training_validation_proportion_label: QLabel | None = None
+        self.training_resume_path_label: QLabel | None = None
+        self.training_resume_path_widget: QWidget | None = None
+        self.command_preview_body: QWidget | None = None
+        self.training_run_name_label: QLabel | None = None
+        self.training_data_root_title: QLabel | None = None
+        self.training_checkpoint_dir_title: QLabel | None = None
+        self.training_advanced_title: QLabel | None = None
+
+    def _install_wheel_guards(self) -> None:
+        for widget in self.findChildren(QWidget):
+            if isinstance(widget, (QComboBox, QSpinBox, QDoubleSpinBox)):
+                widget.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event) -> bool:
+        if event.type() == QEvent.Wheel and isinstance(watched, (QComboBox, QSpinBox, QDoubleSpinBox)):
+            if isinstance(watched, QComboBox):
+                if not watched.hasFocus() and not watched.view().isVisible():
+                    event.ignore()
+                    return True
+            elif not watched.hasFocus():
+                event.ignore()
+                return True
+        return super().eventFilter(watched, event)
+
+    def _make_training_row_label(self, text: str, *, prominent: bool = False) -> QLabel:
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        label.setMinimumWidth(148 if prominent else 136)
+        if prominent:
+            font = label.font()
+            font.setBold(True)
+            label.setFont(font)
+        return label
+
+    def _create_training_labeled_field(self, label_text: str, field: QWidget, *, prominent: bool = False) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        label = QLabel(label_text)
+        label.setProperty("sectionHint", True)
+        if prominent:
+            font = label.font()
+            font.setBold(True)
+            label.setFont(font)
+            field.setMinimumHeight(max(field.minimumHeight(), 34))
+        layout.addWidget(label)
+        layout.addWidget(field)
+        return container
+
+    def custom_augmentation_config(self) -> dict[str, object]:
+        return {
+            "downsample": {
+                "enabled": bool(self.custom_downsample_enabled),
+                "probability": float(self.custom_downsample_prob),
+                "min_scale": float(self.custom_downsample_min_scale),
+                "max_scale": float(self.custom_downsample_max_scale),
+            },
+            "mild_blur": {
+                "enabled": bool(self.custom_mild_blur_enabled),
+                "probability": float(self.custom_mild_blur_prob),
+            },
+            "random_erasing": {
+                "enabled": bool(self.custom_random_erasing_enabled),
+                "probability": float(self.custom_random_erasing_prob),
+            },
+            "color_jitter": {
+                "enabled": bool(self.custom_color_jitter_enabled),
+            },
+            "horizontal_flip": {
+                "enabled": bool(self.custom_horizontal_flip_enabled),
+            },
+        }
+
+    def custom_augmentation_summary(self) -> str:
+        config = self.custom_augmentation_config()
+        parts: list[str] = []
+        downsample = config["downsample"]
+        assert isinstance(downsample, dict)
+        if downsample.get("enabled"):
+            parts.append(
+                f"downsample p={float(downsample.get('probability', 0.0)):.2f} "
+                f"scale={float(downsample.get('min_scale', 0.0)):.2f}-{float(downsample.get('max_scale', 0.0)):.2f}"
+            )
+        blur = config["mild_blur"]
+        assert isinstance(blur, dict)
+        if blur.get("enabled"):
+            parts.append(f"blur p={float(blur.get('probability', 0.0)):.2f}")
+        erasing = config["random_erasing"]
+        assert isinstance(erasing, dict)
+        if erasing.get("enabled"):
+            parts.append(f"erase p={float(erasing.get('probability', 0.0)):.2f}")
+        if bool(config["color_jitter"].get("enabled")):
+            parts.append("jitter")
+        if bool(config["horizontal_flip"].get("enabled")):
+            parts.append("hflip")
+        return ", ".join(parts) if parts else "custom minimal"
+
+    def collect_training_config_snapshot(self) -> dict[str, object]:
+        checkpoint_dir = self.selected_checkpoint_dir()
+        return {
+            "job_id": uuid.uuid4().hex[:8],
+            "model": self.model_combo.currentText(),
+            "data_root": str(DEFAULT_DATA_ROOT),
+            "checkpoint_name": self.checkpoint_output_name(),
+            "checkpoint_dir": str(checkpoint_dir),
+            "epochs": int(self.epochs_spin.value()),
+            "batch_size": int(self.batch_size_spin.value()),
+            "num_workers": int(self.num_workers_spin.value()),
+            "image_size": int(self.image_size_spin.value()),
+            "train_transforms_preset": self.train_transforms_preset_combo.currentText(),
+            "lr": float(self.lr_spin.value()),
+            "optimizer": self.optimizer_combo.currentText(),
+            "scheduler": self.scheduler_combo.currentText(),
+            "seed": int(self.seed_spin.value()),
+            "mild_blur_enabled": bool(self.mild_blur_enabled),
+            "mild_blur_prob": float(self.mild_blur_prob),
+            "custom_augmentation": self.custom_augmentation_config(),
+            "device": self.device_combo.currentText(),
+            "amp": bool(self.amp_checkbox.isChecked()),
+            "freeze_backbone": bool(self.freeze_checkbox.isChecked()),
+            "use_validation_split": bool(self.validation_checkbox.isChecked()),
+            "validation_proportion": float(self.validation_proportion_spin.value()),
+            "resume_enabled": bool(self.resume_checkbox.isChecked()),
+            "resume_path": self.resume_path_edit.text().strip(),
+        }
+
+    def training_config_summary(self, config: dict[str, object]) -> str:
+        preset = str(config.get("train_transforms_preset", "baseline"))
+        if preset == "custom":
+            transform_text = f"custom ({self.describe_custom_augmentation_config(config.get('custom_augmentation'))})"
+        elif bool(config.get("mild_blur_enabled", False)):
+            transform_text = f"{preset} + blur {float(config.get('mild_blur_prob', 0.0)):.2f}"
+        else:
+            transform_text = preset
+        return (
+            f"{config.get('model', '-')}"
+            f" | run={config.get('checkpoint_name', '-')}"
+            f" | {transform_text}"
+            f" | e={config.get('epochs', '-')}"
+            f" bs={config.get('batch_size', '-')}"
+            f" lr={float(config.get('lr', 0.0)):.4g}"
+            f" opt={config.get('optimizer', '-')}"
+        )
+
+    def describe_custom_augmentation_config(self, config: object) -> str:
+        if not isinstance(config, dict):
+            return "custom"
+        parts: list[str] = []
+        downsample = config.get("downsample")
+        if isinstance(downsample, dict) and downsample.get("enabled"):
+            parts.append(
+                f"downsample {float(downsample.get('probability', 0.0)):.2f} "
+                f"[{float(downsample.get('min_scale', 0.0)):.2f}-{float(downsample.get('max_scale', 0.0)):.2f}]"
+            )
+        blur = config.get("mild_blur")
+        if isinstance(blur, dict) and blur.get("enabled"):
+            parts.append(f"blur {float(blur.get('probability', 0.0)):.2f}")
+        erasing = config.get("random_erasing")
+        if isinstance(erasing, dict) and erasing.get("enabled"):
+            parts.append(f"erase {float(erasing.get('probability', 0.0)):.2f}")
+        jitter = config.get("color_jitter")
+        if isinstance(jitter, dict) and jitter.get("enabled"):
+            parts.append("jitter")
+        hflip = config.get("horizontal_flip")
+        if isinstance(hflip, dict) and hflip.get("enabled"):
+            parts.append("hflip")
+        return ", ".join(parts) if parts else "custom"
 
     def _init_data_controls(self) -> None:
         self.data_dir_label = QLabel(str(DEFAULT_DATA_DIR))
@@ -1063,6 +1193,8 @@ class TrainingLauncher(QMainWindow):
 
         self.predict_run_button = QPushButton("Predict")
         self.predict_run_button.clicked.connect(self.run_predictions)
+        self.predict_queue_button = QPushButton("Add to Queue")
+        self.predict_queue_button.clicked.connect(self.add_current_predict_config_to_queue)
 
         self.predict_compact_checkbox = QCheckBox("Compact Mode")
         self.predict_compact_checkbox.toggled.connect(self.on_predict_compact_toggled)
@@ -1159,6 +1291,14 @@ class TrainingLauncher(QMainWindow):
         self.test_split_image_size_spin.setRange(32, 2048)
         self.test_split_image_size_spin.setValue(224)
 
+        self.test_split_batch_size_spin = QSpinBox()
+        self.test_split_batch_size_spin.setRange(1, 4096)
+        self.test_split_batch_size_spin.setValue(32)
+
+        self.test_split_amp_checkbox = QCheckBox("Use AMP for evaluation")
+        self.test_split_amp_checkbox.setChecked(False)
+        self.test_split_amp_checkbox.setToolTip("Use autocast during test-split inference on supported CUDA devices.")
+
         self.test_split_checkpoint_edit = QLineEdit(str(DEFAULT_CHECKPOINT_DIR / "efficientnet_baseline" / "best.pth"))
         self.test_split_checkpoint_edit.editingFinished.connect(self.update_test_split_detected_model)
 
@@ -1175,6 +1315,8 @@ class TrainingLauncher(QMainWindow):
 
         self.test_split_run_button = QPushButton("Evaluate Test Splits")
         self.test_split_run_button.clicked.connect(self.run_test_split_evaluation)
+        self.test_split_queue_button = QPushButton("Add to Queue")
+        self.test_split_queue_button.clicked.connect(self.add_current_test_split_config_to_queue)
 
         self.test_split_status_label = QLabel("Ready.")
         self.test_split_status_label.setWordWrap(True)
@@ -1316,73 +1458,127 @@ class TrainingLauncher(QMainWindow):
 
         training_tab = QWidget()
         training_tab_layout = QVBoxLayout(training_tab)
+        training_tab_layout.setContentsMargins(0, 0, 0, 0)
         training_scroll = QScrollArea()
         training_scroll.setWidgetResizable(True)
         training_scroll.setFrameShape(QScrollArea.NoFrame)
         training_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         training_scroll_content = QWidget()
         training_layout = QVBoxLayout(training_scroll_content)
+        training_layout.setContentsMargins(8, 8, 8, 8)
+        training_layout.setSpacing(16)
 
-        config_group = QGroupBox("Training Config")
-        config_layout = QVBoxLayout(config_group)
-        config_layout.setContentsMargins(14, 14, 14, 14)
-        config_layout.setSpacing(10)
-
-        config_actions = QHBoxLayout()
-        config_actions.setContentsMargins(0, 0, 0, 0)
-        config_actions.addStretch(1)
-        config_actions.addWidget(self.training_settings_button)
-        config_layout.addLayout(config_actions)
-
-        form = QFormLayout()
-        form.addRow("Model", self.model_combo)
-        form.addRow("Epochs", self.epochs_spin)
-        form.addRow("Batch Size", self.batch_size_spin)
-        form.addRow("", self.freeze_checkbox)
-        form.addRow("", self.validation_checkbox)
-        form.addRow("Validation Proportion", self.validation_proportion_spin)
-        form.addRow("", self.resume_checkbox)
-        form.addRow("Checkpoint Output", self.checkpoint_output_combo)
+        core_group = QGroupBox("Core Training Config")
+        core_layout = QVBoxLayout(core_group)
+        core_layout.setSpacing(12)
+        prominent_form = QFormLayout()
+        prominent_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        prominent_form.addRow(self._make_training_row_label("Model", prominent=True), self.model_combo)
+        core_layout.addLayout(prominent_form)
+        compact_grid = QGridLayout()
+        compact_grid.setContentsMargins(0, 0, 0, 0)
+        compact_grid.setHorizontalSpacing(12)
+        compact_grid.setVerticalSpacing(12)
+        compact_grid.addWidget(self._create_training_labeled_field("Epochs", self.epochs_spin), 0, 0)
+        compact_grid.addWidget(self._create_training_labeled_field("Batch Size", self.batch_size_spin), 0, 1)
+        compact_grid.addWidget(self._create_training_labeled_field("Optimizer", self.optimizer_combo), 0, 2)
+        compact_grid.addWidget(self._create_training_labeled_field("Image Size", self.image_size_spin), 1, 0)
+        compact_grid.addWidget(self._create_training_labeled_field("Learning Rate", self.lr_spin), 1, 1)
+        compact_grid.addWidget(self._create_training_labeled_field("Precision", self.amp_checkbox), 1, 2)
+        compact_grid.addWidget(self._create_training_labeled_field("Train Transforms Preset", self.train_transforms_preset_combo), 2, 0, 1, 2)
+        core_layout.addLayout(compact_grid)
+        options_form = QFormLayout()
+        options_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        options_form.setHorizontalSpacing(16)
+        options_form.setVerticalSpacing(10)
+        options_form.addRow(self._make_training_row_label("Options"), self.freeze_checkbox)
+        options_form.addRow(self._make_training_row_label(""), self.validation_checkbox)
+        self.training_validation_proportion_label = QLabel("Validation Proportion")
+        self.training_validation_proportion_label.setMinimumWidth(136)
+        self.training_validation_proportion_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        options_form.addRow(self.training_validation_proportion_label, self.validation_proportion_spin)
+        options_form.addRow(self._make_training_row_label(""), self.resume_checkbox)
         resume_layout = QHBoxLayout()
+        resume_layout.setContentsMargins(0, 0, 0, 0)
+        resume_layout.setSpacing(8)
         resume_layout.addWidget(self.resume_path_edit, stretch=1)
         resume_layout.addWidget(self.resume_browse_button)
         resume_layout.addWidget(self.resume_clear_button)
-        form.addRow("Resume Checkpoint", resume_layout)
-        form.addRow("Data Root", self.data_root_label)
-        form.addRow("Checkpoint Dir", self.checkpoint_dir_label)
-        form.addRow("Settings", self.training_settings_summary)
-        command_widget = QWidget()
-        command_layout = QVBoxLayout(command_widget)
-        command_layout.setContentsMargins(0, 0, 0, 0)
-        command_layout.setSpacing(8)
-        command_action_layout = QHBoxLayout()
-        command_action_layout.setContentsMargins(0, 0, 0, 0)
-        command_action_layout.addStretch(1)
-        command_action_layout.addWidget(self.export_include_paths_checkbox)
-        command_action_layout.addWidget(self.export_command_button)
-        command_layout.addLayout(command_action_layout)
-        command_layout.addWidget(self.command_preview)
-        form.addRow("Command", command_widget)
-        config_layout.addLayout(form)
-        training_layout.addWidget(config_group)
+        self.training_resume_path_widget = QWidget()
+        self.training_resume_path_widget.setLayout(resume_layout)
+        self.training_resume_path_label = QLabel("Resume Checkpoint")
+        self.training_resume_path_label.setMinimumWidth(136)
+        self.training_resume_path_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        options_form.addRow(self.training_resume_path_label, self.training_resume_path_widget)
+        core_layout.addLayout(options_form)
+        training_layout.addWidget(core_group)
+
+        data_output_group = QGroupBox("Data & Output")
+        data_output_layout = QVBoxLayout(data_output_group)
+        data_output_layout.setSpacing(12)
+        data_output_actions = QHBoxLayout()
+        data_output_actions.setContentsMargins(0, 0, 0, 0)
+        data_output_actions.addStretch(1)
+        data_output_actions.addWidget(self.training_settings_button)
+        data_output_layout.addLayout(data_output_actions)
+        data_output_form = QFormLayout()
+        data_output_form.setLabelAlignment(Qt.AlignRight | Qt.AlignTop)
+        data_output_form.setHorizontalSpacing(16)
+        data_output_form.setVerticalSpacing(10)
+        self.training_run_name_label = self._make_training_row_label("Run Name", prominent=True)
+        self.training_data_root_title = self._make_training_row_label("Data Root")
+        self.training_checkpoint_dir_title = self._make_training_row_label("Checkpoint Dir")
+        self.training_advanced_title = self._make_training_row_label("Advanced")
+        data_output_form.addRow(self.training_run_name_label, self.checkpoint_output_combo)
+        data_output_form.addRow(self.training_data_root_title, self.data_root_label)
+        data_output_form.addRow(self.training_checkpoint_dir_title, self.checkpoint_dir_label)
+        data_output_form.addRow(self.training_advanced_title, self.training_settings_summary)
+        data_output_layout.addLayout(data_output_form)
+        training_layout.addWidget(data_output_group)
+
+        command_group = QGroupBox("Command Preview")
+        command_group_layout = QVBoxLayout(command_group)
+        command_group_layout.setSpacing(10)
+        command_header_layout = QHBoxLayout()
+        command_header_layout.setContentsMargins(0, 0, 0, 0)
+        command_header_layout.addWidget(self.command_preview_toggle)
+        command_header_layout.addStretch(1)
+        command_header_layout.addWidget(self.export_include_paths_checkbox)
+        command_header_layout.addWidget(self.export_command_button)
+        command_group_layout.addLayout(command_header_layout)
+        self.command_preview_body = QWidget()
+        command_body_layout = QVBoxLayout(self.command_preview_body)
+        command_body_layout.setContentsMargins(0, 0, 0, 0)
+        command_body_layout.setSpacing(0)
+        command_body_layout.addWidget(self.command_preview)
+        command_group_layout.addWidget(self.command_preview_body)
+        training_layout.addWidget(command_group)
+
+        monitor_group = QGroupBox("Run Monitor")
+        monitor_layout = QVBoxLayout(monitor_group)
+        monitor_layout.setSpacing(14)
 
         controls_layout = QHBoxLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(10)
         controls_layout.addWidget(self.train_button)
+        controls_layout.addWidget(self.train_queue_button)
         controls_layout.addWidget(self.stop_button)
         controls_layout.addWidget(self.status_label)
         controls_layout.addStretch(1)
-        training_layout.addLayout(controls_layout)
+        monitor_layout.addLayout(controls_layout)
 
         progress_group = QGroupBox("Training Progress")
         progress_layout = QVBoxLayout(progress_group)
         progress_layout.addWidget(self.progress_label)
         progress_layout.addWidget(self.progress_bar)
-        training_layout.addWidget(progress_group)
+        monitor_layout.addWidget(progress_group)
 
-        log_group = QGroupBox("Training Output")
+        log_group = QGroupBox("Logs")
         log_layout = QVBoxLayout(log_group)
         log_layout.addWidget(self.output_text)
-        training_layout.addWidget(log_group)
+        monitor_layout.addWidget(log_group)
+        training_layout.addWidget(monitor_group)
         training_layout.addStretch(1)
         training_scroll.setWidget(training_scroll_content)
         training_tab_layout.addWidget(training_scroll)
@@ -1412,6 +1608,7 @@ class TrainingLauncher(QMainWindow):
         predict_controls.addWidget(self.predict_select_images_button)
         predict_controls.addWidget(self.predict_select_folder_button)
         predict_controls.addWidget(self.predict_run_button)
+        predict_controls.addWidget(self.predict_queue_button)
         predict_controls.addWidget(self.predict_compact_checkbox)
         predict_controls.addWidget(self.predict_gradcam_button)
         predict_controls.addWidget(self.predict_export_include_paths_checkbox)
@@ -1442,10 +1639,13 @@ class TrainingLauncher(QMainWindow):
         test_split_form.addRow("Test Splits Root", root_layout)
         test_split_form.addRow("Device", self.test_split_device_combo)
         test_split_form.addRow("Image Size", self.test_split_image_size_spin)
+        test_split_form.addRow("Evaluation Batch Size", self.test_split_batch_size_spin)
+        test_split_form.addRow("", self.test_split_amp_checkbox)
         test_split_layout.addWidget(test_split_config_group)
 
         test_split_controls = QHBoxLayout()
         test_split_controls.addWidget(self.test_split_run_button)
+        test_split_controls.addWidget(self.test_split_queue_button)
         test_split_controls.addStretch(1)
         test_split_layout.addLayout(test_split_controls)
         test_split_layout.addWidget(self.test_split_status_label)
@@ -1542,6 +1742,41 @@ class TrainingLauncher(QMainWindow):
         self.tabs.addTab(data_tab, "Data")
         self.tabs.addTab(logs_tab, "Logs")
         self.tabs.setCurrentIndex(0)
+        corner_widget = QWidget()
+        corner_layout = QHBoxLayout(corner_widget)
+        corner_layout.setContentsMargins(0, 0, 0, 0)
+        corner_layout.setSpacing(8)
+        corner_layout.addWidget(self.theme_label)
+        corner_layout.addWidget(self.theme_combo)
+        corner_layout.addWidget(self.global_queue_button)
+        self.tabs.setCornerWidget(corner_widget, Qt.TopRightCorner)
+
+        queue_panel = QWidget()
+        queue_panel_layout = QVBoxLayout(queue_panel)
+        queue_panel_layout.setContentsMargins(10, 10, 10, 10)
+        queue_panel_layout.setSpacing(10)
+        queue_panel_layout.addWidget(self.global_queue_list)
+        queue_buttons = QGridLayout()
+        queue_buttons.setContentsMargins(0, 0, 0, 0)
+        queue_buttons.setHorizontalSpacing(8)
+        queue_buttons.setVerticalSpacing(8)
+        queue_buttons.addWidget(self.queue_remove_button, 0, 0)
+        queue_buttons.addWidget(self.queue_duplicate_button, 0, 1)
+        queue_buttons.addWidget(self.queue_follow_on_test_split_button, 1, 0, 1, 2)
+        queue_buttons.addWidget(self.queue_move_up_button, 2, 0)
+        queue_buttons.addWidget(self.queue_move_down_button, 2, 1)
+        queue_buttons.addWidget(self.queue_run_button, 3, 0)
+        queue_buttons.addWidget(self.queue_stop_button, 3, 1)
+        queue_buttons.addWidget(self.queue_clear_finished_button, 4, 0, 1, 2)
+        queue_panel_layout.addLayout(queue_buttons)
+        queue_panel_layout.addWidget(self.global_queue_status_label)
+
+        self.global_queue_dock = QDockWidget("Global Queue", self)
+        self.global_queue_dock.setAllowedAreas(Qt.RightDockWidgetArea)
+        self.global_queue_dock.setWidget(queue_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.global_queue_dock)
+        self.global_queue_dock.visibilityChanged.connect(self.global_queue_button.setChecked)
+        self.global_queue_button.toggled.connect(self.global_queue_dock.setVisible)
 
         self.model_combo.currentTextChanged.connect(self.on_training_model_changed)
         self.device_combo.currentTextChanged.connect(self.refresh_command_preview)
@@ -1549,21 +1784,43 @@ class TrainingLauncher(QMainWindow):
         self.batch_size_spin.valueChanged.connect(self.refresh_command_preview)
         self.num_workers_spin.valueChanged.connect(self.refresh_command_preview)
         self.image_size_spin.valueChanged.connect(self.refresh_command_preview)
+        self.train_transforms_preset_combo.currentTextChanged.connect(self.on_train_transforms_preset_changed)
         self.lr_spin.valueChanged.connect(self.refresh_command_preview)
+        self.optimizer_combo.currentTextChanged.connect(self.refresh_command_preview)
+        self.amp_checkbox.toggled.connect(self.refresh_command_preview)
         self.freeze_checkbox.toggled.connect(self.refresh_command_preview)
         self.validation_checkbox.toggled.connect(self.on_validation_toggled)
         self.validation_proportion_spin.valueChanged.connect(self.refresh_command_preview)
         self.resume_checkbox.toggled.connect(self.on_resume_toggled)
         self.resume_path_edit.textChanged.connect(self.refresh_command_preview)
+        self.command_preview_toggle.toggled.connect(self.on_command_preview_toggled)
         self.checkpoint_output_combo.currentTextChanged.connect(self.on_checkpoint_output_changed)
         self.checkpoint_output_combo.activated.connect(self.on_checkpoint_output_activated)
         self.on_validation_toggled(self.validation_checkbox.isChecked())
         self.on_resume_toggled(self.resume_checkbox.isChecked())
+        self.on_command_preview_toggled(self.command_preview_toggle.isChecked())
+        self.refresh_global_queue_view()
+        self.on_train_transforms_preset_changed(self.train_transforms_preset_combo.currentText())
         self.on_training_model_changed(self.model_combo.currentText())
 
     def apply_visual_design(self) -> None:
-        self.setStyleSheet(APP_STYLESHEET)
+        stylesheet = app_themes.build_stylesheet(self.current_theme_key)
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(stylesheet)
+        else:
+            self.setStyleSheet(stylesheet)
         self._set_layout_metrics(self.centralWidget().layout() if self.centralWidget() is not None else None)
+
+    def on_theme_changed(self) -> None:
+        theme_key = self.theme_combo.currentData()
+        if not isinstance(theme_key, str) or theme_key not in app_themes.THEMES:
+            return
+        if theme_key == self.current_theme_key:
+            return
+        self.current_theme_key = theme_key
+        self.settings.setValue("ui/theme", theme_key)
+        self.apply_visual_design()
 
     def _set_layout_metrics(self, layout) -> None:
         if layout is None:
@@ -1583,50 +1840,118 @@ class TrainingLauncher(QMainWindow):
             if child_widget is not None and child_widget.layout() is not None:
                 self._set_layout_metrics(child_widget.layout())
 
-    def build_command(self) -> list[str]:
-        checkpoint_dir = self.selected_checkpoint_dir()
+    def build_command(self, config: dict[str, object] | None = None) -> list[str]:
+        if config is None:
+            config = self.collect_training_config_snapshot()
+        checkpoint_dir = Path(str(config.get("checkpoint_dir", self.selected_checkpoint_dir()))).expanduser().resolve()
+        preset = str(config.get("train_transforms_preset", "baseline"))
         command = [
             "-u",
             str(TRAINING_SCRIPT),
             "--model",
-            self.model_combo.currentText(),
+            str(config.get("model", self.model_combo.currentText())),
             "--data-root",
-            str(DEFAULT_DATA_ROOT),
+            str(config.get("data_root", DEFAULT_DATA_ROOT)),
             "--checkpoint-dir",
             str(checkpoint_dir),
             "--epochs",
-            str(self.epochs_spin.value()),
+            str(config.get("epochs", self.epochs_spin.value())),
             "--batch-size",
-            str(self.batch_size_spin.value()),
+            str(config.get("batch_size", self.batch_size_spin.value())),
             "--num-workers",
-            str(self.num_workers_spin.value()),
+            str(config.get("num_workers", self.num_workers_spin.value())),
             "--image-size",
-            str(self.image_size_spin.value()),
+            str(config.get("image_size", self.image_size_spin.value())),
+            "--train-transforms-preset",
+            preset,
             "--lr",
-            format(self.lr_spin.value(), ".6f"),
+            format(float(config.get("lr", self.lr_spin.value())), ".6f"),
+            "--optimizer",
+            str(config.get("optimizer", self.optimizer_combo.currentText())),
+            "--scheduler",
+            str(config.get("scheduler", self.scheduler_combo.currentText())),
+            "--seed",
+            str(config.get("seed", self.seed_spin.value())),
         ]
+        if preset == "custom":
+            custom = config.get("custom_augmentation")
+            if isinstance(custom, dict):
+                downsample = custom.get("downsample")
+                if isinstance(downsample, dict) and downsample.get("enabled"):
+                    command.extend(
+                        [
+                            "--custom-downsample",
+                            "--custom-downsample-prob",
+                            format(float(downsample.get("probability", 0.65)), ".2f"),
+                            "--custom-downsample-min-scale",
+                            format(float(downsample.get("min_scale", 0.18)), ".2f"),
+                            "--custom-downsample-max-scale",
+                            format(float(downsample.get("max_scale", 0.55)), ".2f"),
+                        ]
+                    )
+                blur = custom.get("mild_blur")
+                if isinstance(blur, dict) and blur.get("enabled"):
+                    command.extend(
+                        [
+                            "--custom-mild-blur",
+                            "--custom-mild-blur-prob",
+                            format(float(blur.get("probability", 0.10)), ".2f"),
+                        ]
+                    )
+                erasing = custom.get("random_erasing")
+                if isinstance(erasing, dict) and erasing.get("enabled"):
+                    command.extend(
+                        [
+                            "--custom-random-erasing",
+                            "--custom-random-erasing-prob",
+                            format(float(erasing.get("probability", 0.08)), ".2f"),
+                        ]
+                    )
+                color_jitter = custom.get("color_jitter")
+                if isinstance(color_jitter, dict) and color_jitter.get("enabled"):
+                    command.append("--custom-color-jitter")
+                horizontal_flip = custom.get("horizontal_flip")
+                if isinstance(horizontal_flip, dict) and horizontal_flip.get("enabled"):
+                    command.append("--custom-horizontal-flip")
+        elif bool(config.get("mild_blur_enabled", self.mild_blur_enabled)):
+            command.extend(
+                [
+                    "--mild-blur",
+                    "--mild-blur-prob",
+                    format(float(config.get("mild_blur_prob", self.mild_blur_prob)), ".2f"),
+                ]
+            )
 
         command.extend(["--progress-format", "gui"])
         command.extend(["--stop-file", str(self.stop_request_path_for(checkpoint_dir))])
 
-        device = self.device_combo.currentText()
+        device = str(config.get("device", self.device_combo.currentText()))
         if device != "auto":
             command.extend(["--device", device])
+        if bool(config.get("amp", self.amp_checkbox.isChecked())):
+            command.append("--amp")
 
-        command.append("--freeze-backbone" if self.freeze_checkbox.isChecked() else "--no-freeze-backbone")
-        if self.validation_checkbox.isChecked():
+        command.append("--freeze-backbone" if bool(config.get("freeze_backbone", self.freeze_checkbox.isChecked())) else "--no-freeze-backbone")
+        if bool(config.get("use_validation_split", self.validation_checkbox.isChecked())):
             command.extend(
                 [
                     "--use-validation-split",
                     "--validation-proportion",
-                    format(self.validation_proportion_spin.value(), ".2f"),
+                    format(float(config.get("validation_proportion", self.validation_proportion_spin.value())), ".2f"),
                 ]
             )
 
-        resume_path = self.resume_path_edit.text().strip()
-        if self.resume_checkbox.isChecked() and resume_path:
+        resume_path = str(config.get("resume_path", self.resume_path_edit.text().strip())).strip()
+        if bool(config.get("resume_enabled", self.resume_checkbox.isChecked())) and resume_path:
             command.extend(["--resume", resume_path])
         return command
+
+    def format_command_for_display(self, command: list[str]) -> str:
+        parts: list[str] = []
+        for token in [sys.executable, *command]:
+            text = str(token)
+            parts.append(f"\"{text}\"" if " " in text else text)
+        return " ".join(parts)
 
     def _path_expression(self, base_expression: str, path: Path) -> str:
         expression = base_expression
@@ -1684,13 +2009,63 @@ class TrainingLauncher(QMainWindow):
             f"    '--batch-size', {str(self.batch_size_spin.value())!r},",
             f"    '--num-workers', {str(self.num_workers_spin.value())!r},",
             f"    '--image-size', {str(self.image_size_spin.value())!r},",
+            f"    '--train-transforms-preset', {self.train_transforms_preset_combo.currentText()!r},",
             f"    '--lr', {format(self.lr_spin.value(), '.6f')!r},",
+            f"    '--optimizer', {self.optimizer_combo.currentText()!r},",
+            f"    '--scheduler', {self.scheduler_combo.currentText()!r},",
+            f"    '--seed', {str(self.seed_spin.value())!r},",
             "    '--progress-format', 'tqdm',",
         ]
+        if self.train_transforms_preset_combo.currentText() != "custom" and self.mild_blur_enabled:
+            command_lines.extend(
+                [
+                    "    '--mild-blur',",
+                    f"    '--mild-blur-prob', {format(self.mild_blur_prob, '.2f')!r},",
+                ]
+            )
+        if self.train_transforms_preset_combo.currentText() == "custom":
+            custom = self.custom_augmentation_config()
+            downsample = custom["downsample"]
+            assert isinstance(downsample, dict)
+            if downsample.get("enabled"):
+                command_lines.extend(
+                    [
+                        "    '--custom-downsample',",
+                        f"    '--custom-downsample-prob', {format(float(downsample.get('probability', 0.65)), '.2f')!r},",
+                        f"    '--custom-downsample-min-scale', {format(float(downsample.get('min_scale', 0.18)), '.2f')!r},",
+                        f"    '--custom-downsample-max-scale', {format(float(downsample.get('max_scale', 0.55)), '.2f')!r},",
+                    ]
+                )
+            blur = custom["mild_blur"]
+            assert isinstance(blur, dict)
+            if blur.get("enabled"):
+                command_lines.extend(
+                    [
+                        "    '--custom-mild-blur',",
+                        f"    '--custom-mild-blur-prob', {format(float(blur.get('probability', 0.10)), '.2f')!r},",
+                    ]
+                )
+            erasing = custom["random_erasing"]
+            assert isinstance(erasing, dict)
+            if erasing.get("enabled"):
+                command_lines.extend(
+                    [
+                        "    '--custom-random-erasing',",
+                        f"    '--custom-random-erasing-prob', {format(float(erasing.get('probability', 0.08)), '.2f')!r},",
+                    ]
+                )
+            color_jitter = custom.get("color_jitter")
+            if isinstance(color_jitter, dict) and color_jitter.get("enabled"):
+                command_lines.append("    '--custom-color-jitter',")
+            horizontal_flip = custom.get("horizontal_flip")
+            if isinstance(horizontal_flip, dict) and horizontal_flip.get("enabled"):
+                command_lines.append("    '--custom-horizontal-flip',")
 
         device = self.device_combo.currentText()
         if device != "auto":
             command_lines.append(f"    '--device', {device!r},")
+        if self.amp_checkbox.isChecked():
+            command_lines.append("    '--amp',")
 
         command_lines.append(
             "    '--freeze-backbone'," if self.freeze_checkbox.isChecked() else "    '--no-freeze-backbone',"
@@ -2204,8 +2579,17 @@ class TrainingLauncher(QMainWindow):
         self.refresh_predict_compare_summary()
 
     def refresh_command_preview(self) -> None:
-        parts = [sys.executable, *self.build_command()]
-        self.command_preview.setText(" ".join(f'"{part}"' if " " in part else part for part in parts))
+        quoted_parts = []
+        for part in [sys.executable, *self.build_command()]:
+            text = str(part)
+            quoted_parts.append(f'"{text}"' if " " in text else text)
+        if quoted_parts:
+            preview_text = quoted_parts[0]
+            if len(quoted_parts) > 1:
+                preview_text += " \\\n    " + " \\\n    ".join(quoted_parts[1:])
+        else:
+            preview_text = ""
+        self.command_preview.setText(preview_text)
         self.refresh_training_settings_summary()
 
     def refresh_predict_compare_summary(self) -> None:
@@ -2400,18 +2784,662 @@ class TrainingLauncher(QMainWindow):
         self.resume_path_edit.setEnabled(checked)
         self.resume_browse_button.setEnabled(checked)
         self.resume_clear_button.setEnabled(checked)
+        if self.training_resume_path_label is not None:
+            self.training_resume_path_label.setVisible(checked)
+        if self.training_resume_path_widget is not None:
+            self.training_resume_path_widget.setVisible(checked)
         self.refresh_command_preview()
 
     def on_validation_toggled(self, checked: bool) -> None:
         self.validation_proportion_spin.setEnabled(checked)
+        if self.training_validation_proportion_label is not None:
+            self.training_validation_proportion_label.setVisible(checked)
+        self.validation_proportion_spin.setVisible(checked)
         self.refresh_command_preview()
 
+    def on_train_transforms_preset_changed(self, preset: str) -> None:
+        self.training_settings_button.setToolTip(
+            "Open advanced training settings"
+            if preset != "custom"
+            else "Open advanced training settings and custom augmentation controls"
+        )
+        self.refresh_training_settings_summary()
+        self.refresh_command_preview()
+
+    def validate_training_config_snapshot(self, config: dict[str, object]) -> str | None:
+        checkpoint_name = str(config.get("checkpoint_name", "")).strip()
+        if not checkpoint_name:
+            return "Choose or enter a checkpoint output folder name."
+        if bool(config.get("resume_enabled")):
+            resume_path = str(config.get("resume_path", "")).strip()
+            if not resume_path:
+                return "Select a checkpoint file before starting resume training."
+            if not Path(resume_path).is_file():
+                return f"Checkpoint file does not exist:\n{resume_path}"
+        preset = str(config.get("train_transforms_preset", "baseline"))
+        if preset == "custom":
+            custom = config.get("custom_augmentation")
+            if isinstance(custom, dict):
+                downsample = custom.get("downsample")
+                if isinstance(downsample, dict) and downsample.get("enabled"):
+                    min_scale = float(downsample.get("min_scale", 0.0))
+                    max_scale = float(downsample.get("max_scale", 0.0))
+                    if not (0.0 < min_scale <= max_scale <= 1.0):
+                        return "Custom downsample min/max scale must satisfy 0 < min <= max <= 1."
+        return None
+
+    def add_current_training_config_to_queue(self) -> None:
+        config = self.collect_training_config_snapshot()
+        error = self.validate_training_config_snapshot(config)
+        if error is not None:
+            QMessageBox.warning(self, "Invalid Training Config", error)
+            return
+        title = str(config.get("checkpoint_name", "training run")) or "training run"
+        job = global_job_queue.create_queue_job(
+            job_type="training",
+            title=title,
+            source_tab="training",
+            config_snapshot=config,
+            summary_text=self.training_config_summary(config),
+        )
+        self.global_queue_jobs.append(job)
+        self.refresh_global_queue_view(select_job_id=str(job["job_id"]))
+
+    def collect_predict_config_snapshot(self) -> dict[str, object]:
+        if not self.predict_image_paths:
+            raise ValueError("Select one or more images before predicting.")
+        readable_samples, validation_errors = validate_predict_image_paths(self.predict_image_paths)
+        if validation_errors:
+            message = "Some selected images are not readable by Python right now.\n\n"
+            message += "\n".join(validation_errors[:5])
+            if not readable_samples:
+                message += "\n\nNo readable sample images were found, so prediction was not started."
+            else:
+                message += "\n\nPrediction was not started to avoid hanging on unreadable inputs."
+            raise ValueError(message)
+
+        model_specs: list[dict[str, object]] = []
+        if self.predict_compare_checkbox.isChecked():
+            for model_name in self.selected_predict_models():
+                checkpoint_path = self.checkpoint_path_for_predict_model(model_name)
+                if not checkpoint_path.is_file():
+                    raise ValueError(f"Checkpoint file does not exist for {model_name}:\n{checkpoint_path}")
+                model_specs.append({"model_name_hint": model_name, "checkpoint_path": str(checkpoint_path.resolve())})
+        else:
+            checkpoint_path = Path(self.predict_checkpoint_edit.text().strip()).expanduser()
+            if not checkpoint_path.is_file():
+                raise ValueError(f"Checkpoint file does not exist:\n{checkpoint_path}")
+            model_specs.append({"model_name_hint": self.current_predict_model_name(), "checkpoint_path": str(checkpoint_path.resolve())})
+
+        return {
+            "image_paths": [str(path.expanduser().resolve()) for path in self.predict_image_paths],
+            "model_specs": model_specs,
+            "image_size": int(self.predict_image_size_spin.value()),
+            "device": self.predict_device_combo.currentText(),
+            "compare_enabled": bool(self.predict_compare_checkbox.isChecked()),
+        }
+
+    def predict_config_summary(self, config: dict[str, object]) -> str:
+        image_count = len(config.get("image_paths", [])) if isinstance(config.get("image_paths"), list) else 0
+        model_specs = config.get("model_specs") if isinstance(config.get("model_specs"), list) else []
+        model_count = len(model_specs)
+        mode = "compare" if bool(config.get("compare_enabled")) else "single"
+        return (
+            f"{image_count} image(s)"
+            f" | {model_count} model(s)"
+            f" | mode={mode}"
+            f" | size={config.get('image_size', '-')}"
+            f" | device={config.get('device', '-')}"
+        )
+
+    def add_current_predict_config_to_queue(self) -> None:
+        try:
+            config = self.collect_predict_config_snapshot()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Predict Config", str(exc))
+            return
+        title = f"Predict {len(config.get('image_paths', []))} image(s)"
+        job = global_job_queue.create_queue_job(
+            job_type="predicting",
+            title=title,
+            source_tab="predicting",
+            config_snapshot=config,
+            summary_text=self.predict_config_summary(config),
+        )
+        self.global_queue_jobs.append(job)
+        self.refresh_global_queue_view(select_job_id=str(job["job_id"]))
+
+    def collect_test_split_config_snapshot(self) -> dict[str, object]:
+        checkpoint_path = Path(self.test_split_checkpoint_edit.text().strip()).expanduser()
+        test_splits_root = Path(self.test_split_root_edit.text().strip()).expanduser()
+        if not checkpoint_path.is_file():
+            raise ValueError(f"Checkpoint file does not exist:\n{checkpoint_path}")
+        if not test_splits_root.is_dir():
+            raise ValueError(f"Directory does not exist:\n{test_splits_root}")
+        return {
+            "checkpoint_path": str(checkpoint_path.resolve()),
+            "model_name": self.test_split_detected_model_name,
+            "test_splits_root": str(test_splits_root.resolve()),
+            "image_size": int(self.test_split_image_size_spin.value()),
+            "batch_size": int(self.test_split_batch_size_spin.value()),
+            "amp_requested": bool(self.test_split_amp_checkbox.isChecked()),
+            "device": self.test_split_device_combo.currentText(),
+        }
+
+    def collect_test_split_follow_on_snapshot(self) -> dict[str, object]:
+        test_splits_root = Path(self.test_split_root_edit.text().strip()).expanduser()
+        if not test_splits_root.is_dir():
+            raise ValueError(f"Directory does not exist:\n{test_splits_root}")
+        return {
+            "checkpoint_path": None,
+            "model_name": self.test_split_detected_model_name,
+            "test_splits_root": str(test_splits_root.resolve()),
+            "image_size": int(self.test_split_image_size_spin.value()),
+            "batch_size": int(self.test_split_batch_size_spin.value()),
+            "amp_requested": bool(self.test_split_amp_checkbox.isChecked()),
+            "device": self.test_split_device_combo.currentText(),
+        }
+
+    def test_split_config_summary(self, config: dict[str, object]) -> str:
+        checkpoint_source = config.get("checkpoint_source") if isinstance(config.get("checkpoint_source"), dict) else None
+        if isinstance(checkpoint_source, dict) and checkpoint_source.get("mode") == "best_from_parent_job":
+            checkpoint_text = f"best-from-parent:{checkpoint_source.get('parent_job_id', '-')}"
+        else:
+            checkpoint_text = Path(str(config.get("checkpoint_path", "-"))).name
+        return (
+            f"{checkpoint_text}"
+            f" | size={config.get('image_size', '-')}"
+            f" | batch={config.get('batch_size', '-')}"
+            f" | amp={config.get('amp_requested', '-')}"
+            f" | device={config.get('device', '-')}"
+        )
+
+    def add_current_test_split_config_to_queue(self) -> None:
+        try:
+            config = self.collect_test_split_config_snapshot()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Test Split Config", str(exc))
+            return
+        title = f"Test Splits: {Path(str(config.get('checkpoint_path', '-'))).name}"
+        job = global_job_queue.create_queue_job(
+            job_type="test_split_eval",
+            title=title,
+            source_tab="test_splits",
+            config_snapshot=config,
+            summary_text=self.test_split_config_summary(config),
+        )
+        self.global_queue_jobs.append(job)
+        self.refresh_global_queue_view(select_job_id=str(job["job_id"]))
+
+    def add_follow_on_test_split_for_selected_job(self) -> None:
+        parent_job = self.current_global_queue_job()
+        if not isinstance(parent_job, dict) or str(parent_job.get("job_type")) != "training":
+            return
+
+        try:
+            base_config = self.collect_test_split_follow_on_snapshot()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Test Split Config", str(exc))
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Follow-on Test Split")
+        dialog.resize(420, 220)
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+
+        parent_title = QLabel(str(parent_job.get("title", "training job")), dialog)
+        parent_title.setWordWrap(True)
+        placement_combo = QComboBox(dialog)
+        placement_combo.addItems(["Append to queue tail", "Insert directly after parent"])
+        placement_combo.setCurrentIndex(0)
+        settings_summary = QLabel(self.test_split_config_summary(base_config), dialog)
+        settings_summary.setWordWrap(True)
+        settings_summary.setProperty("readonlyDisplay", True)
+
+        form.addRow("Parent Training Job", parent_title)
+        form.addRow("Placement", placement_combo)
+        form.addRow("Test Split Settings", settings_summary)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        parent_job_id = str(parent_job.get("job_id", ""))
+        parent_config = parent_job.get("config_snapshot") if isinstance(parent_job.get("config_snapshot"), dict) else {}
+        follow_on_config = dict(base_config)
+        follow_on_config["model_name"] = str(parent_config.get("model", base_config.get("model_name", ""))) or base_config.get("model_name")
+        follow_on_config["checkpoint_source"] = {
+            "mode": "best_from_parent_job",
+            "parent_job_id": parent_job_id,
+        }
+        follow_on_config["checkpoint_path"] = None
+
+        child_job = global_job_queue.create_queue_job(
+            job_type="test_split_eval",
+            title=f"Follow-on Test Splits: {parent_job.get('title', 'training job')}",
+            source_tab="test_splits",
+            config_snapshot=follow_on_config,
+            summary_text=self.test_split_config_summary(follow_on_config),
+            parent_job_id=parent_job_id,
+            status="waiting_on_parent",
+        )
+
+        insert_after_parent = placement_combo.currentIndex() == 1
+        if insert_after_parent:
+            parent_index = self.current_global_queue_index()
+            insert_index = parent_index + 1 if parent_index >= 0 else len(self.global_queue_jobs)
+            self.global_queue_jobs.insert(insert_index, child_job)
+        else:
+            self.global_queue_jobs.append(child_job)
+
+        self.resolve_follow_on_children_for_parent(parent_job_id)
+        self.refresh_global_queue_view(select_job_id=str(child_job["job_id"]))
+
+    def current_global_queue_index(self) -> int:
+        item = self.global_queue_list.currentItem()
+        if item is None:
+            return -1
+        job_id = item.data(Qt.UserRole)
+        for index, job in enumerate(self.global_queue_jobs):
+            if job.get("job_id") == job_id:
+                return index
+        return -1
+
+    def current_global_queue_job(self) -> dict[str, object] | None:
+        index = self.current_global_queue_index()
+        if index < 0 or index >= len(self.global_queue_jobs):
+            return None
+        return self.global_queue_jobs[index]
+
+    def on_global_queue_selection_changed(self) -> None:
+        job = self.current_global_queue_job()
+        can_add_follow_on = bool(job and str(job.get("job_type")) == "training")
+        self.queue_follow_on_test_split_button.setEnabled(can_add_follow_on)
+
+    def remove_selected_global_queue_job(self) -> None:
+        index = self.current_global_queue_index()
+        if index < 0:
+            return
+        job = self.global_queue_jobs[index]
+        if job.get("status") == "running":
+            return
+        del self.global_queue_jobs[index]
+        self.refresh_global_queue_view(select_row=min(index, len(self.global_queue_jobs) - 1))
+
+    def duplicate_selected_global_queue_job(self) -> None:
+        index = self.current_global_queue_index()
+        if index < 0:
+            return
+        duplicated_job = global_job_queue.clone_queue_job(self.global_queue_jobs[index])
+        self.global_queue_jobs.insert(index + 1, duplicated_job)
+        self.refresh_global_queue_view(select_job_id=str(duplicated_job["job_id"]))
+
+    def move_selected_global_queue_job_up(self) -> None:
+        index = self.current_global_queue_index()
+        if index <= 0:
+            return
+        if self.global_queue_jobs[index].get("status") == "running":
+            return
+        self.global_queue_jobs[index - 1], self.global_queue_jobs[index] = self.global_queue_jobs[index], self.global_queue_jobs[index - 1]
+        self.refresh_global_queue_view(select_row=index - 1)
+
+    def move_selected_global_queue_job_down(self) -> None:
+        index = self.current_global_queue_index()
+        if index < 0 or index >= len(self.global_queue_jobs) - 1:
+            return
+        if self.global_queue_jobs[index].get("status") == "running":
+            return
+        self.global_queue_jobs[index + 1], self.global_queue_jobs[index] = self.global_queue_jobs[index], self.global_queue_jobs[index + 1]
+        self.refresh_global_queue_view(select_row=index + 1)
+
+    def clear_finished_global_queue_jobs(self) -> None:
+        self.global_queue_jobs = [
+            job for job in self.global_queue_jobs
+            if str(job.get("status", "queued")) not in {"completed", "failed", "cancelled", "skipped"}
+        ]
+        self.refresh_global_queue_view()
+
+    def refresh_global_queue_view(self, *, select_job_id: str | None = None, select_row: int | None = None) -> None:
+        self.global_queue_list.blockSignals(True)
+        self.global_queue_list.clear()
+        for order_index, job in enumerate(self.global_queue_jobs, start=1):
+            item = QListWidgetItem(f"{order_index}. {global_job_queue.format_queue_job_label(job)}")
+            item.setData(Qt.UserRole, job.get("job_id"))
+            self.global_queue_list.addItem(item)
+        self.global_queue_list.blockSignals(False)
+        if select_job_id is not None:
+            for row in range(self.global_queue_list.count()):
+                item = self.global_queue_list.item(row)
+                if item.data(Qt.UserRole) == select_job_id:
+                    self.global_queue_list.setCurrentRow(row)
+                    break
+        elif select_row is not None and self.global_queue_list.count() > 0:
+            self.global_queue_list.setCurrentRow(max(0, min(select_row, self.global_queue_list.count() - 1)))
+        elif self.global_queue_list.count() > 0 and self.global_queue_list.currentRow() < 0:
+            self.global_queue_list.setCurrentRow(0)
+
+        queued_count = sum(1 for job in self.global_queue_jobs if str(job.get("status", "queued")) == "queued")
+        waiting_count = sum(1 for job in self.global_queue_jobs if str(job.get("status", "queued")) == "waiting_on_parent")
+        running_count = sum(1 for job in self.global_queue_jobs if str(job.get("status", "queued")) == "running")
+        if not self.global_queue_jobs:
+            self.global_queue_status_label.setText("Queue is empty.")
+        elif running_count > 0:
+            self.global_queue_status_label.setText(
+                f"Queue active. {queued_count} queued, {waiting_count} waiting on parent."
+            )
+        else:
+            self.global_queue_status_label.setText(
+                f"{len(self.global_queue_jobs)} job(s). {queued_count} queued, {waiting_count} waiting on parent."
+            )
+        self.on_global_queue_selection_changed()
+
+    def get_global_queue_job_by_id(self, job_id: str | None) -> dict[str, object] | None:
+        if not job_id:
+            return None
+        for job in self.global_queue_jobs:
+            if str(job.get("job_id", "")) == str(job_id):
+                return job
+        return None
+
+    def resolve_best_checkpoint_from_training_job(self, parent_job: dict[str, object]) -> tuple[str | None, str | None, str | None]:
+        artifacts = parent_job.get("artifacts") if isinstance(parent_job.get("artifacts"), dict) else {}
+        runtime_best = artifacts.get("best_checkpoint_path")
+        if isinstance(runtime_best, str) and runtime_best:
+            best_path = Path(runtime_best).expanduser()
+            if best_path.is_file():
+                run_log_path = artifacts.get("run_log_path")
+                return str(best_path.resolve()), (str(run_log_path) if isinstance(run_log_path, str) else None), None
+
+        checkpoint_dir_raw = artifacts.get("checkpoint_dir")
+        if not isinstance(checkpoint_dir_raw, str) or not checkpoint_dir_raw:
+            config_snapshot = parent_job.get("config_snapshot")
+            if isinstance(config_snapshot, dict):
+                checkpoint_dir_raw = str(config_snapshot.get("checkpoint_dir", ""))
+        checkpoint_dir = Path(str(checkpoint_dir_raw)).expanduser()
+        run_logs_dir = checkpoint_dir / RUN_LOG_DIRNAME
+        if run_logs_dir.is_dir():
+            log_paths = sorted(run_logs_dir.glob("*.json"), key=lambda path: path.stat().st_mtime if path.is_file() else 0.0, reverse=True)
+            for log_path in log_paths:
+                run_data = run_log_compat.load_run_log(log_path)
+                if not isinstance(run_data, dict):
+                    continue
+                log_artifacts = run_data.get("artifacts") if isinstance(run_data.get("artifacts"), dict) else {}
+                best_info = log_artifacts.get("best_checkpoint") if isinstance(log_artifacts.get("best_checkpoint"), dict) else {}
+                best_path_raw = best_info.get("path")
+                if isinstance(best_path_raw, str) and best_path_raw:
+                    best_path = Path(best_path_raw).expanduser()
+                    if best_path.is_file():
+                        return str(best_path.resolve()), str(log_path.resolve()), None
+            return None, None, f"No best checkpoint artifact could be resolved from {run_logs_dir}."
+        return None, None, f"No run log directory found for training checkpoint dir: {checkpoint_dir}"
+
+    def resolve_follow_on_children_for_parent(self, parent_job_id: str | None) -> None:
+        parent_job = self.get_global_queue_job_by_id(parent_job_id)
+        if parent_job is None:
+            return
+        parent_status = str(parent_job.get("status", "queued"))
+        for child_job in self.global_queue_jobs:
+            if str(child_job.get("parent_job_id", "")) != str(parent_job_id):
+                continue
+            if str(child_job.get("status", "")) != "waiting_on_parent":
+                continue
+            config_snapshot = child_job.get("config_snapshot")
+            if not isinstance(config_snapshot, dict):
+                child_job["status"] = "skipped"
+                child_job["error_message"] = "Child job is missing a valid config snapshot."
+                continue
+            checkpoint_source = config_snapshot.get("checkpoint_source") if isinstance(config_snapshot.get("checkpoint_source"), dict) else {}
+            if not isinstance(checkpoint_source, dict) or checkpoint_source.get("mode") != "best_from_parent_job":
+                child_job["status"] = "skipped"
+                child_job["error_message"] = "Unsupported follow-on checkpoint source."
+                continue
+            if parent_status != "completed":
+                if global_job_queue.is_terminal_status(parent_status):
+                    child_job["status"] = "skipped"
+                    child_job["error_message"] = f"Parent training job ended with status={parent_status}; best-checkpoint follow-on was skipped."
+                continue
+            resolved_best, run_log_path, error_message = self.resolve_best_checkpoint_from_training_job(parent_job)
+            if resolved_best is None:
+                child_job["status"] = "skipped"
+                child_job["error_message"] = error_message or "Best checkpoint could not be resolved from parent training job."
+                continue
+            config_snapshot["checkpoint_path"] = resolved_best
+            child_job["status"] = "queued"
+            child_job["error_message"] = None
+            child_artifacts = child_job.get("artifacts") if isinstance(child_job.get("artifacts"), dict) else {}
+            child_artifacts["resolved_checkpoint_path"] = resolved_best
+            if run_log_path is not None:
+                child_artifacts["resolved_from_run_log"] = run_log_path
+            child_job["artifacts"] = child_artifacts
+
+    def is_global_execution_busy(self) -> bool:
+        return (
+            self.process.state() != QProcess.NotRunning
+            or (self.predict_thread is not None and self.predict_thread.isRunning())
+            or (self.test_split_thread is not None and self.test_split_thread.isRunning())
+        )
+
+    def start_training_with_config(self, config: dict[str, object], *, origin: str, queue_job_id: str | None = None) -> bool:
+        if self.is_global_execution_busy():
+            return False
+        if not TRAINING_SCRIPT.is_file():
+            QMessageBox.critical(self, "Missing Script", f"Could not find training script:\n{TRAINING_SCRIPT}")
+            return False
+        error = self.validate_training_config_snapshot(config)
+        if error is not None:
+            QMessageBox.warning(self, "Invalid Training Config", error)
+            return False
+
+        checkpoint_dir = Path(str(config.get("checkpoint_dir", ""))).expanduser().resolve()
+        self._stop_request_path = self.stop_request_path_for(checkpoint_dir)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.clear_stop_request_file()
+        self.training_stop_requested = False
+        self.active_job_origin = origin
+        self.active_queue_job_type = "training"
+        self.active_queue_job_id = queue_job_id
+        self.active_job_config_snapshot = json.loads(json.dumps(config))
+
+        self.output_text.clear()
+        self._committed_output = ""
+        self._stream_buffer = ""
+        self.progress_label.setText("Starting training...")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
+        self.append_output(f"Project root: {PROJECT_ROOT}\n")
+        self.append_output(f"Launching: {self.format_command_for_display(self.build_command(config))}\n\n")
+        self.process.start(sys.executable, self.build_command(config))
+        return True
+
+    def start_predictions_with_config(self, config: dict[str, object], *, origin: str, queue_job_id: str | None = None) -> bool:
+        if self.is_global_execution_busy():
+            return
+        image_paths = [Path(str(path)).expanduser().resolve() for path in config.get("image_paths", [])] if isinstance(config.get("image_paths"), list) else []
+        model_specs_raw = config.get("model_specs") if isinstance(config.get("model_specs"), list) else []
+        model_specs: list[tuple[str | None, Path]] = []
+        for item in model_specs_raw:
+            if not isinstance(item, dict):
+                continue
+            checkpoint_path = Path(str(item.get("checkpoint_path", ""))).expanduser().resolve()
+            model_specs.append((item.get("model_name_hint") if isinstance(item.get("model_name_hint"), str | type(None)) else None, checkpoint_path))
+        if not image_paths:
+            QMessageBox.warning(self, "Invalid Predict Config", "No images were saved in the queued predict job.")
+            return False
+        if not model_specs:
+            QMessageBox.warning(self, "Invalid Predict Config", "No model checkpoints were saved in the queued predict job.")
+            return False
+
+        self.predict_status_label.setText("Loading model and running predictions...")
+        self.predict_progress_bar.setRange(0, len(image_paths) * max(len(model_specs), 1))
+        self.predict_progress_bar.setValue(0)
+        self.set_prediction_running_state(True)
+        self.active_job_origin = origin
+        self.active_queue_job_type = "predicting"
+        self.active_queue_job_id = queue_job_id
+        self.active_job_config_snapshot = json.loads(json.dumps(config))
+
+        self.predict_thread = QThread(self)
+        self.predict_worker = PredictionWorker(
+            image_paths=image_paths,
+            model_specs=model_specs,
+            image_size=int(config.get("image_size", self.predict_image_size_spin.value())),
+            device=str(config.get("device", self.predict_device_combo.currentText())),
+        )
+        self.predict_worker.moveToThread(self.predict_thread)
+        self.predict_thread.started.connect(self.predict_worker.run)
+        self.predict_worker.status.connect(self.on_prediction_status)
+        self.predict_worker.progress.connect(self.on_prediction_progress)
+        self.predict_worker.finished.connect(self.on_prediction_finished)
+        self.predict_worker.failed.connect(self.on_prediction_failed)
+        self.predict_worker.finished.connect(self.predict_thread.quit)
+        self.predict_worker.failed.connect(self.predict_thread.quit)
+        self.predict_thread.finished.connect(self.predict_thread.deleteLater)
+        self.predict_thread.start()
+        return True
+
+    def start_test_split_with_config(self, config: dict[str, object], *, origin: str, queue_job_id: str | None = None) -> bool:
+        if self.is_global_execution_busy():
+            return False
+        checkpoint_path = Path(str(config.get("checkpoint_path", ""))).expanduser().resolve()
+        test_splits_root = Path(str(config.get("test_splits_root", ""))).expanduser().resolve()
+        if not checkpoint_path.is_file():
+            QMessageBox.warning(self, "Invalid Checkpoint", f"Checkpoint file does not exist:\n{checkpoint_path}")
+            return False
+        if not test_splits_root.is_dir():
+            QMessageBox.warning(self, "Invalid Test Splits Root", f"Directory does not exist:\n{test_splits_root}")
+            return False
+
+        self.test_split_status_label.setText("Preparing test split evaluation...")
+        self.test_split_progress_bar.setRange(0, 0)
+        self.test_split_progress_bar.setFormat("Working...")
+        self.test_split_output_text.clear()
+        self.set_test_split_running_state(True)
+        self.active_job_origin = origin
+        self.active_queue_job_type = "test_split_eval"
+        self.active_queue_job_id = queue_job_id
+        self.active_job_config_snapshot = json.loads(json.dumps(config))
+
+        self.test_split_thread = QThread(self)
+        self.test_split_worker = TestSplitEvaluationWorker(
+            checkpoint_path=checkpoint_path,
+            model_name=config.get("model_name") if isinstance(config.get("model_name"), str | type(None)) else None,
+            test_splits_root=test_splits_root,
+            image_size=int(config.get("image_size", self.test_split_image_size_spin.value())),
+            batch_size=int(config.get("batch_size", self.test_split_batch_size_spin.value())),
+            amp_requested=bool(config.get("amp_requested", self.test_split_amp_checkbox.isChecked())),
+            device=str(config.get("device", self.test_split_device_combo.currentText())),
+        )
+        self.test_split_worker.moveToThread(self.test_split_thread)
+        self.test_split_thread.started.connect(self.test_split_worker.run)
+        self.test_split_worker.status.connect(self.on_test_split_status)
+        self.test_split_worker.progress.connect(self.on_test_split_progress)
+        self.test_split_worker.finished.connect(self.on_test_split_finished)
+        self.test_split_worker.failed.connect(self.on_test_split_failed)
+        self.test_split_worker.finished.connect(self.test_split_thread.quit)
+        self.test_split_worker.failed.connect(self.test_split_thread.quit)
+        self.test_split_thread.finished.connect(self.test_split_thread.deleteLater)
+        self.test_split_thread.start()
+        return True
+
+    def run_global_queue(self) -> None:
+        if self.is_global_execution_busy():
+            return
+        self.global_queue_stop_requested = False
+        self.global_queue_running = True
+        if not self.start_next_global_queue_job():
+            self.global_queue_running = False
+            QMessageBox.information(self, "Queue Empty", "There are no queued jobs to run.")
+
+    def start_next_global_queue_job(self) -> bool:
+        for job in self.global_queue_jobs:
+            if str(job.get("status", "queued")) != "queued":
+                continue
+            job["status"] = "running"
+            job_id = str(job.get("job_id", ""))
+            self.refresh_global_queue_view(select_job_id=job_id)
+            if self.start_queue_job(job):
+                return True
+            job["status"] = "failed"
+        self.refresh_global_queue_view()
+        return False
+
+    def start_queue_job(self, job: dict[str, object]) -> bool:
+        config = job.get("config_snapshot")
+        if not isinstance(config, dict):
+            job["status"] = "skipped"
+            return False
+        job_type = str(job.get("job_type", ""))
+        job_id = str(job.get("job_id", ""))
+        if job_type == "training":
+            return self.start_training_with_config(config, origin="queue", queue_job_id=job_id)
+        if job_type == "predicting":
+            return self.start_predictions_with_config(config, origin="queue", queue_job_id=job_id)
+        if job_type == "test_split_eval":
+            return self.start_test_split_with_config(config, origin="queue", queue_job_id=job_id)
+        job["status"] = "skipped"
+        job["error_message"] = f"Unsupported queue job type: {job_type}"
+        return False
+
+    def complete_global_queue_job(
+        self,
+        job_id: str | None,
+        status: str,
+        *,
+        artifacts: dict[str, object] | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        if not job_id:
+            return
+        for job in self.global_queue_jobs:
+            if job.get("job_id") == job_id:
+                job["status"] = status
+                job["error_message"] = error_message
+                if artifacts:
+                    job["artifacts"] = artifacts
+                break
+        if global_job_queue.is_terminal_status(status):
+            self.resolve_follow_on_children_for_parent(job_id)
+        self.refresh_global_queue_view(select_job_id=job_id)
+
+    def clear_active_global_job(self) -> None:
+        self.active_queue_job_id = None
+        self.active_queue_job_type = None
+        self.active_job_origin = "manual"
+        self.active_job_config_snapshot = None
+        self.training_stop_requested = False
+
+    def stop_current_global_job(self) -> None:
+        self.global_queue_stop_requested = True
+        if self.active_queue_job_type == "training" and self.process.state() != QProcess.NotRunning:
+            self.stop_training()
+            return
+        if self.active_queue_job_type == "predicting":
+            self.global_queue_status_label.setText("Queue pause requested. The current prediction job will finish, then the queue will stop.")
+            return
+        if self.active_queue_job_type == "test_split_eval":
+            self.global_queue_status_label.setText("Queue pause requested. The current test split job will finish, then the queue will stop.")
+
     def training_settings_summary_text(self) -> str:
+        if self.train_transforms_preset_combo.currentText() == "custom":
+            transform_text = f"Custom={self.custom_augmentation_summary()}"
+        else:
+            transform_text = (
+                f"Blur={self.mild_blur_prob:.2f}"
+                if self.mild_blur_enabled
+                else "Blur=off"
+            )
         return (
             f"Device={self.device_combo.currentText()} | "
             f"Workers={self.num_workers_spin.value()} | "
-            f"Image={self.image_size_spin.value()} | "
-            f"LR={format(self.lr_spin.value(), '.6f')}"
+            f"Scheduler={self.scheduler_combo.currentText()} | "
+            f"Seed={self.seed_spin.value()} | "
+            f"{transform_text}"
         )
 
     def refresh_training_settings_summary(self) -> None:
@@ -2419,35 +3447,239 @@ class TrainingLauncher(QMainWindow):
 
     def open_training_settings_dialog(self) -> None:
         dialog = QDialog(self)
-        dialog.setWindowTitle("Training Settings")
-        dialog.resize(420, 260)
+        dialog.setWindowTitle("Advanced Training Settings")
+        dialog.resize(520, 520)
 
         layout = QVBoxLayout(dialog)
-        form = QFormLayout()
+        scroll = QScrollArea(dialog)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_content = QWidget(scroll)
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(12)
+
+        def create_section(title: str) -> tuple[QGroupBox, QFormLayout]:
+            group = QGroupBox(title, scroll_content)
+            group_layout = QVBoxLayout(group)
+            group_layout.setContentsMargins(10, 10, 10, 10)
+            group_layout.setSpacing(10)
+            form_layout = QFormLayout()
+            form_layout.setContentsMargins(0, 0, 0, 0)
+            form_layout.setHorizontalSpacing(16)
+            form_layout.setVerticalSpacing(10)
+            form_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            group_layout.addLayout(form_layout)
+            return group, form_layout
 
         device_combo = QComboBox(dialog)
         device_combo.addItems(["auto", "cpu", "cuda"])
         device_combo.setCurrentText(self.device_combo.currentText())
+        device_combo.setToolTip("Select the execution device. Use auto to let the training script choose.")
 
         num_workers_spin = QSpinBox(dialog)
         num_workers_spin.setRange(0, 64)
         num_workers_spin.setValue(self.num_workers_spin.value())
+        num_workers_spin.setToolTip("Number of dataloader worker processes used while training.")
 
-        image_size_spin = QSpinBox(dialog)
-        image_size_spin.setRange(32, 2_048)
-        image_size_spin.setValue(self.image_size_spin.value())
+        scheduler_combo = QComboBox(dialog)
+        scheduler_combo.addItems(["none", "cosine", "step", "plateau"])
+        scheduler_combo.setCurrentText(self.scheduler_combo.currentText())
+        scheduler_combo.setToolTip("Learning-rate scheduler applied after each epoch.")
 
-        lr_spin = QDoubleSpinBox(dialog)
-        lr_spin.setRange(0.0, 10.0)
-        lr_spin.setDecimals(6)
-        lr_spin.setSingleStep(0.0001)
-        lr_spin.setValue(self.lr_spin.value())
+        seed_spin = QSpinBox(dialog)
+        seed_spin.setRange(0, 2_147_483_647)
+        seed_spin.setValue(self.seed_spin.value())
+        seed_spin.setToolTip("Random seed used for training reproducibility.")
 
-        form.addRow("Device", device_combo)
-        form.addRow("Num Workers", num_workers_spin)
-        form.addRow("Image Size", image_size_spin)
-        form.addRow("Learning Rate", lr_spin)
-        layout.addLayout(form)
+        mild_blur_checkbox = QCheckBox("Enable mild blur", dialog)
+        mild_blur_checkbox.setChecked(self.mild_blur_enabled)
+        mild_blur_checkbox.setToolTip("Add a low-probability mild Gaussian blur on top of the selected training preset.")
+
+        mild_blur_prob_spin = QDoubleSpinBox(dialog)
+        mild_blur_prob_spin.setRange(0.01, 0.50)
+        mild_blur_prob_spin.setDecimals(2)
+        mild_blur_prob_spin.setSingleStep(0.01)
+        mild_blur_prob_spin.setValue(self.mild_blur_prob)
+        mild_blur_prob_spin.setToolTip("Probability of applying the mild blur augmentation during training.")
+        mild_blur_prob_label = QLabel("Blur Probability", dialog)
+
+        def update_blur_controls(checked: bool) -> None:
+            preset_mode = self.train_transforms_preset_combo.currentText() != "custom"
+            mild_blur_checkbox.setVisible(preset_mode)
+            mild_blur_prob_label.setVisible(checked and preset_mode)
+            mild_blur_prob_spin.setVisible(checked and preset_mode)
+            mild_blur_prob_spin.setEnabled(checked)
+
+        mild_blur_checkbox.toggled.connect(update_blur_controls)
+        update_blur_controls(mild_blur_checkbox.isChecked())
+
+        current_preset = self.train_transforms_preset_combo.currentText()
+        mode_summary_label = QLabel(
+            "Current mode: custom"
+            if current_preset == "custom"
+            else f"Current mode: preset: {current_preset}",
+            dialog,
+        )
+        mode_summary_label.setWordWrap(True)
+        mode_summary_label.setProperty("readonlyDisplay", True)
+        mode_summary_hint = QLabel("Validation and test transforms remain deterministic.", dialog)
+        mode_summary_hint.setWordWrap(True)
+        mode_summary_hint.setProperty("muted", True)
+
+        custom_section_label = QLabel("Custom augmentation options only apply when preset = custom.", dialog)
+        custom_section_label.setWordWrap(True)
+        custom_section_label.setProperty("muted", True)
+
+        custom_downsample_checkbox = QCheckBox("Enable downsample augmentation", dialog)
+        custom_downsample_checkbox.setChecked(self.custom_downsample_enabled)
+        custom_downsample_prob_spin = QDoubleSpinBox(dialog)
+        custom_downsample_prob_spin.setRange(0.01, 1.00)
+        custom_downsample_prob_spin.setDecimals(2)
+        custom_downsample_prob_spin.setSingleStep(0.01)
+        custom_downsample_prob_spin.setValue(self.custom_downsample_prob)
+        custom_downsample_prob_label = QLabel("Downsample Probability", dialog)
+        custom_downsample_min_scale_spin = QDoubleSpinBox(dialog)
+        custom_downsample_min_scale_spin.setRange(0.05, 1.00)
+        custom_downsample_min_scale_spin.setDecimals(2)
+        custom_downsample_min_scale_spin.setSingleStep(0.01)
+        custom_downsample_min_scale_spin.setValue(self.custom_downsample_min_scale)
+        custom_downsample_min_scale_label = QLabel("Downsample Min Scale", dialog)
+        custom_downsample_max_scale_spin = QDoubleSpinBox(dialog)
+        custom_downsample_max_scale_spin.setRange(0.05, 1.00)
+        custom_downsample_max_scale_spin.setDecimals(2)
+        custom_downsample_max_scale_spin.setSingleStep(0.01)
+        custom_downsample_max_scale_spin.setValue(self.custom_downsample_max_scale)
+        custom_downsample_max_scale_label = QLabel("Downsample Max Scale", dialog)
+
+        custom_mild_blur_checkbox = QCheckBox("Enable mild blur", dialog)
+        custom_mild_blur_checkbox.setChecked(self.custom_mild_blur_enabled)
+        custom_mild_blur_prob_spin = QDoubleSpinBox(dialog)
+        custom_mild_blur_prob_spin.setRange(0.01, 0.50)
+        custom_mild_blur_prob_spin.setDecimals(2)
+        custom_mild_blur_prob_spin.setSingleStep(0.01)
+        custom_mild_blur_prob_spin.setValue(self.custom_mild_blur_prob)
+        custom_mild_blur_prob_label = QLabel("Custom Blur Probability", dialog)
+
+        custom_random_erasing_checkbox = QCheckBox("Enable random erasing", dialog)
+        custom_random_erasing_checkbox.setChecked(self.custom_random_erasing_enabled)
+        custom_random_erasing_prob_spin = QDoubleSpinBox(dialog)
+        custom_random_erasing_prob_spin.setRange(0.01, 0.50)
+        custom_random_erasing_prob_spin.setDecimals(2)
+        custom_random_erasing_prob_spin.setSingleStep(0.01)
+        custom_random_erasing_prob_spin.setValue(self.custom_random_erasing_prob)
+        custom_random_erasing_prob_label = QLabel("Random Erasing Probability", dialog)
+
+        custom_color_jitter_checkbox = QCheckBox("Enable color jitter", dialog)
+        custom_color_jitter_checkbox.setChecked(self.custom_color_jitter_enabled)
+
+        custom_horizontal_flip_checkbox = QCheckBox("Enable horizontal flip", dialog)
+        custom_horizontal_flip_checkbox.setChecked(self.custom_horizontal_flip_enabled)
+
+        runtime_group, runtime_form = create_section("Runtime & Optimization")
+        runtime_form.addRow("Device", device_combo)
+        runtime_form.addRow("Num Workers", num_workers_spin)
+        runtime_form.addRow("Scheduler", scheduler_combo)
+        runtime_form.addRow("Seed", seed_spin)
+        runtime_form.addRow("", mild_blur_checkbox)
+        runtime_form.addRow(mild_blur_prob_label, mild_blur_prob_spin)
+
+        context_group = QGroupBox("Augmentation Mode / Context", scroll_content)
+        context_layout = QVBoxLayout(context_group)
+        context_layout.setContentsMargins(10, 10, 10, 10)
+        context_layout.setSpacing(8)
+        context_layout.addWidget(mode_summary_label)
+        context_layout.addWidget(mode_summary_hint)
+
+        custom_group = QGroupBox("Custom Augmentation", scroll_content)
+        custom_group_layout = QVBoxLayout(custom_group)
+        custom_group_layout.setContentsMargins(10, 10, 10, 10)
+        custom_group_layout.setSpacing(12)
+        custom_group_layout.addWidget(custom_section_label)
+
+        resolution_group, resolution_form = create_section("Resolution / Degradation")
+        resolution_form.addRow("", custom_downsample_checkbox)
+        resolution_form.addRow(custom_downsample_prob_label, custom_downsample_prob_spin)
+        resolution_form.addRow(custom_downsample_min_scale_label, custom_downsample_min_scale_spin)
+        resolution_form.addRow(custom_downsample_max_scale_label, custom_downsample_max_scale_spin)
+
+        blur_group, blur_form = create_section("Blur / Occlusion")
+        blur_form.addRow("", custom_mild_blur_checkbox)
+        blur_form.addRow(custom_mild_blur_prob_label, custom_mild_blur_prob_spin)
+        blur_form.addRow("", custom_random_erasing_checkbox)
+        blur_form.addRow(custom_random_erasing_prob_label, custom_random_erasing_prob_spin)
+
+        basic_group, basic_form = create_section("Basic Augmentations")
+        basic_form.addRow("", custom_color_jitter_checkbox)
+        basic_form.addRow("", custom_horizontal_flip_checkbox)
+
+        custom_group_layout.addWidget(resolution_group)
+        custom_group_layout.addWidget(blur_group)
+        custom_group_layout.addWidget(basic_group)
+
+        custom_widgets: list[QWidget] = [
+            custom_downsample_checkbox,
+            custom_downsample_prob_label,
+            custom_downsample_prob_spin,
+            custom_downsample_min_scale_label,
+            custom_downsample_min_scale_spin,
+            custom_downsample_max_scale_label,
+            custom_downsample_max_scale_spin,
+            custom_mild_blur_checkbox,
+            custom_mild_blur_prob_label,
+            custom_mild_blur_prob_spin,
+            custom_random_erasing_checkbox,
+            custom_random_erasing_prob_label,
+            custom_random_erasing_prob_spin,
+            custom_color_jitter_checkbox,
+            custom_horizontal_flip_checkbox,
+        ]
+
+        def update_custom_downsample_controls(checked: bool) -> None:
+            for widget in (
+                custom_downsample_prob_label,
+                custom_downsample_prob_spin,
+                custom_downsample_min_scale_label,
+                custom_downsample_min_scale_spin,
+                custom_downsample_max_scale_label,
+                custom_downsample_max_scale_spin,
+            ):
+                widget.setVisible(checked and self.train_transforms_preset_combo.currentText() == "custom")
+                widget.setEnabled(checked)
+
+        def update_custom_blur_controls(checked: bool) -> None:
+            custom_mild_blur_prob_label.setVisible(checked and self.train_transforms_preset_combo.currentText() == "custom")
+            custom_mild_blur_prob_spin.setVisible(checked and self.train_transforms_preset_combo.currentText() == "custom")
+            custom_mild_blur_prob_spin.setEnabled(checked)
+
+        def update_custom_erasing_controls(checked: bool) -> None:
+            custom_random_erasing_prob_label.setVisible(checked and self.train_transforms_preset_combo.currentText() == "custom")
+            custom_random_erasing_prob_spin.setVisible(checked and self.train_transforms_preset_combo.currentText() == "custom")
+            custom_random_erasing_prob_spin.setEnabled(checked)
+
+        def update_custom_section_visibility() -> None:
+            custom_mode = self.train_transforms_preset_combo.currentText() == "custom"
+            custom_group.setVisible(custom_mode)
+            custom_group.setEnabled(custom_mode)
+            for widget in custom_widgets:
+                widget.setEnabled(custom_mode)
+            update_blur_controls(mild_blur_checkbox.isChecked())
+            update_custom_downsample_controls(custom_downsample_checkbox.isChecked())
+            update_custom_blur_controls(custom_mild_blur_checkbox.isChecked())
+            update_custom_erasing_controls(custom_random_erasing_checkbox.isChecked())
+
+        custom_downsample_checkbox.toggled.connect(update_custom_downsample_controls)
+        custom_mild_blur_checkbox.toggled.connect(update_custom_blur_controls)
+        custom_random_erasing_checkbox.toggled.connect(update_custom_erasing_controls)
+        update_custom_section_visibility()
+
+        scroll_layout.addWidget(runtime_group)
+        scroll_layout.addWidget(context_group)
+        scroll_layout.addWidget(custom_group)
+        scroll_layout.addStretch(1)
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll, stretch=1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
         buttons.accepted.connect(dialog.accept)
@@ -2459,9 +3691,26 @@ class TrainingLauncher(QMainWindow):
 
         self.device_combo.setCurrentText(device_combo.currentText())
         self.num_workers_spin.setValue(num_workers_spin.value())
-        self.image_size_spin.setValue(image_size_spin.value())
-        self.lr_spin.setValue(lr_spin.value())
+        self.scheduler_combo.setCurrentText(scheduler_combo.currentText())
+        self.seed_spin.setValue(seed_spin.value())
+        self.mild_blur_enabled = mild_blur_checkbox.isChecked()
+        self.mild_blur_prob = mild_blur_prob_spin.value()
+        self.custom_downsample_enabled = custom_downsample_checkbox.isChecked()
+        self.custom_downsample_prob = custom_downsample_prob_spin.value()
+        self.custom_downsample_min_scale = custom_downsample_min_scale_spin.value()
+        self.custom_downsample_max_scale = custom_downsample_max_scale_spin.value()
+        self.custom_mild_blur_enabled = custom_mild_blur_checkbox.isChecked()
+        self.custom_mild_blur_prob = custom_mild_blur_prob_spin.value()
+        self.custom_random_erasing_enabled = custom_random_erasing_checkbox.isChecked()
+        self.custom_random_erasing_prob = custom_random_erasing_prob_spin.value()
+        self.custom_color_jitter_enabled = custom_color_jitter_checkbox.isChecked()
+        self.custom_horizontal_flip_enabled = custom_horizontal_flip_checkbox.isChecked()
         self.refresh_training_settings_summary()
+        self.refresh_command_preview()
+
+    def on_command_preview_toggled(self, checked: bool) -> None:
+        if self.command_preview_body is not None:
+            self.command_preview_body.setVisible(checked)
 
     def choose_resume_path(self) -> None:
         start_dir = self._resolve_dialog_dir(self.resume_path_edit.text().strip(), self.selected_checkpoint_dir())
@@ -2481,10 +3730,16 @@ class TrainingLauncher(QMainWindow):
 
     def set_running_state(self, running: bool) -> None:
         self.train_button.setEnabled(not running)
+        self.train_queue_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
         self.model_combo.setEnabled(not running)
         self.epochs_spin.setEnabled(not running)
         self.batch_size_spin.setEnabled(not running)
+        self.image_size_spin.setEnabled(not running)
+        self.train_transforms_preset_combo.setEnabled(not running)
+        self.lr_spin.setEnabled(not running)
+        self.optimizer_combo.setEnabled(not running)
+        self.amp_checkbox.setEnabled(not running)
         self.training_settings_button.setEnabled(not running)
         self.freeze_checkbox.setEnabled(not running)
         self.validation_checkbox.setEnabled(not running)
@@ -2494,6 +3749,7 @@ class TrainingLauncher(QMainWindow):
         self.resume_path_edit.setEnabled(not running and self.resume_checkbox.isChecked())
         self.resume_browse_button.setEnabled(not running and self.resume_checkbox.isChecked())
         self.resume_clear_button.setEnabled(not running and self.resume_checkbox.isChecked())
+        self.set_global_queue_running_state(running)
 
     def append_output(self, text: str) -> None:
         if not text:
@@ -2596,39 +3852,9 @@ class TrainingLauncher(QMainWindow):
     def start_training(self) -> None:
         if self.process.state() != QProcess.NotRunning:
             return
-
-        if not TRAINING_SCRIPT.is_file():
-            QMessageBox.critical(self, "Missing Script", f"Could not find training script:\n{TRAINING_SCRIPT}")
-            return
-
-        if self.resume_checkbox.isChecked():
-            resume_path = self.resume_path_edit.text().strip()
-            if not resume_path:
-                QMessageBox.warning(self, "Resume Path Required", "Select a checkpoint file before starting resume training.")
-                return
-            if not Path(resume_path).is_file():
-                QMessageBox.warning(self, "Invalid Resume Path", f"Checkpoint file does not exist:\n{resume_path}")
-                return
-        checkpoint_name = self.checkpoint_output_name()
-        if not checkpoint_name:
-            QMessageBox.warning(self, "Checkpoint Name Required", "Choose or enter a checkpoint output folder name.")
-            return
-        checkpoint_dir = self.selected_checkpoint_dir()
-        self._stop_request_path = self.stop_request_path_for(checkpoint_dir)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        self.clear_stop_request_file()
-
-        self.output_text.clear()
-        self._committed_output = ""
-        self._stream_buffer = ""
-        self.progress_label.setText("Starting training...")
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("%p%")
-        self.append_output(f"Project root: {PROJECT_ROOT}\n")
-        self.append_output(f"Launching: {self.command_preview.text()}\n\n")
-
-        self.process.start(sys.executable, self.build_command())
+        config = self.collect_training_config_snapshot()
+        if not self.start_training_with_config(config, origin="manual"):
+            QMessageBox.information(self, "Job Already Running", "Another training, predicting, or test-split job is already running.")
 
     def set_data_running_state(self, running: bool) -> None:
         self.data_check_button.setEnabled(not running)
@@ -2677,14 +3903,9 @@ class TrainingLauncher(QMainWindow):
         )
         loaded: list[dict] = []
         for path in log_files:
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(data, dict):
-                    continue
-                data["_log_path"] = str(path)
+            data = run_log_compat.load_run_log(path)
+            if data is not None:
                 loaded.append(data)
-            except Exception:
-                continue
         return loaded
 
     def get_run_by_id(self, run_id: str | None) -> dict | None:
@@ -2866,128 +4087,43 @@ class TrainingLauncher(QMainWindow):
         return "exists (overwritten after this run)"
 
     def normalize_run_status(self, run: dict) -> str:
-        status = str(run.get("status", "unknown"))
-        if status == "running":
-            return "incomplete_or_interrupted"
-        return status
+        return run_log_compat.normalize_run_status(run)
 
     @staticmethod
     def safe_float(value) -> float | None:
-        if isinstance(value, (int, float)):
-            return float(value)
-        return None
+        return run_log_compat.safe_float(value)
 
     @staticmethod
     def format_metric(value) -> str:
-        numeric = TrainingLauncher.safe_float(value)
-        return f"{numeric:.4f}" if numeric is not None else "-"
+        return run_log_compat.format_metric(value)
 
     @staticmethod
     def format_ratio(numerator, denominator) -> str:
-        left = int(numerator) if isinstance(numerator, (int, float)) else 0
-        right = int(denominator) if isinstance(denominator, (int, float)) else 0
-        return f"{left}/{right}" if right > 0 else str(left)
+        return run_log_compat.format_ratio(numerator, denominator)
 
     @staticmethod
     def safe_int(value) -> int | None:
-        if isinstance(value, (int, float)):
-            return int(value)
-        return None
+        return run_log_compat.safe_int(value)
 
     @staticmethod
     def infer_last_completed_epoch(run: dict) -> int:
-        summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
-        if isinstance(summary.get("last_completed_epoch"), (int, float)):
-            return int(summary["last_completed_epoch"])
-        epochs = run.get("epochs") if isinstance(run.get("epochs"), list) else []
-        return len(epochs)
+        return run_log_compat.infer_last_completed_epoch(run)
 
     @staticmethod
     def infer_eval_name(run: dict) -> str:
-        dataset = run.get("dataset") if isinstance(run.get("dataset"), dict) else {}
-        if isinstance(dataset.get("eval_name"), str):
-            return str(dataset["eval_name"])
-        expected = run.get("expected") if isinstance(run.get("expected"), dict) else {}
-        if "val_batches_per_epoch" in expected:
-            return "val"
-        if "test_batches_per_epoch" in expected:
-            return "test"
-        return "-"
+        return run_log_compat.infer_eval_name(run)
 
     @staticmethod
     def infer_best_eval_acc(run: dict) -> float | None:
-        summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
-        best = summary.get("best_eval_acc") if isinstance(summary, dict) else None
-        if isinstance(best, (int, float)):
-            return float(best)
-        epochs = run.get("epochs") if isinstance(run.get("epochs"), list) else []
-        best_value: float | None = None
-        for epoch_record in epochs:
-            if not isinstance(epoch_record, dict):
-                continue
-            for key, stage in epoch_record.items():
-                if key in {"epoch", "lr", "best_eval_acc_after_epoch", "is_best_checkpoint"}:
-                    continue
-                if isinstance(stage, dict) and isinstance(stage.get("acc"), (int, float)):
-                    value = float(stage["acc"])
-                    if best_value is None or value > best_value:
-                        best_value = value
-        return best_value
+        return run_log_compat.infer_best_eval_acc(run)
 
     @staticmethod
     def extract_analysis_block(run: dict, stage_name: str | None = None) -> dict | None:
-        analysis = run.get("analysis") if isinstance(run.get("analysis"), dict) else {}
-        if stage_name == "final_test":
-            block = analysis.get("final_test")
-            return block if isinstance(block, dict) else None
-        if stage_name in {"val", "test"}:
-            last_stage = analysis.get("last_eval_stage")
-            if last_stage == stage_name:
-                block = analysis.get("last_eval")
-                return block if isinstance(block, dict) else None
-            if stage_name == "test":
-                block = analysis.get("final_test")
-                if isinstance(block, dict):
-                    return block
-        block = analysis.get("final_test")
-        if isinstance(block, dict):
-            return block
-        block = analysis.get("last_eval")
-        return block if isinstance(block, dict) else None
+        return run_log_compat.extract_analysis_block(run, stage_name=stage_name)
 
     @staticmethod
     def summarize_error_block(analysis: dict | None, *, limit: int = 5) -> list[str]:
-        if not isinstance(analysis, dict):
-            return ["Error Analysis:", "- No per-class error summary recorded for this run."]
-        lines = [
-            "Error Analysis:",
-            f"- total_examples: {analysis.get('total_examples', '-')}",
-            f"- correct_examples: {analysis.get('correct_examples', '-')}",
-            f"- misclassified_examples: {analysis.get('misclassified_examples', '-')}",
-        ]
-        top_pairs = analysis.get("top_misclassifications") if isinstance(analysis.get("top_misclassifications"), list) else []
-        if top_pairs:
-            lines.append("- top_confusions:")
-            for item in top_pairs[:limit]:
-                if not isinstance(item, dict):
-                    continue
-                lines.append(
-                    "  "
-                    f"{item.get('true_label', '?')} -> {item.get('pred_label', '?')} "
-                    f"(count={item.get('count', '-')}, avg_conf={TrainingLauncher.format_metric(item.get('avg_confidence'))})"
-                )
-        top_conf = analysis.get("top_confidence_errors") if isinstance(analysis.get("top_confidence_errors"), list) else []
-        if top_conf:
-            lines.append("- high_confidence_errors:")
-            for item in top_conf[:limit]:
-                if not isinstance(item, dict):
-                    continue
-                lines.append(
-                    "  "
-                    f"{item.get('true_label', '?')} -> {item.get('pred_label', '?')} "
-                    f"(conf={TrainingLauncher.format_metric(item.get('confidence'))})"
-                )
-        return lines
+        return run_log_compat.summarize_error_block(analysis, limit=limit)
 
     def efficiency_point_for_run(self, run: dict, metric_name: str) -> tuple[float | None, str]:
         timing_summary = run.get("timing_summary") if isinstance(run.get("timing_summary"), dict) else {}
@@ -3125,50 +4261,10 @@ class TrainingLauncher(QMainWindow):
 
     @staticmethod
     def timing_value_from_stage(stage: dict, timing_metric: str) -> float | None:
-        timing = stage.get("timing", {}) if isinstance(stage, dict) else {}
-        if not isinstance(timing, dict):
-            return None
-        if timing_metric == "total":
-            return float(timing["total_seconds"]) if isinstance(timing.get("total_seconds"), (int, float)) else None
-        if timing_metric == "pure":
-            return float(timing["pure_seconds"]) if isinstance(timing.get("pure_seconds"), (int, float)) else None
-        pure_seconds = timing.get("pure_seconds")
-        batches = timing.get("batches")
-        if isinstance(pure_seconds, (int, float)) and isinstance(batches, (int, float)) and float(batches) > 0:
-            return float(pure_seconds) / float(batches)
-        return None
+        return run_log_compat.timing_value_from_stage(stage, timing_metric)
 
     def extract_stage_points(self, run: dict, stage_name: str, value_kind: str, timing_metric: str | None = None) -> list[tuple[float, float]]:
-        epochs = run.get("epochs") if isinstance(run.get("epochs"), list) else []
-        stage_key = stage_name.lower()
-        points: list[tuple[float, float]] = []
-        for epoch_record in epochs:
-            if not isinstance(epoch_record, dict):
-                continue
-            epoch_index = epoch_record.get("epoch")
-            stage = epoch_record.get(stage_key)
-            if not isinstance(epoch_index, (int, float)) or not isinstance(stage, dict):
-                continue
-            if value_kind == "accuracy":
-                value = float(stage["acc"]) if isinstance(stage.get("acc"), (int, float)) else None
-            else:
-                value = self.timing_value_from_stage(stage, timing_metric or "total")
-            if value is not None:
-                points.append((float(epoch_index), float(value)))
-
-        if stage_key == "test" and not points:
-            final_test = run.get("final_test") if isinstance(run.get("final_test"), dict) else None
-            if isinstance(final_test, dict):
-                epoch_index = float(self.infer_last_completed_epoch(run))
-                if value_kind == "accuracy":
-                    value = final_test.get("acc")
-                    if isinstance(value, (int, float)):
-                        points.append((epoch_index, float(value)))
-                else:
-                    value = self.timing_value_from_stage(final_test, timing_metric or "total")
-                    if value is not None:
-                        points.append((epoch_index, value))
-        return points
+        return run_log_compat.extract_epoch_metrics(run, stage_name, value_kind, timing_metric)
 
     def current_selected_run(self) -> dict | None:
         selected_runs = self.selected_compare_runs()
@@ -3179,12 +4275,7 @@ class TrainingLauncher(QMainWindow):
         return self.current_available_run()
 
     def run_display_name(self, run: dict, include_stage: str | None = None) -> str:
-        args = run.get("args") if isinstance(run.get("args"), dict) else {}
-        started = str(run.get("start_time_utc", "-"))[:10]
-        model = str(args.get("model", "run"))
-        checkpoint_name = Path(str(args.get("checkpoint_dir", "-"))).name
-        base = f"{started} {model} ({checkpoint_name})"
-        return f"{base} [{include_stage}]" if include_stage else base
+        return run_log_compat.run_display_name(run, include_stage=include_stage)
 
     def build_selected_run_plot(self, run: dict, *, value_kind: str, timing_metric: str) -> dict:
         stage_choice = self.training_plot_stage_combo.currentText().strip().lower()
@@ -3388,6 +4479,10 @@ class TrainingLauncher(QMainWindow):
             "Dataset Summary:",
             f"- data_root: {args.get('data_root', '-')}",
             f"- eval_name: {dataset.get('eval_name', '-')}",
+            f"- train_transforms_preset: {args.get('train_transforms_preset', dataset.get('train_transforms_preset', '-'))}",
+            f"- mild_blur_enabled: {args.get('mild_blur_enabled', dataset.get('mild_blur_enabled', '-'))}",
+            f"- mild_blur_prob: {args.get('mild_blur_prob', dataset.get('mild_blur_prob', '-'))}",
+            f"- augmentation_config: {dataset.get('augmentation_config', args.get('augmentation_config', '-'))}",
             f"- num_classes: {dataset.get('num_classes', '-')}",
             f"- train_examples: {dataset.get('train_examples', '-')}",
             f"- eval_examples: {dataset.get('eval_examples', '-')}",
@@ -3401,6 +4496,11 @@ class TrainingLauncher(QMainWindow):
             f"- frozen_params: {model_info.get('frozen_params', '-')}",
             f"- batch_size: {args.get('batch_size', '-')}",
             f"- lr: {args.get('lr', '-')}",
+            f"- optimizer: {args.get('optimizer', '-')}",
+            f"- scheduler: {args.get('scheduler', '-')}",
+            f"- amp_requested: {args.get('amp', '-')}",
+            f"- amp_enabled: {model_info.get('amp_enabled', args.get('amp', '-'))}",
+            f"- seed: {args.get('seed', '-')}",
             f"- checkpoint_dir: {args.get('checkpoint_dir', '-')}",
             "",
             "Run Summary:",
@@ -3539,6 +4639,9 @@ class TrainingLauncher(QMainWindow):
     def stop_training(self) -> None:
         if self.process.state() == QProcess.NotRunning:
             return
+        self.training_stop_requested = True
+        if self.active_job_origin == "queue":
+            self.global_queue_stop_requested = True
         if self._stop_request_path is None:
             self._stop_request_path = self.stop_request_path_for()
         self._stop_request_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3547,6 +4650,7 @@ class TrainingLauncher(QMainWindow):
         self.status_label.setText("Stopping")
         self.progress_label.setText("Graceful stop requested. Training will stop after the current batch.")
         self.stop_button.setEnabled(False)
+        self.queue_stop_button.setEnabled(False)
 
     def handle_output(self) -> None:
         data = self.process.readAllStandardOutput().data().decode("utf-8", errors="replace")
@@ -3559,7 +4663,11 @@ class TrainingLauncher(QMainWindow):
     def on_process_started(self) -> None:
         self.set_running_state(True)
         self.status_label.setText("Running")
-        self.progress_label.setText("Process started. Waiting for training progress...")
+        if self.active_job_origin == "queue" and self.active_queue_job_id is not None:
+            self.complete_global_queue_job(self.active_queue_job_id, "running")
+            self.progress_label.setText("Queued process started. Waiting for training progress...")
+        else:
+            self.progress_label.setText("Process started. Waiting for training progress...")
 
     def on_data_process_started(self) -> None:
         self.set_data_running_state(True)
@@ -3584,6 +4692,37 @@ class TrainingLauncher(QMainWindow):
         else:
             self.progress_label.setText(f"Training stopped with exit code {exit_code} ({status_text}).")
         self.append_output(f"\nProcess finished with exit code {exit_code} ({status_text}).\n")
+
+        active_job_id = self.active_queue_job_id
+        if self.active_job_origin == "queue" and active_job_id is not None:
+            if self.training_stop_requested:
+                final_status = "cancelled"
+            elif exit_code == 0 and exit_status == QProcess.NormalExit:
+                final_status = "completed"
+            else:
+                final_status = "failed"
+            current_config = self.active_job_config_snapshot if isinstance(self.active_job_config_snapshot, dict) else {}
+            checkpoint_dir = Path(str(current_config.get("checkpoint_dir", self.selected_checkpoint_dir()))).expanduser().resolve()
+            artifacts = {
+                "checkpoint_dir": str(checkpoint_dir),
+                "last_checkpoint_path": str((checkpoint_dir / "last.pth").resolve()) if (checkpoint_dir / "last.pth").exists() else None,
+            }
+            resolved_best, run_log_path, _ = self.resolve_best_checkpoint_from_training_job(
+                {"artifacts": artifacts, "config_snapshot": current_config}
+            )
+            artifacts["best_checkpoint_path"] = resolved_best
+            if run_log_path is not None:
+                artifacts["run_log_path"] = run_log_path
+            self.complete_global_queue_job(active_job_id, final_status, artifacts=artifacts)
+            should_continue = not self.global_queue_stop_requested
+            self.clear_active_global_job()
+            if should_continue and self.start_next_global_queue_job():
+                return
+            self.global_queue_running = False
+            self.global_queue_stop_requested = False
+            self.refresh_global_queue_view()
+        else:
+            self.clear_active_global_job()
 
     def on_data_process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         self.set_data_running_state(False)
@@ -3615,6 +4754,17 @@ class TrainingLauncher(QMainWindow):
         self.status_label.setText("Error")
         self.progress_label.setText(f"Process error: {error}")
         self.append_output(f"\nProcess error: {error}\n")
+        if self.active_job_origin == "queue" and self.active_queue_job_id is not None:
+            active_job_id = self.active_queue_job_id
+            self.complete_global_queue_job(active_job_id, "failed", error_message=str(error))
+            self.clear_active_global_job()
+            if not self.global_queue_stop_requested and self.start_next_global_queue_job():
+                return
+            self.global_queue_running = False
+            self.global_queue_stop_requested = False
+            self.refresh_global_queue_view(select_job_id=active_job_id)
+        else:
+            self.clear_active_global_job()
 
     def on_data_process_error(self, error: QProcess.ProcessError) -> None:
         self.set_data_running_state(False)
@@ -3739,62 +4889,16 @@ class TrainingLauncher(QMainWindow):
         return [Path(path) for path in dialog.selectedFiles()]
 
     def run_predictions(self) -> None:
-        if self.predict_thread is not None and self.predict_thread.isRunning():
-            return
-        if not self.predict_image_paths:
-            QMessageBox.warning(self, "No Images Selected", "Select one or more images before predicting.")
-            return
-        readable_samples, validation_errors = validate_predict_image_paths(self.predict_image_paths)
-        if validation_errors:
-            message = "Some selected images are not readable by Python right now.\n\n"
-            message += "\n".join(validation_errors[:5])
-            if not readable_samples:
-                message += "\n\nNo readable sample images were found, so prediction was not started."
-            else:
-                message += "\n\nPrediction was not started to avoid hanging on unreadable inputs."
-            QMessageBox.warning(self, "Unreadable Images", message)
-            self.predict_status_label.setText("Prediction blocked: some selected images are not readable.")
+        try:
+            config = self.collect_predict_config_snapshot()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Predict Config", str(exc))
+            self.predict_status_label.setText("Prediction blocked: invalid configuration.")
             self.predict_progress_bar.setRange(0, 100)
             self.predict_progress_bar.setValue(0)
             return
-        model_specs: list[tuple[str | None, Path]] = []
-        if self.predict_compare_checkbox.isChecked():
-            for model_name in self.selected_predict_models():
-                checkpoint_path = self.checkpoint_path_for_predict_model(model_name)
-                if not checkpoint_path.is_file():
-                    QMessageBox.warning(self, "Invalid Checkpoint", f"Checkpoint file does not exist for {model_name}:\n{checkpoint_path}")
-                    return
-                model_specs.append((model_name, checkpoint_path.resolve()))
-        else:
-            checkpoint_path = Path(self.predict_checkpoint_edit.text().strip()).expanduser()
-            if not checkpoint_path.is_file():
-                QMessageBox.warning(self, "Invalid Checkpoint", f"Checkpoint file does not exist:\n{checkpoint_path}")
-                return
-            model_specs.append((self.current_predict_model_name(), checkpoint_path.resolve()))
-
-        device = self.predict_device_combo.currentText()
-        self.predict_status_label.setText("Loading model and running predictions...")
-        self.predict_progress_bar.setRange(0, len(self.predict_image_paths) * max(len(model_specs), 1))
-        self.predict_progress_bar.setValue(0)
-        self.set_prediction_running_state(True)
-
-        self.predict_thread = QThread(self)
-        self.predict_worker = PredictionWorker(
-            image_paths=[path.expanduser().resolve() for path in self.predict_image_paths],
-            model_specs=model_specs,
-            image_size=self.predict_image_size_spin.value(),
-            device=device,
-        )
-        self.predict_worker.moveToThread(self.predict_thread)
-        self.predict_thread.started.connect(self.predict_worker.run)
-        self.predict_worker.status.connect(self.on_prediction_status)
-        self.predict_worker.progress.connect(self.on_prediction_progress)
-        self.predict_worker.finished.connect(self.on_prediction_finished)
-        self.predict_worker.failed.connect(self.on_prediction_failed)
-        self.predict_worker.finished.connect(self.predict_thread.quit)
-        self.predict_worker.failed.connect(self.predict_thread.quit)
-        self.predict_thread.finished.connect(self.predict_thread.deleteLater)
-        self.predict_thread.start()
+        if not self.start_predictions_with_config(config, origin="manual"):
+            QMessageBox.information(self, "Job Already Running", "Another training, predicting, or test-split job is already running.")
 
     def refresh_predict_page(self, refresh_compact: bool = False) -> None:
         if self.predict_image_paths:
@@ -4242,6 +5346,7 @@ class TrainingLauncher(QMainWindow):
 
     def set_prediction_running_state(self, running: bool) -> None:
         self.predict_run_button.setEnabled(not running)
+        self.predict_queue_button.setEnabled(not running)
         self.predict_select_images_button.setEnabled(not running)
         self.predict_select_folder_button.setEnabled(not running)
         self.predict_checkpoint_browse_button.setEnabled(not running)
@@ -4252,15 +5357,30 @@ class TrainingLauncher(QMainWindow):
         self.predict_compare_models_button.setEnabled(not running and self.predict_compare_checkbox.isChecked())
         self.predict_compare_clear_button.setEnabled(not running and self.predict_compare_checkbox.isChecked() and bool(self.predict_compare_models))
         self.predict_gradcam_button.setEnabled(not running and bool(self.predict_results) and 0 <= self.current_predict_index < len(self.predict_results) and isinstance(self.predict_results[self.current_predict_index], dict) and self.is_predict_compare_result(self.predict_results[self.current_predict_index]) if self.predict_results else False)
+        self.set_global_queue_running_state(running)
 
     def set_test_split_running_state(self, running: bool) -> None:
         self.test_split_run_button.setEnabled(not running)
+        self.test_split_queue_button.setEnabled(not running)
         self.test_split_checkpoint_browse_button.setEnabled(not running)
         self.test_split_root_browse_button.setEnabled(not running)
         self.test_split_device_combo.setEnabled(not running)
         self.test_split_image_size_spin.setEnabled(not running)
+        self.test_split_batch_size_spin.setEnabled(not running)
+        self.test_split_amp_checkbox.setEnabled(not running)
         self.test_split_checkpoint_edit.setEnabled(not running)
         self.test_split_root_edit.setEnabled(not running)
+        self.set_global_queue_running_state(running)
+
+    def set_global_queue_running_state(self, running: bool) -> None:
+        self.global_queue_list.setEnabled(not running)
+        self.queue_remove_button.setEnabled(not running)
+        self.queue_duplicate_button.setEnabled(not running)
+        self.queue_move_up_button.setEnabled(not running)
+        self.queue_move_down_button.setEnabled(not running)
+        self.queue_run_button.setEnabled(not running)
+        self.queue_clear_finished_button.setEnabled(not running)
+        self.queue_stop_button.setEnabled(running)
 
     def on_prediction_progress(self, processed: int, total: int) -> None:
         self.predict_progress_bar.setRange(0, max(total, 1))
@@ -4305,6 +5425,21 @@ class TrainingLauncher(QMainWindow):
         self.predict_worker = None
         self.predict_thread = None
         self.refresh_predict_page(refresh_compact=self.predict_compact_checkbox.isChecked())
+        if self.active_queue_job_type == "predicting" and self.active_job_origin == "queue" and self.active_queue_job_id is not None:
+            artifacts = {
+                "result_count": len(results),
+                "timing": timing,
+            }
+            active_job_id = self.active_queue_job_id
+            self.complete_global_queue_job(active_job_id, "completed", artifacts=artifacts)
+            self.clear_active_global_job()
+            if not self.global_queue_stop_requested and self.start_next_global_queue_job():
+                return
+            self.global_queue_running = False
+            self.global_queue_stop_requested = False
+            self.refresh_global_queue_view(select_job_id=active_job_id)
+        else:
+            self.clear_active_global_job()
 
     def on_prediction_failed(self, error_message: str) -> None:
         self.predict_status_label.setText("Prediction failed.")
@@ -4312,6 +5447,18 @@ class TrainingLauncher(QMainWindow):
         self.set_prediction_running_state(False)
         self.predict_worker = None
         self.predict_thread = None
+        if self.active_queue_job_type == "predicting" and self.active_job_origin == "queue" and self.active_queue_job_id is not None:
+            active_job_id = self.active_queue_job_id
+            final_status = "cancelled" if self.global_queue_stop_requested else "failed"
+            self.complete_global_queue_job(active_job_id, final_status, error_message=error_message)
+            self.clear_active_global_job()
+            if not self.global_queue_stop_requested and self.start_next_global_queue_job():
+                return
+            self.global_queue_running = False
+            self.global_queue_stop_requested = False
+            self.refresh_global_queue_view(select_job_id=active_job_id)
+            return
+        self.clear_active_global_job()
         QMessageBox.critical(self, "Prediction Failed", error_message)
 
     def handle_predict_process_output(self) -> None:
@@ -4408,41 +5555,13 @@ class TrainingLauncher(QMainWindow):
         QMessageBox.critical(self, "Prediction Failed", detail)
 
     def run_test_split_evaluation(self) -> None:
-        if self.test_split_thread is not None and self.test_split_thread.isRunning():
+        try:
+            config = self.collect_test_split_config_snapshot()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Test Split Config", str(exc))
             return
-        checkpoint_path = Path(self.test_split_checkpoint_edit.text().strip()).expanduser()
-        test_splits_root = Path(self.test_split_root_edit.text().strip()).expanduser()
-        if not checkpoint_path.is_file():
-            QMessageBox.warning(self, "Invalid Checkpoint", f"Checkpoint file does not exist:\n{checkpoint_path}")
-            return
-        if not test_splits_root.is_dir():
-            QMessageBox.warning(self, "Invalid Test Splits Root", f"Directory does not exist:\n{test_splits_root}")
-            return
-
-        self.test_split_status_label.setText("Preparing test split evaluation...")
-        self.test_split_progress_bar.setRange(0, 0)
-        self.test_split_progress_bar.setFormat("Working...")
-        self.test_split_output_text.clear()
-        self.set_test_split_running_state(True)
-
-        self.test_split_thread = QThread(self)
-        self.test_split_worker = TestSplitEvaluationWorker(
-            checkpoint_path=checkpoint_path.resolve(),
-            model_name=self.test_split_detected_model_name,
-            test_splits_root=test_splits_root.resolve(),
-            image_size=self.test_split_image_size_spin.value(),
-            device=self.test_split_device_combo.currentText(),
-        )
-        self.test_split_worker.moveToThread(self.test_split_thread)
-        self.test_split_thread.started.connect(self.test_split_worker.run)
-        self.test_split_worker.status.connect(self.on_test_split_status)
-        self.test_split_worker.progress.connect(self.on_test_split_progress)
-        self.test_split_worker.finished.connect(self.on_test_split_finished)
-        self.test_split_worker.failed.connect(self.on_test_split_failed)
-        self.test_split_worker.finished.connect(self.test_split_thread.quit)
-        self.test_split_worker.failed.connect(self.test_split_thread.quit)
-        self.test_split_thread.finished.connect(self.test_split_thread.deleteLater)
-        self.test_split_thread.start()
+        if not self.start_test_split_with_config(config, origin="manual"):
+            QMessageBox.information(self, "Job Already Running", "Another training, predicting, or test-split job is already running.")
 
     def on_test_split_status(self, message: str, indeterminate: bool) -> None:
         self.test_split_status_label.setText(message)
@@ -4472,6 +5591,10 @@ class TrainingLauncher(QMainWindow):
         )
         self.test_split_result_label.setText(
             f"Model: {payload.get('model_name', '-')}\n"
+            f"Device: {payload.get('device', '-')}\n"
+            f"AMP Requested: {payload.get('amp_requested', '-')}\n"
+            f"AMP Enabled: {payload.get('amp_enabled', '-')}\n"
+            f"Batch Size: {payload.get('batch_size', '-')}\n"
             f"Clean Accuracy: {float(payload.get('clean_accuracy', 0.0)):.4f}\n"
             f"Robustness Average: {float(payload.get('robustness_average', 0.0)):.4f}\n"
             f"Total Time: {float(payload.get('total_seconds', 0.0)):.2f}s"
@@ -4482,6 +5605,18 @@ class TrainingLauncher(QMainWindow):
         self.set_test_split_running_state(False)
         self.test_split_worker = None
         self.test_split_thread = None
+        if self.active_queue_job_type == "test_split_eval" and self.active_job_origin == "queue" and self.active_queue_job_id is not None:
+            active_job_id = self.active_queue_job_id
+            artifacts = {"json_path": json_path, "csv_path": csv_path, "payload": payload}
+            self.complete_global_queue_job(active_job_id, "completed", artifacts=artifacts)
+            self.clear_active_global_job()
+            if not self.global_queue_stop_requested and self.start_next_global_queue_job():
+                return
+            self.global_queue_running = False
+            self.global_queue_stop_requested = False
+            self.refresh_global_queue_view(select_job_id=active_job_id)
+        else:
+            self.clear_active_global_job()
 
     def on_test_split_failed(self, error_message: str) -> None:
         self.test_split_status_label.setText("Test split evaluation failed.")
@@ -4490,6 +5625,18 @@ class TrainingLauncher(QMainWindow):
         self.set_test_split_running_state(False)
         self.test_split_worker = None
         self.test_split_thread = None
+        if self.active_queue_job_type == "test_split_eval" and self.active_job_origin == "queue" and self.active_queue_job_id is not None:
+            active_job_id = self.active_queue_job_id
+            final_status = "cancelled" if self.global_queue_stop_requested else "failed"
+            self.complete_global_queue_job(active_job_id, final_status, error_message=error_message)
+            self.clear_active_global_job()
+            if not self.global_queue_stop_requested and self.start_next_global_queue_job():
+                return
+            self.global_queue_running = False
+            self.global_queue_stop_requested = False
+            self.refresh_global_queue_view(select_job_id=active_job_id)
+            return
+        self.clear_active_global_job()
         QMessageBox.critical(self, "Test Split Evaluation Failed", error_message)
 
 
@@ -4686,6 +5833,8 @@ class TestSplitEvaluationWorker(QObject):
         model_name: str | None,
         test_splits_root: Path,
         image_size: int,
+        batch_size: int,
+        amp_requested: bool,
         device: str,
     ) -> None:
         super().__init__()
@@ -4693,6 +5842,8 @@ class TestSplitEvaluationWorker(QObject):
         self.model_name = model_name
         self.test_splits_root = test_splits_root
         self.image_size = image_size
+        self.batch_size = batch_size
+        self.amp_requested = amp_requested
         self.device = device
 
     def run(self) -> None:
@@ -4704,6 +5855,8 @@ class TestSplitEvaluationWorker(QObject):
                 model_name=self.model_name,
                 test_splits_root=self.test_splits_root,
                 image_size=self.image_size,
+                batch_size=self.batch_size,
+                amp_requested=self.amp_requested,
                 device=self.device,
                 output_dir=PROJECT_ROOT / "logs" / "test_split_evaluations",
                 status_callback=lambda message, indeterminate: self.status.emit(message, indeterminate),

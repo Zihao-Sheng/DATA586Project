@@ -61,6 +61,8 @@ def evaluate_test_splits(
     image_size: int,
     device: str,
     output_dir: Path,
+    batch_size: int = 16,
+    amp_requested: bool = False,
     status_callback=None,
     progress_callback=None,
 ) -> tuple[dict[str, object], Path, Path]:
@@ -74,6 +76,7 @@ def evaluate_test_splits(
     if not resolved_root.is_dir():
         raise FileNotFoundError(f"Test splits root not found: {resolved_root}")
     resolved_device = device if device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
+    amp_enabled = bool(amp_requested and resolved_device.startswith("cuda"))
     resolved_model_name = model_name or infer_model_name_from_checkpoint(resolved_checkpoint)
     if not resolved_model_name:
         raise ValueError(f"Could not determine model type for checkpoint: {resolved_checkpoint}")
@@ -98,7 +101,9 @@ def evaluate_test_splits(
             transform,
             idx_to_class,
             resolved_device,
-            batch_size=16,
+            batch_size=batch_size,
+            amp_requested=amp_requested,
+            amp_enabled=amp_enabled,
             progress_callback=(lambda processed, total, base=processed_images: progress_callback(base + processed, total_images)) if progress_callback is not None else None,
         )
         processed_images += len(image_paths)
@@ -119,7 +124,10 @@ def evaluate_test_splits(
         "model_name": resolved_model_name,
         "test_splits_root": str(resolved_root),
         "image_size": image_size,
+        "batch_size": int(batch_size),
         "device": resolved_device,
+        "amp_requested": bool(amp_requested),
+        "amp_enabled": bool(amp_enabled),
         "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "total_seconds": total_seconds,
         "clean_accuracy": clean_accuracy,

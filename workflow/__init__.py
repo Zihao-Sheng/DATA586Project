@@ -1,5 +1,8 @@
 from workflow.experiment_workflow import (
     WorkflowConfig,
+    build_model_family_path_groups,
+    build_model_specs_from_latest_df,
+    build_split_analysis_from_paths,
     compare_test_split_results,
     get_latest_workflow_runs,
     build_split_analysis_from_latest,
@@ -11,6 +14,7 @@ from workflow.experiment_workflow import (
     print_rubric_summary,
     show_gradcam_compare,
     show_prediction_compare,
+    sample_test_split_images,
     show_workflow_summary_table,
     plot_test_split_comparison_interactive,
     plot_efficiency_compare_interactive,
@@ -23,6 +27,9 @@ from workflow.experiment_workflow import (
 
 __all__ = [
     "WorkflowConfig",
+    "build_model_family_path_groups",
+    "build_model_specs_from_latest_df",
+    "build_split_analysis_from_paths",
     "compare_test_split_results",
     "get_latest_workflow_runs",
     "build_split_analysis_from_latest",
@@ -34,6 +41,7 @@ __all__ = [
     "print_rubric_summary",
     "show_gradcam_compare",
     "show_prediction_compare",
+    "sample_test_split_images",
     "show_workflow_summary_table",
     "plot_test_split_comparison_interactive",
     "plot_efficiency_compare_interactive",

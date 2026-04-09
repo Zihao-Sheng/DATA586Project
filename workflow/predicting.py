@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import io
 from html import escape
 from pathlib import Path
@@ -106,20 +107,25 @@ def predict_images_batch(
     device: str,
     batch_size: int = 16,
     num_workers: int = 0,
+    amp_requested: bool = False,
+    amp_enabled: bool | None = None,
     progress_callback=None,
 ) -> list[dict[str, str | float]]:
     import torch
     from torch.utils.data import DataLoader
 
+    resolved_amp_enabled = bool(amp_requested and device.startswith("cuda")) if amp_enabled is None else bool(amp_enabled)
     dataset = ImagePathDataset(image_paths, transform)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     results: list[dict[str, str | float]] = []
     processed = 0
     total = len(dataset)
-    with torch.no_grad():
+    with torch.inference_mode():
         for tensors, batch_paths in dataloader:
             tensors = tensors.to(device)
-            logits = model(tensors)
+            autocast_context = torch.autocast(device_type="cuda", enabled=True) if resolved_amp_enabled else contextlib.nullcontext()
+            with autocast_context:
+                logits = model(tensors)
             probs = torch.softmax(logits, dim=1)
             pred_indices = torch.argmax(probs, dim=1)
             for batch_index, image_path in enumerate(batch_paths):

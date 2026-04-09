@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 import time
 import uuid
@@ -83,10 +84,60 @@ def parse_args() -> argparse.Namespace:
         help="Input image size.",
     )
     parser.add_argument(
+        "--train-transforms-preset",
+        default="baseline",
+        choices=["baseline", "standard", "robust", "downsample_focus", "custom"],
+        help="Preset used to build training-time augmentation transforms.",
+    )
+    parser.add_argument(
+        "--mild-blur",
+        action="store_true",
+        help="Add a low-probability mild blur augmentation on top of the selected training preset.",
+    )
+    parser.add_argument(
+        "--mild-blur-prob",
+        type=float,
+        default=0.10,
+        help="Probability for the optional mild blur augmentation.",
+    )
+    parser.add_argument("--custom-downsample", action="store_true", help="Enable custom downsample augmentation when preset=custom.")
+    parser.add_argument("--custom-downsample-prob", type=float, default=0.65, help="Probability for custom downsample augmentation.")
+    parser.add_argument("--custom-downsample-min-scale", type=float, default=0.18, help="Minimum scale for custom downsample augmentation.")
+    parser.add_argument("--custom-downsample-max-scale", type=float, default=0.55, help="Maximum scale for custom downsample augmentation.")
+    parser.add_argument("--custom-mild-blur", action="store_true", help="Enable custom mild blur when preset=custom.")
+    parser.add_argument("--custom-mild-blur-prob", type=float, default=0.10, help="Probability for custom mild blur.")
+    parser.add_argument("--custom-random-erasing", action="store_true", help="Enable custom random erasing when preset=custom.")
+    parser.add_argument("--custom-random-erasing-prob", type=float, default=0.08, help="Probability for custom random erasing.")
+    parser.add_argument("--custom-color-jitter", action="store_true", help="Enable custom color jitter when preset=custom.")
+    parser.add_argument("--custom-horizontal-flip", action="store_true", help="Enable custom horizontal flip when preset=custom.")
+    parser.add_argument(
         "--lr",
         type=float,
         default=1e-3,
         help="Learning rate.",
+    )
+    parser.add_argument(
+        "--optimizer",
+        default="adam",
+        choices=["sgd", "adam", "adamw"],
+        help="Optimizer used for trainable parameters.",
+    )
+    parser.add_argument(
+        "--scheduler",
+        default="none",
+        choices=["none", "cosine", "step", "plateau"],
+        help="Learning-rate scheduler applied after each epoch.",
+    )
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+        help="Enable automatic mixed precision when supported by the selected device.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed used for training reproducibility.",
     )
     parser.add_argument(
         "--device",
@@ -170,6 +221,86 @@ def count_parameters(model: nn.Module) -> tuple[int, int]:
     return total_params, trainable_params
 
 
+def set_random_seed(seed: int) -> None:
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def build_custom_augmentation_config(args: argparse.Namespace) -> dict[str, dict[str, object]]:
+    return {
+        "downsample": {
+            "enabled": bool(args.custom_downsample),
+            "probability": float(args.custom_downsample_prob) if args.custom_downsample else 0.0,
+            "min_scale": float(args.custom_downsample_min_scale),
+            "max_scale": float(args.custom_downsample_max_scale),
+        },
+        "mild_blur": {
+            "enabled": bool(args.custom_mild_blur),
+            "probability": float(args.custom_mild_blur_prob) if args.custom_mild_blur else 0.0,
+        },
+        "random_erasing": {
+            "enabled": bool(args.custom_random_erasing),
+            "probability": float(args.custom_random_erasing_prob) if args.custom_random_erasing else 0.0,
+        },
+        "color_jitter": {
+            "enabled": bool(args.custom_color_jitter),
+        },
+        "horizontal_flip": {
+            "enabled": bool(args.custom_horizontal_flip),
+        },
+    }
+
+
+def build_optimizer(
+    model: nn.Module,
+    *,
+    optimizer_name: str,
+    lr: float,
+) -> tuple[torch.optim.Optimizer, float]:
+    trainable_params = [param for param in model.parameters() if param.requires_grad]
+    if optimizer_name == "sgd":
+        return torch.optim.SGD(trainable_params, lr=lr, momentum=0.9), 0.0
+    if optimizer_name == "adamw":
+        weight_decay = 1e-2
+        return torch.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay), weight_decay
+    return torch.optim.Adam(trainable_params, lr=lr), 0.0
+
+
+def build_scheduler(
+    optimizer: torch.optim.Optimizer,
+    *,
+    scheduler_name: str,
+    num_epochs: int,
+    start_epoch: int,
+) -> tuple[torch.optim.lr_scheduler.LRScheduler | torch.optim.lr_scheduler.ReduceLROnPlateau | None, dict[str, int | float | str | None]]:
+    remaining_epochs = max(int(num_epochs - start_epoch), 1)
+    config: dict[str, int | float | str | None] = {
+        "name": scheduler_name,
+        "t_max": None,
+        "step_size": None,
+        "gamma": None,
+        "patience": None,
+    }
+    if scheduler_name == "cosine":
+        config["t_max"] = remaining_epochs
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=remaining_epochs), config
+    if scheduler_name == "step":
+        step_size = max(remaining_epochs // 3, 1)
+        gamma = 0.1
+        config["step_size"] = step_size
+        config["gamma"] = gamma
+        return torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma), config
+    if scheduler_name == "plateau":
+        patience = max(remaining_epochs // 5, 1)
+        factor = 0.1
+        config["patience"] = patience
+        config["gamma"] = factor
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=factor, patience=patience), config
+    return None, config
+
+
 def build_error_analysis(
     *,
     pair_counts: dict[tuple[int, int], int],
@@ -234,14 +365,20 @@ class TrainingRunLogger:
         class_names: list[str],
         total_params: int,
         trainable_params: int,
+        amp_enabled: bool,
+        optimizer_name: str,
+        scheduler_name: str,
+        scheduler_config: dict[str, int | float | str | None],
+        weight_decay: float,
     ) -> None:
+        augmentation_config = build_custom_augmentation_config(args) if str(args.train_transforms_preset) == "custom" else {}
         run_logs_dir = checkpoint_dir / RUN_LOG_DIRNAME
         run_logs_dir.mkdir(parents=True, exist_ok=True)
         run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
         self.path = run_logs_dir / f"{run_id}.json"
         self._finalized = False
         self.data: dict[str, object] = {
-            "schema_version": 3,
+            "schema_version": 7,
             "run_id": run_id,
             "status": "running",
             "start_time_utc": now_iso_utc(),
@@ -259,7 +396,20 @@ class TrainingRunLogger:
                 "batch_size": int(args.batch_size),
                 "num_workers": int(args.num_workers),
                 "image_size": int(args.image_size),
+                "train_transforms_preset": str(args.train_transforms_preset),
+                "mild_blur_enabled": bool(args.mild_blur),
+                "mild_blur_prob": float(args.mild_blur_prob) if args.mild_blur else 0.0,
+                "augmentation_config": augmentation_config,
                 "lr": float(args.lr),
+                "optimizer": optimizer_name,
+                "scheduler": scheduler_name,
+                "amp": bool(args.amp),
+                "seed": int(args.seed),
+                "weight_decay": float(weight_decay),
+                "scheduler_t_max": scheduler_config.get("t_max"),
+                "scheduler_step_size": scheduler_config.get("step_size"),
+                "scheduler_gamma": scheduler_config.get("gamma"),
+                "scheduler_patience": scheduler_config.get("patience"),
                 "device": device,
                 "freeze_backbone": bool(args.freeze_backbone),
                 "use_validation_split": bool(args.use_validation_split),
@@ -276,6 +426,10 @@ class TrainingRunLogger:
                 "eval_name": eval_name,
                 "use_validation_split": bool(args.use_validation_split),
                 "validation_proportion": float(args.validation_proportion),
+                "train_transforms_preset": str(args.train_transforms_preset),
+                "mild_blur_enabled": bool(args.mild_blur),
+                "mild_blur_prob": float(args.mild_blur_prob) if args.mild_blur else 0.0,
+                "augmentation_config": augmentation_config,
             },
             "model": {
                 "name": model_name,
@@ -285,6 +439,7 @@ class TrainingRunLogger:
                 "checkpoint_dir": str(checkpoint_dir),
                 "best_checkpoint_path": str(best_checkpoint_path),
                 "last_checkpoint_path": str(last_checkpoint_path),
+                "amp_enabled": bool(amp_enabled),
             },
             "expected": {
                 "train_batches_per_epoch": int(train_batches),
@@ -440,7 +595,9 @@ class TrainingRunLogger:
 def main() -> None:
     wall_total_start = time.perf_counter()
     args = parse_args()
+    set_random_seed(args.seed)
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    amp_enabled = bool(args.amp and device.startswith("cuda"))
     checkpoint_dir = (
         args.checkpoint_dir.expanduser().resolve()
         if args.checkpoint_dir is not None
@@ -459,6 +616,10 @@ def main() -> None:
         num_workers=args.num_workers,
         image_size=args.image_size,
         pin_memory=device.startswith("cuda"),
+        train_transforms_preset=args.train_transforms_preset,
+        mild_blur_enabled=args.mild_blur,
+        mild_blur_prob=args.mild_blur_prob,
+        custom_augmentation=build_custom_augmentation_config(args),
         use_validation_split=args.use_validation_split,
         validation_proportion=args.validation_proportion,
         split_seed=args.split_seed,
@@ -473,11 +634,13 @@ def main() -> None:
         freeze_backbone=args.freeze_backbone,
         device=device,
     )
-    optimizer = model_module.build_optimizer(model, lr=args.lr)
+    optimizer, weight_decay = build_optimizer(model, optimizer_name=args.optimizer, lr=args.lr)
     total_params, trainable_params = count_parameters(model)
     train_examples = len(train_loader.dataset)
     eval_examples = len(eval_loader.dataset)
     test_examples = len(test_loader.dataset)
+    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+    checkpoint: dict[str, object] | None = None
 
     print(f"device: {device}")
     print(f"model: {args.model}")
@@ -496,6 +659,17 @@ def main() -> None:
     print(
         f"epochs: {args.epochs}, batch_size: {args.batch_size}, "
         f"num_workers: {args.num_workers}, image_size: {args.image_size}, lr: {args.lr}"
+    )
+    print(f"train_transforms_preset: {args.train_transforms_preset}")
+    print(
+        f"mild_blur_enabled: {args.mild_blur}, "
+        f"mild_blur_prob: {args.mild_blur_prob if args.mild_blur else 0.0}"
+    )
+    if args.train_transforms_preset == "custom":
+        print(f"custom_augmentation: {json.dumps(build_custom_augmentation_config(args), sort_keys=True)}")
+    print(
+        f"optimizer: {args.optimizer}, scheduler: {args.scheduler}, "
+        f"amp_requested: {args.amp}, amp_enabled: {amp_enabled}, seed: {args.seed}, weight_decay: {weight_decay}"
     )
     print(f"freeze_backbone: {args.freeze_backbone}")
     print(
@@ -522,6 +696,19 @@ def main() -> None:
         print(f"Resumed from checkpoint {args.resume} at epoch {start_epoch} with best_acc {best_acc:.4f}")
 
     num_epochs = args.epochs
+    scheduler, scheduler_config = build_scheduler(
+        optimizer,
+        scheduler_name=args.scheduler,
+        num_epochs=num_epochs,
+        start_epoch=start_epoch,
+    )
+    if checkpoint is not None:
+        scheduler_state = checkpoint.get("scheduler_state_dict")
+        if scheduler is not None and isinstance(scheduler_state, dict):
+            scheduler.load_state_dict(scheduler_state)
+        scaler_state = checkpoint.get("scaler_state_dict")
+        if amp_enabled and isinstance(scaler_state, dict):
+            scaler.load_state_dict(scaler_state)
 
     run_logger = TrainingRunLogger(
         checkpoint_dir=checkpoint_dir,
@@ -543,6 +730,11 @@ def main() -> None:
         class_names=class_names,
         total_params=total_params,
         trainable_params=trainable_params,
+        amp_enabled=amp_enabled,
+        optimizer_name=args.optimizer,
+        scheduler_name=args.scheduler,
+        scheduler_config=scheduler_config,
+        weight_decay=weight_decay,
     )
 
     final_test_loss: float | None = None
@@ -556,6 +748,8 @@ def main() -> None:
                 loss_fn,
                 optimizer,
                 device,
+                scaler=scaler,
+                use_amp=amp_enabled,
                 epoch=epoch + 1,
                 num_epochs=num_epochs,
                 progress_format=args.progress_format,
@@ -566,6 +760,7 @@ def main() -> None:
                 eval_loader,
                 loss_fn,
                 device,
+                use_amp=amp_enabled,
                 class_names=class_names,
                 epoch=epoch + 1,
                 num_epochs=num_epochs,
@@ -595,11 +790,17 @@ def main() -> None:
                         "model_name": args.model,
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
+                        "scaler_state_dict": scaler.state_dict() if amp_enabled else None,
                         "best_acc": best_acc,
                         "num_classes": num_classes,
                         "class_to_idx": class_to_idx,
                         "use_validation_split": args.use_validation_split,
                         "validation_proportion": args.validation_proportion,
+                        "optimizer": args.optimizer,
+                        "scheduler": args.scheduler,
+                        "amp": bool(args.amp),
+                        "seed": int(args.seed),
                     },
                     best_checkpoint_path,
                 )
@@ -619,6 +820,11 @@ def main() -> None:
                 best_acc_after_epoch=best_acc,
                 is_best_checkpoint=is_best_checkpoint,
             )
+            if scheduler is not None:
+                if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    scheduler.step(eval_acc)
+                else:
+                    scheduler.step()
 
             train_avg_pure_per_batch = train_timing["pure_seconds"] / max(train_timing["batches"], 1)
             eval_avg_pure_per_batch = eval_timing["pure_seconds"] / max(eval_timing["batches"], 1)
@@ -640,6 +846,7 @@ def main() -> None:
                 test_loader,
                 loss_fn,
                 device,
+                use_amp=amp_enabled,
                 class_names=class_names,
                 progress_format=args.progress_format,
                 stage_name="test",
@@ -690,11 +897,17 @@ def main() -> None:
                 "model_name": args.model,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
+                "scaler_state_dict": scaler.state_dict() if amp_enabled else None,
                 "best_acc": best_acc,
                 "num_classes": num_classes,
                 "class_to_idx": class_to_idx,
                 "use_validation_split": args.use_validation_split,
                 "validation_proportion": args.validation_proportion,
+                "optimizer": args.optimizer,
+                "scheduler": args.scheduler,
+                "amp": bool(args.amp),
+                "seed": int(args.seed),
             },
             last_checkpoint_path,
         )
@@ -775,6 +988,8 @@ def train_one_epoch(
     loss_fn,
     optimizer,
     device,
+    scaler,
+    use_amp: bool = False,
     epoch: int | None = None,
     num_epochs: int | None = None,
     progress_format: str = "tqdm",
@@ -796,10 +1011,16 @@ def train_one_epoch(
         images = images.to(device)
         labels = labels.to(device)
         optimizer.zero_grad()
-        outputs = model(images)
-        loss = loss_fn(outputs,labels)
-        loss.backward()
-        optimizer.step()
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            outputs = model(images)
+            loss = loss_fn(outputs, labels)
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         total_loss += loss.item() * images.size(0)
         preds = outputs.argmax(dim=1)
@@ -838,6 +1059,7 @@ def evaluate(
     dataloader,
     loss_fn,
     device,
+    use_amp: bool = False,
     class_names: list[str] | None = None,
     epoch: int | None = None,
     num_epochs: int | None = None,
@@ -867,8 +1089,9 @@ def evaluate(
             images = images.to(device)
             labels = labels.to(device)
 
-            outputs = model(images)
-            loss = loss_fn(outputs,labels)
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                outputs = model(images)
+                loss = loss_fn(outputs, labels)
             total_loss += loss.item() * images.size(0)
             probs = torch.softmax(outputs, dim=1)
             preds = outputs.argmax(dim=1)

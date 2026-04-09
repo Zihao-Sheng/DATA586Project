@@ -28,6 +28,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=None, help="Optional model name override.")
     parser.add_argument("--test-splits-root", type=Path, default=default_test_splits_root(), help="Root folder containing split directories.")
     parser.add_argument("--image-size", type=int, default=224, help="Input image size.")
+    parser.add_argument("--batch-size", type=int, default=32, help="Evaluation batch size.")
+    parser.add_argument("--amp", action="store_true", help="Use autocast during evaluation on supported CUDA devices.")
     parser.add_argument("--device", default="auto", help="Device override, for example cpu or cuda.")
     parser.add_argument("--output-dir", type=Path, default=default_output_dir(), help="Directory to save csv/json outputs.")
     return parser.parse_args()
@@ -41,6 +43,8 @@ def evaluate_test_splits(
     image_size: int,
     device: str,
     output_dir: Path,
+    batch_size: int = 16,
+    amp_requested: bool = False,
     status_callback=None,
     progress_callback=None,
 ) -> tuple[dict[str, object], Path, Path]:
@@ -49,6 +53,8 @@ def evaluate_test_splits(
         model_name=model_name,
         test_splits_root=test_splits_root,
         image_size=image_size,
+        batch_size=batch_size,
+        amp_requested=amp_requested,
         device=device,
         output_dir=output_dir,
         status_callback=status_callback,
@@ -63,6 +69,8 @@ def main() -> None:
         model_name=args.model,
         test_splits_root=args.test_splits_root,
         image_size=args.image_size,
+        batch_size=args.batch_size,
+        amp_requested=args.amp,
         device=args.device,
         output_dir=args.output_dir,
         status_callback=lambda message, indeterminate: print(message),
