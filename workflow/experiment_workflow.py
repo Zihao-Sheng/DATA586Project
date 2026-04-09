@@ -955,6 +955,7 @@ def plot_test_split_comparison_interactive(test_split_json_paths: list[str | Pat
 def plot_efficiency_compare_interactive(training_log_paths: list[str | Path]) -> list[dict[str, object]]:
     import json
 
+    import numpy as np
     import pandas as pd
 
     resolved_paths = [Path(path).expanduser().resolve() for path in training_log_paths]
@@ -980,12 +981,40 @@ def plot_efficiency_compare_interactive(training_log_paths: list[str | Path]) ->
             if isinstance(pure, (int, float)) and isinstance(batches, (int, float)) and batches
             else None
         )
+        epochs = run.get("epochs") if isinstance(run.get("epochs"), list) else []
+        val_batch_speeds: list[float] = []
+        for epoch_item in epochs:
+            if not isinstance(epoch_item, dict):
+                continue
+            epoch_val = epoch_item.get("val") if isinstance(epoch_item.get("val"), dict) else {}
+            epoch_val_timing = epoch_val.get("timing") if isinstance(epoch_val.get("timing"), dict) else {}
+            epoch_pure = epoch_val_timing.get("pure_seconds")
+            epoch_batches = epoch_val_timing.get("batches")
+            if (
+                isinstance(epoch_pure, (int, float))
+                and isinstance(epoch_batches, (int, float))
+                and float(epoch_batches) > 0
+            ):
+                val_batch_speeds.append(float(epoch_pure) / float(epoch_batches))
+        if val_batch_speeds:
+            val_avg_pure_per_batch = float(np.mean(val_batch_speeds))
+        else:
+            val_timing = stage_totals.get("val") if isinstance(stage_totals.get("val"), dict) else {}
+            val_pure = val_timing.get("pure_seconds")
+            val_batches = val_timing.get("batches")
+            val_avg_pure_per_batch = (
+                float(val_pure) / float(val_batches)
+                if isinstance(val_pure, (int, float)) and isinstance(val_batches, (int, float)) and val_batches
+                else None
+            )
         rows.append(
             {
                 "model_name": str((run.get("args") or {}).get("model", summary.get("model_name", "run"))),
+                "best_eval_acc": summary.get("best_eval_acc"),
                 "final_test_acc": summary.get("final_test_acc", summary.get("best_eval_acc")),
                 "train_wall_time": train_timing.get("total_seconds"),
                 "trainable_params": model.get("trainable_params"),
+                "val_avg_pure_per_batch": val_avg_pure_per_batch,
                 "test_avg_pure_per_batch": test_avg_pure_per_batch,
                 "log_path": str(path),
             }
@@ -1009,6 +1038,7 @@ def plot_efficiency_compare_interactive(training_log_paths: list[str | Path]) ->
 
     try:
         import plotly.express as px
+        import plotly.graph_objects as go
 
         def draw_scatter(df: pd.DataFrame, x_col: str, title: str, x_label: str) -> None:
             plot_data = df.dropna(subset=[x_col, "size_metric"]).copy()
@@ -1026,20 +1056,170 @@ def plot_efficiency_compare_interactive(training_log_paths: list[str | Path]) ->
                 hover_data=["trainable_params", "log_path"],
             )
             fig.update_traces(marker={"opacity": 0.88, "line": {"width": 1, "color": "#1f2937"}, "sizemin": 10})
-            fig.update_layout(xaxis_title=x_label, yaxis_title="Accuracy")
+            fig.update_layout(
+                xaxis_title=x_label,
+                yaxis_title="Accuracy",
+                legend={
+                    "orientation": "v",
+                    "y": 1.0,
+                    "yanchor": "top",
+                    "x": 1.02,
+                    "xanchor": "left",
+                },
+                margin={"l": 70, "r": 280, "t": 80, "b": 70},
+            )
             fig.show()
 
         draw_scatter(eff_df, "train_wall_time", "Performance vs Train Wall Time", "Train Wall Time (s)")
         draw_scatter(eff_df, "trainable_params", "Performance vs Trainable Params", "Trainable Params")
-        draw_scatter(
-            eff_df,
-            "test_avg_pure_per_batch",
-            "Inference Speed vs Performance",
-            "Test Avg Pure / Batch (s)",
-        )
+        infer_df = eff_df.dropna(subset=["size_metric"]).copy()
+        val_data = infer_df.dropna(subset=["val_avg_pure_per_batch", "best_eval_acc"]).copy()
+        test_data = infer_df.dropna(subset=["test_avg_pure_per_batch", "final_test_acc"]).copy()
+        if val_data.empty and test_data.empty:
+            print("No data for Inference Speed vs Performance")
+        else:
+            color_sequence = px.colors.qualitative.Plotly
+            all_models = sorted(set(test_data["model_name"].tolist()) | set(val_data["model_name"].tolist()))
+            color_map = {name: color_sequence[idx % len(color_sequence)] for idx, name in enumerate(all_models)}
+
+            fig = go.Figure()
+            for model_name in all_models:
+                mdf = test_data[test_data["model_name"] == model_name]
+                fig.add_trace(
+                    go.Scatter(
+                        x=mdf["test_avg_pure_per_batch"],
+                        y=mdf["final_test_acc"],
+                        mode="markers",
+                        name=model_name,
+                        marker={
+                            "size": (mdf["size_metric"] ** 0.5),
+                            "sizemin": 10,
+                            "opacity": 0.88,
+                            "line": {"width": 1, "color": "#1f2937"},
+                            "color": color_map[model_name],
+                        },
+                        customdata=mdf[["model_name", "trainable_params", "log_path"]].to_numpy(),
+                        hovertemplate=(
+                            "<b>%{customdata[0]}</b><br>"
+                            "Test Avg Pure / Batch: %{x:.6f}s<br>"
+                            "Final Test Accuracy: %{y:.4f}<br>"
+                            "Trainable Params: %{customdata[1]}<br>"
+                            "Log: %{customdata[2]}<extra></extra>"
+                        ),
+                        legendgroup=str(model_name),
+                        showlegend=True,
+                        visible=True,
+                    )
+                )
+            for model_name in all_models:
+                mdf = val_data[val_data["model_name"] == model_name]
+                fig.add_trace(
+                    go.Scatter(
+                        x=mdf["val_avg_pure_per_batch"],
+                        y=mdf["best_eval_acc"],
+                        mode="markers",
+                        name=model_name,
+                        marker={
+                            "size": (mdf["size_metric"] ** 0.5),
+                            "sizemin": 10,
+                            "opacity": 0.88,
+                            "line": {"width": 1, "color": "#1f2937"},
+                            "color": color_map[model_name],
+                        },
+                        customdata=mdf[["model_name", "trainable_params", "log_path"]].to_numpy(),
+                        hovertemplate=(
+                            "<b>%{customdata[0]}</b><br>"
+                            "Val Avg Pure / Batch: %{x:.6f}s<br>"
+                            "Best Val Accuracy: %{y:.4f}<br>"
+                            "Trainable Params: %{customdata[1]}<br>"
+                            "Log: %{customdata[2]}<extra></extra>"
+                        ),
+                        legendgroup=str(model_name),
+                        showlegend=True,
+                        visible=False,
+                    )
+                )
+            test_visible = [True] * len(all_models) + [False] * len(all_models)
+            val_visible = [False] * len(all_models) + [True] * len(all_models)
+            fig.update_layout(
+                title="",
+                xaxis_title="Test Avg Pure / Batch (s)",
+                yaxis_title="Final Test Accuracy",
+                legend={
+                    "orientation": "v",
+                    "y": 1.0,
+                    "yanchor": "top",
+                    "x": 1.02,
+                    "xanchor": "left",
+                },
+                margin={"l": 70, "r": 280, "t": 120, "b": 70},
+                updatemenus=[
+                    {
+                        "buttons": [
+                            {
+                                "label": "Test",
+                                "method": "update",
+                                "args": [
+                                    {"visible": test_visible},
+                                    {
+                                        "xaxis": {"title": "Test Avg Pure / Batch (s)"},
+                                        "yaxis": {"title": "Final Test Accuracy"},
+                                    },
+                                ],
+                            },
+                            {
+                                "label": "Val",
+                                "method": "update",
+                                "args": [
+                                    {"visible": val_visible},
+                                    {
+                                        "xaxis": {"title": "Val Avg Pure / Batch (s)"},
+                                        "yaxis": {"title": "Best Val Accuracy"},
+                                    },
+                                ],
+                            },
+                        ],
+                        "direction": "down",
+                        "showactive": True,
+                        "x": 1.0,
+                        "xanchor": "right",
+                        "y": 1.16,
+                        "yanchor": "top",
+                        "bgcolor": "white",
+                        "bordercolor": "#cbd5e1",
+                        "borderwidth": 1,
+                    }
+                ],
+                annotations=[
+                    {
+                        "xref": "paper",
+                        "yref": "paper",
+                        "x": 0.0,
+                        "y": 1.16,
+                        "xanchor": "left",
+                        "yanchor": "top",
+                        "text": "<b>Inference Speed vs Performance</b>",
+                        "showarrow": False,
+                        "font": {"size": 16, "color": "#2f4369"},
+                    }
+                ],
+            )
+            fig.show()
     except Exception as exc:
         print(f"Plotly unavailable or failed: {exc}")
-        print(eff_df[["model_name", "final_test_acc", "train_wall_time", "trainable_params", "test_avg_pure_per_batch"]])
+        print(
+            eff_df[
+                [
+                    "model_name",
+                    "best_eval_acc",
+                    "final_test_acc",
+                    "train_wall_time",
+                    "trainable_params",
+                    "val_avg_pure_per_batch",
+                    "test_avg_pure_per_batch",
+                ]
+            ]
+        )
     return rows
 
 
@@ -1083,10 +1263,38 @@ def _load_epoch_curves_from_training_logs(
                     "epoch": epoch_int,
                     "train_acc": train.get("acc"),
                     "val_acc": val.get("acc"),
+                    "train_loss": train.get("loss"),
+                    "val_loss": val.get("loss"),
                     "train_time": train_timing.get("total_seconds"),
                     "val_time": val_timing.get("total_seconds"),
                 }
             )
+        if not epochs:
+            history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
+            train_acc_series = history.get("train_acc") if isinstance(history.get("train_acc"), list) else []
+            val_acc_series = history.get("val_acc") if isinstance(history.get("val_acc"), list) else []
+            train_loss_series = history.get("train_loss") if isinstance(history.get("train_loss"), list) else []
+            val_loss_series = history.get("val_loss") if isinstance(history.get("val_loss"), list) else []
+            max_len = max(
+                len(train_acc_series),
+                len(val_acc_series),
+                len(train_loss_series),
+                len(val_loss_series),
+                0,
+            )
+            for epoch_idx in range(1, min(max_len, max_epochs) + 1):
+                rows.append(
+                    {
+                        "model_name": model_name,
+                        "epoch": epoch_idx,
+                        "train_acc": train_acc_series[epoch_idx - 1] if epoch_idx <= len(train_acc_series) else None,
+                        "val_acc": val_acc_series[epoch_idx - 1] if epoch_idx <= len(val_acc_series) else None,
+                        "train_loss": train_loss_series[epoch_idx - 1] if epoch_idx <= len(train_loss_series) else None,
+                        "val_loss": val_loss_series[epoch_idx - 1] if epoch_idx <= len(val_loss_series) else None,
+                        "train_time": None,
+                        "val_time": None,
+                    }
+                )
     return pd.DataFrame(rows)
 
 
@@ -1116,12 +1324,12 @@ def show_model_epoch_dynamics_paginated_interactive(
 
     fig = make_subplots(
         rows=1,
-        cols=2,
-        subplot_titles=("Accuracy (Train vs Val)", "Timing (Train vs Val)"),
-        horizontal_spacing=0.12,
+        cols=3,
+        subplot_titles=("Accuracy (Train vs Val)", "Timing (Train vs Val)", "Loss (Train vs Val)"),
+        horizontal_spacing=0.08,
     )
 
-    trace_count_per_model = 4
+    trace_count_per_model = 6
     all_traces_visible: list[bool] = []
     for model_index, model_name in enumerate(model_names):
         df = curves[curves["model_name"] == model_name].sort_values("epoch")
@@ -1182,6 +1390,34 @@ def show_model_epoch_dynamics_paginated_interactive(
             row=1,
             col=2,
         )
+        fig.add_trace(
+            go.Scatter(
+                x=df["epoch"],
+                y=df["train_loss"],
+                mode="lines+markers",
+                name="Train Loss",
+                line={"color": "#7c3aed", "width": 2},
+                marker={"size": 6},
+                visible=visible,
+                legendgroup="train_loss",
+            ),
+            row=1,
+            col=3,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df["epoch"],
+                y=df["val_loss"],
+                mode="lines+markers",
+                name="Val Loss",
+                line={"color": "#0ea5e9", "width": 2},
+                marker={"size": 6},
+                visible=visible,
+                legendgroup="val_loss",
+            ),
+            row=1,
+            col=3,
+        )
         all_traces_visible.extend([visible] * trace_count_per_model)
 
     buttons = []
@@ -1218,8 +1454,8 @@ def show_model_epoch_dynamics_paginated_interactive(
 
     fig.update_layout(
         title="",
-        width=960,
-        height=520,
+        width=1320,
+        height=540,
         margin={"l": 55, "r": 25, "t": 120, "b": 95},
         legend={"orientation": "h", "y": -0.18, "x": 0.5, "xanchor": "center"},
         updatemenus=[
@@ -1253,8 +1489,10 @@ def show_model_epoch_dynamics_paginated_interactive(
     )
     fig.update_xaxes(title_text="Epoch", row=1, col=1, range=[1, max_epochs], tickmode="linear", dtick=1)
     fig.update_xaxes(title_text="Epoch", row=1, col=2, range=[1, max_epochs], tickmode="linear", dtick=1)
+    fig.update_xaxes(title_text="Epoch", row=1, col=3, range=[1, max_epochs], tickmode="linear", dtick=1)
     fig.update_yaxes(title_text="Accuracy", row=1, col=1)
     fig.update_yaxes(title_text="Seconds", row=1, col=2)
+    fig.update_yaxes(title_text="Loss", row=1, col=3)
     fig.show()
 
 
