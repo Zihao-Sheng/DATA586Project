@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStackedWidget,
     QTreeView,
+    QToolTip,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -135,11 +136,13 @@ class LogPlotWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMinimumHeight(320)
+        self.setMouseTracking(True)
         self.plot_title = "Run Plot"
         self.x_label = "Epoch"
         self.y_label = "Value"
         self.note = ""
         self.series: list[dict] = []
+        self._point_hits: list[tuple[QPointF, str]] = []
 
     def set_plot(
         self,
@@ -177,6 +180,29 @@ class LogPlotWidget(QWidget):
             return [float(value) for value in ticks]
         return [x_min + (x_max - x_min) * (index / max(max_ticks - 1, 1)) for index in range(max_ticks)]
 
+    @staticmethod
+    def _format_value(value: float) -> str:
+        return f"{value:.6g}"
+
+    def mouseMoveEvent(self, event) -> None:
+        nearest_text = ""
+        nearest_distance = 10.0
+        cursor_pos = event.position()
+        for point, text in self._point_hits:
+            distance = ((point.x() - cursor_pos.x()) ** 2 + (point.y() - cursor_pos.y()) ** 2) ** 0.5
+            if distance <= nearest_distance:
+                nearest_distance = distance
+                nearest_text = text
+        if nearest_text:
+            QToolTip.showText(event.globalPosition().toPoint(), nearest_text, self)
+        else:
+            QToolTip.hideText()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -200,6 +226,7 @@ class LogPlotWidget(QWidget):
         )
 
         if not self.series or not any(series.get("points") for series in self.series):
+            self._point_hits = []
             painter.setPen(QColor("#93a0b2"))
             painter.drawText(plot_rect, Qt.AlignCenter, self.note or "No plot data available for this selection.")
             return
@@ -258,10 +285,12 @@ class LogPlotWidget(QWidget):
                 plot_rect.bottom() - y_ratio * plot_rect.height(),
             )
 
+        point_hits: list[tuple[QPointF, str]] = []
         for series in self.series:
             points = [(float(x), float(y)) for x, y in series.get("points", [])]
             if not points:
                 continue
+            label = str(series.get("label", "series"))
             color = QColor(series.get("color", "#4e8cff"))
             pen = QPen(color, 2.2)
             painter.setPen(pen)
@@ -269,8 +298,16 @@ class LogPlotWidget(QWidget):
             for point_index in range(len(mapped_points) - 1):
                 painter.drawLine(mapped_points[point_index], mapped_points[point_index + 1])
             painter.setBrush(color)
-            for point in mapped_points:
+            for point_index, point in enumerate(mapped_points):
                 painter.drawEllipse(point, 3.2, 3.2)
+                x_value, y_value = points[point_index]
+                point_hits.append(
+                    (
+                        point,
+                        f"{label}\n{self.x_label}: {self._format_value(x_value)}\n{self.y_label}: {self._format_value(y_value)}",
+                    )
+                )
+        self._point_hits = point_hits
 
         painter.setPen(QColor("#aeb8c6"))
         painter.drawText(QRectF(plot_rect.left(), plot_rect.bottom() + 24, plot_rect.width(), 20), Qt.AlignCenter, self.x_label)
@@ -314,11 +351,13 @@ class ScatterPlotWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMinimumHeight(320)
+        self.setMouseTracking(True)
         self.plot_title = "Efficiency Plot"
         self.x_label = "X"
         self.y_label = "Y"
         self.note = ""
         self.points: list[dict[str, object]] = []
+        self._point_hits: list[tuple[QPointF, float, str]] = []
 
     def set_plot(self, *, title: str, x_label: str, y_label: str, points: list[dict[str, object]], note: str = "") -> None:
         self.plot_title = title
@@ -332,6 +371,25 @@ class ScatterPlotWidget(QWidget):
         if x_max <= x_min:
             return [x_min]
         return [x_min + (x_max - x_min) * (index / max(max_ticks - 1, 1)) for index in range(max_ticks)]
+
+    @staticmethod
+    def _format_value(value: float) -> str:
+        return f"{value:.6g}"
+
+    def mouseMoveEvent(self, event) -> None:
+        cursor_pos = event.position()
+        for point, radius, text in self._point_hits:
+            distance = ((point.x() - cursor_pos.x()) ** 2 + (point.y() - cursor_pos.y()) ** 2) ** 0.5
+            if distance <= max(radius + 2.0, 8.0):
+                QToolTip.showText(event.globalPosition().toPoint(), text, self)
+                break
+        else:
+            QToolTip.hideText()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        QToolTip.hideText()
+        super().leaveEvent(event)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -356,6 +414,7 @@ class ScatterPlotWidget(QWidget):
         )
 
         if not self.points:
+            self._point_hits = []
             painter.setPen(QColor("#93a0b2"))
             painter.drawText(plot_rect, Qt.AlignCenter, self.note or "No efficiency data available for this selection.")
             return
@@ -418,10 +477,13 @@ class ScatterPlotWidget(QWidget):
                 plot_rect.bottom() - y_ratio * plot_rect.height(),
             )
 
+        point_hits: list[tuple[QPointF, float, str]] = []
         for index, point in enumerate(self.points):
             mapped = map_point(float(point.get("x", 0.0)), float(point.get("y", 0.0)))
             color = QColor(point.get("color", "#4e8cff"))
             label = str(point.get("label", f"run-{index+1}"))
+            x_value = float(point.get("x", 0.0))
+            y_value = float(point.get("y", 0.0))
             size = float(point.get("size", 1.0))
             radius = 5.0 + (12.0 * (size / max(max_size, 1.0)))
             painter.setBrush(color)
@@ -429,6 +491,14 @@ class ScatterPlotWidget(QWidget):
             painter.drawEllipse(mapped, radius, radius)
             painter.setPen(QColor("#dfe7f3"))
             painter.drawText(QRectF(mapped.x() + radius + 4, mapped.y() - 10, 180, 20), Qt.AlignLeft | Qt.AlignVCenter, label)
+            point_hits.append(
+                (
+                    mapped,
+                    radius,
+                    f"{label}\n{self.x_label}: {self._format_value(x_value)}\n{self.y_label}: {self._format_value(y_value)}",
+                )
+            )
+        self._point_hits = point_hits
 
         painter.setPen(QColor("#aeb8c6"))
         painter.drawText(QRectF(plot_rect.left(), plot_rect.bottom() + 24, plot_rect.width(), 20), Qt.AlignCenter, self.x_label)
@@ -448,10 +518,12 @@ class ConfusionMatrixWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMinimumHeight(320)
+        self.setMouseTracking(True)
         self.title = "Confusion Matrix"
         self.labels: list[str] = []
         self.matrix: list[list[int]] = []
         self.note = ""
+        self._cell_hits: list[tuple[QRect, str]] = []
 
     def set_matrix(self, *, title: str, labels: list[str], matrix: list[list[int]], note: str = "") -> None:
         self.title = title
@@ -459,6 +531,20 @@ class ConfusionMatrixWidget(QWidget):
         self.matrix = matrix
         self.note = note
         self.update()
+
+    def mouseMoveEvent(self, event) -> None:
+        cursor_pos = event.position().toPoint()
+        for rect, text in self._cell_hits:
+            if rect.contains(cursor_pos):
+                QToolTip.showText(event.globalPosition().toPoint(), text, self)
+                break
+        else:
+            QToolTip.hideText()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        QToolTip.hideText()
+        super().leaveEvent(event)
 
     def _elide_label(self, label: str, max_chars: int = 12) -> str:
         if len(label) <= max_chars:
@@ -519,6 +605,7 @@ class ConfusionMatrixWidget(QWidget):
         painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, self.title)
 
         if not self.labels or not self.matrix:
+            self._cell_hits = []
             painter.setPen(QColor("#93a0b2"))
             painter.drawText(outer_rect.adjusted(24, 48, -24, -24), Qt.AlignCenter, self.note or "No confusion matrix data available.")
             return
@@ -546,6 +633,7 @@ class ConfusionMatrixWidget(QWidget):
         painter.setBrush(QColor("#0f141c"))
         painter.drawRoundedRect(panel_rect, 10, 10)
 
+        cell_hits: list[tuple[QRect, str]] = []
         # Draw the heatmap as pixel-aligned solid cells so Qt smoothing does not wash the colors out.
         painter.setRenderHint(QPainter.Antialiasing, False)
         for row_index, row in enumerate(self.matrix):
@@ -564,6 +652,9 @@ class ConfusionMatrixWidget(QWidget):
                 painter.setPen(QPen(border_color, 0.8))
                 painter.setBrush(Qt.NoBrush)
                 painter.drawRect(cell_rect)
+                true_label = self.labels[row_index] if row_index < len(self.labels) else str(row_index)
+                pred_label = self.labels[col_index] if col_index < len(self.labels) else str(col_index)
+                cell_hits.append((QRect(cell_rect), f"True: {true_label}\nPred: {pred_label}\nCount: {value}"))
                 if cell_size >= 28:
                     import math
                     normalized = 0.0 if max_value <= 0 or value <= 0 else math.log1p(float(value)) / math.log1p(float(max_value))
@@ -571,6 +662,7 @@ class ConfusionMatrixWidget(QWidget):
                     painter.setPen(text_color)
                     painter.drawText(cell_rect, Qt.AlignCenter, str(value))
         painter.setRenderHint(QPainter.Antialiasing, True)
+        self._cell_hits = cell_hits
 
         painter.setPen(QColor("#b6c4d6"))
         for index, label in enumerate(self.labels):
@@ -960,13 +1052,9 @@ class TrainingLauncher(QMainWindow):
 
     def eventFilter(self, watched: QObject, event) -> bool:
         if event.type() == QEvent.Wheel and isinstance(watched, (QComboBox, QSpinBox, QDoubleSpinBox)):
-            if isinstance(watched, QComboBox):
-                if not watched.hasFocus() and not watched.view().isVisible():
-                    event.ignore()
-                    return True
-            elif not watched.hasFocus():
-                event.ignore()
-                return True
+            # Disable wheel-driven value changes to prevent accidental edits while scrolling.
+            event.ignore()
+            return True
         return super().eventFilter(watched, event)
 
     def _make_training_row_label(self, text: str, *, prominent: bool = False) -> QLabel:
@@ -1377,7 +1465,7 @@ class TrainingLauncher(QMainWindow):
 
         self.training_plot_detail_label = QLabel("Detail View")
         self.training_plot_value_combo = QComboBox()
-        self.training_plot_value_combo.addItems(["Accuracy", "Timing", "Efficiency", "Confusion Matrix"])
+        self.training_plot_value_combo.addItems(["Accuracy", "Loss", "Timing", "Efficiency", "Confusion Matrix"])
         self.training_plot_value_combo.currentIndexChanged.connect(self.refresh_training_log_plot)
 
         self.training_plot_metric_label = QLabel("Plot Metric")
@@ -4288,10 +4376,20 @@ class TrainingLauncher(QMainWindow):
             series.append({"label": stage_name, "color": self.stage_color(stage_name, index), "points": points})
 
         timing_label = {"total": "Total Time (s)", "pure": "Pure Time (s)", "avg": "Avg Pure / Batch (s)"}[timing_metric]
+        if value_kind == "accuracy":
+            title = "Run Accuracy"
+            y_label = "Accuracy"
+        elif value_kind == "loss":
+            title = "Run Loss"
+            y_label = "Loss"
+        else:
+            title = "Run Timing"
+            y_label = timing_label
+
         return {
-            "title": "Run Accuracy" if value_kind == "accuracy" else "Run Timing",
+            "title": title,
             "x_label": "Epoch",
-            "y_label": "Accuracy" if value_kind == "accuracy" else timing_label,
+            "y_label": y_label,
             "series": series,
             "note": "All available stage curves are shown together." if stage_choice.startswith("all") else "",
         }
@@ -4318,10 +4416,20 @@ class TrainingLauncher(QMainWindow):
             if stage_choice.startswith("all")
             else "Missing epochs are left blank for runs that start later or end earlier."
         )
+        if value_kind == "accuracy":
+            title = "Compare Accuracy Across Runs"
+            y_label = "Accuracy"
+        elif value_kind == "loss":
+            title = "Compare Loss Across Runs"
+            y_label = "Loss"
+        else:
+            title = "Compare Timing Across Runs"
+            y_label = timing_label
+
         return {
-            "title": "Compare Accuracy Across Runs" if value_kind == "accuracy" else "Compare Timing Across Runs",
+            "title": title,
             "x_label": "Epoch",
-            "y_label": "Accuracy" if value_kind == "accuracy" else timing_label,
+            "y_label": y_label,
             "series": series,
             "note": note,
         }
@@ -4335,6 +4443,7 @@ class TrainingLauncher(QMainWindow):
         timing_metric = "avg" if "avg" in timing_metric_label else ("pure" if "pure" in timing_metric_label else "total")
         plot_value = self.training_plot_value_combo.currentText().strip().lower()
         is_accuracy = "accuracy" in plot_value
+        is_loss = plot_value == "loss"
         is_timing = plot_value == "timing"
         is_efficiency = "efficiency" in plot_value
         is_confusion = "confusion" in plot_value
@@ -4370,7 +4479,7 @@ class TrainingLauncher(QMainWindow):
             return
 
         self.training_plot_stack.setCurrentWidget(self.training_plot_widget)
-        value_kind = "accuracy" if is_accuracy else "timing"
+        value_kind = "accuracy" if is_accuracy else ("loss" if is_loss else "timing")
         if len(selected_runs) >= 2:
             plot = self.build_compare_plot(selected_runs, value_kind=value_kind, timing_metric=timing_metric)
         elif len(selected_runs) == 1:

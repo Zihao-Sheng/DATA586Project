@@ -246,6 +246,8 @@ def extract_epoch_metrics(run: dict, stage_name: str, value_kind: str, timing_me
             continue
         if value_kind == "accuracy":
             value = float(stage["acc"]) if isinstance(stage.get("acc"), (int, float)) else None
+        elif value_kind == "loss":
+            value = float(stage["loss"]) if isinstance(stage.get("loss"), (int, float)) else None
         else:
             value = timing_value_from_stage(stage, timing_metric or "total")
         if value is not None:
@@ -257,6 +259,10 @@ def extract_epoch_metrics(run: dict, stage_name: str, value_kind: str, timing_me
             epoch_index = float(infer_last_completed_epoch(run))
             if value_kind == "accuracy":
                 value = final_test.get("acc")
+                if isinstance(value, (int, float)):
+                    points.append((epoch_index, float(value)))
+            elif value_kind == "loss":
+                value = final_test.get("loss")
                 if isinstance(value, (int, float)):
                     points.append((epoch_index, float(value)))
             else:
