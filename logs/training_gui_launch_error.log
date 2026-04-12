@@ -1,0 +1,16 @@
+[2026-04-12 03:59:47]
+Traceback (most recent call last):
+  File "C:\Users\18447\DATA586Project\scripts\maintenance\launch_training_gui.pyw", line 43, in <module>
+    main()
+  File "C:\Users\18447\DATA586Project\scripts\maintenance\launch_training_gui.pyw", line 17, in main
+    run_training_gui()
+  File "C:\Users\18447\DATA586Project\scripts\app\training_gui.py", line 6748, in main
+    window = TrainingLauncher()
+             ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\18447\DATA586Project\scripts\app\training_gui.py", line 809, in __init__
+    self._init_prediction_controls()
+  File "C:\Users\18447\DATA586Project\scripts\app\training_gui.py", line 1366, in _init_prediction_controls
+    self.predict_browser_mode_combo.currentIndexChanged.connect(self.on_predict_browser_mode_changed)
+                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TrainingLauncher' object has no attribute 'on_predict_browser_mode_changed'
+

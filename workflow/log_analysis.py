@@ -70,6 +70,121 @@ def display_confusion_matrix(log_paths: list[Path], view: str = "summary", top_k
     plt.show()
 
 
+def plot_test_split_comparison_from_logs(log_paths: list[Path]):
+    import matplotlib.pyplot as plt
+
+    payloads = test_split_payloads_from_logs(log_paths)
+    if not payloads:
+        print("No test split summaries available.")
+        return []
+
+    split_names: list[str] = []
+    for payload in payloads:
+        for split in payload.get("splits", []):
+            if not isinstance(split, dict):
+                continue
+            split_name = str(split.get("split", "")).strip()
+            if split_name and split_name not in split_names:
+                split_names.append(split_name)
+    if not split_names:
+        print("No split metrics available.")
+        return payloads
+
+    split_index = {split_name: index + 1 for index, split_name in enumerate(split_names)}
+    plt.figure(figsize=(10, 6))
+    for payload in payloads:
+        points: list[tuple[int, float]] = []
+        for split in payload.get("splits", []):
+            if not isinstance(split, dict):
+                continue
+            split_name = str(split.get("split", "")).strip()
+            accuracy = safe_float(split.get("accuracy"))
+            if split_name in split_index and accuracy is not None:
+                points.append((split_index[split_name], accuracy))
+        if points:
+            label = str(payload.get("model_name") or Path(str(payload.get("checkpoint_path", "run"))).parent.name)
+            plt.plot([point[0] for point in points], [point[1] for point in points], marker="o", label=label)
+    plt.xticks(list(split_index.values()), [name.replace("_", " ") for name in split_names], rotation=20, ha="right")
+    plt.xlabel("Test Split")
+    plt.ylabel("Accuracy")
+    plt.title("Test Split Accuracy")
+    plt.grid(alpha=0.25)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+    return payloads
+
+
+def test_split_payloads_from_logs(log_paths: list[Path]) -> list[dict]:
+    workflow_by_training_log = workflow_test_split_summaries()
+    payloads: list[dict] = []
+    for path in log_paths:
+        run = load_run(path)
+        payload = test_split_payload_from_run(run)
+        if payload is None:
+            try:
+                payload = workflow_by_training_log.get(str(Path(path).expanduser().resolve()).lower())
+            except Exception:
+                payload = None
+        if payload is not None:
+            payloads.append(payload)
+    return payloads
+
+
+def load_run(path: Path) -> dict | None:
+    try:
+        payload = json.loads(path.expanduser().resolve().read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def workflow_test_split_summaries() -> dict[str, dict]:
+    workflow_dir = Path(__file__).resolve().parents[1] / "logs" / "workflow_runs"
+    summaries: dict[str, dict] = {}
+    if not workflow_dir.is_dir():
+        return summaries
+    for path in sorted(workflow_dir.glob("*.json"), reverse=True):
+        workflow = load_run(path)
+        if not isinstance(workflow, dict):
+            continue
+        artifacts = workflow.get("artifacts") if isinstance(workflow.get("artifacts"), dict) else {}
+        training_log = artifacts.get("training_run_log")
+        if not training_log:
+            continue
+        try:
+            training_key = str(Path(str(training_log)).expanduser().resolve()).lower()
+        except Exception:
+            training_key = str(training_log).lower()
+        if training_key in summaries:
+            continue
+        payload = test_split_payload_from_run(workflow)
+        if payload is None:
+            payload = load_test_split_payload(artifacts.get("test_split_json"))
+        if payload is not None:
+            summaries[training_key] = payload
+    return summaries
+
+
+def test_split_payload_from_run(run: dict | None) -> dict | None:
+    if not isinstance(run, dict):
+        return None
+    payload = run.get("test_split_summary")
+    if isinstance(payload, dict) and isinstance(payload.get("splits"), list) and payload.get("splits"):
+        return payload
+    artifacts = run.get("artifacts") if isinstance(run.get("artifacts"), dict) else {}
+    return load_test_split_payload(artifacts.get("test_split_json"))
+
+
+def load_test_split_payload(path_text) -> dict | None:
+    if not isinstance(path_text, str) or not path_text.strip():
+        return None
+    payload = load_run(Path(path_text))
+    if isinstance(payload, dict) and isinstance(payload.get("splits"), list) and payload.get("splits"):
+        return payload
+    return None
+
+
 def efficiency_x_value(run: dict, x_metric: str) -> float | None:
     timing_summary = run.get("timing_summary") if isinstance(run.get("timing_summary"), dict) else {}
     stage_totals = timing_summary.get("stage_totals") if isinstance(timing_summary.get("stage_totals"), dict) else {}

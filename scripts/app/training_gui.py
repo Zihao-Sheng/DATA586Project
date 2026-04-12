@@ -6,10 +6,11 @@ import os
 import sys
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QProcess, QRect, QRectF, QSize, QSettings, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QTextCursor
+from PySide6.QtGui import QBrush, QColor, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFrame,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -34,12 +36,16 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QSpinBox,
     QStackedWidget,
     QTreeView,
     QToolTip,
     QTabWidget,
+    QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
     QGridLayout,
@@ -77,6 +83,10 @@ NEW_CHECKPOINT_NAME_LABEL = "New checkpoint name..."
 RUN_LOG_DIRNAME = "_run_logs"
 SETTINGS_ORG = "DATA586Project"
 SETTINGS_APP = "TrainingLauncher"
+PREDICT_THUMBNAIL_CACHE_LIMIT = 192
+PREDICT_DISPLAY_CACHE_LIMIT = 48
+PREDICT_GRADCAM_CACHE_LIMIT = 24
+PREDICT_COMPARE_DISPLAY_CACHE_LIMIT = 12
 
 
 def set_windows_app_id() -> None:
@@ -140,6 +150,7 @@ class LogPlotWidget(QWidget):
         self.plot_title = "Run Plot"
         self.x_label = "Epoch"
         self.y_label = "Value"
+        self.x_tick_labels: dict[float, str] = {}
         self.note = ""
         self.series: list[dict] = []
         self._point_hits: list[tuple[QPointF, str]] = []
@@ -152,12 +163,14 @@ class LogPlotWidget(QWidget):
         y_label: str,
         series: list[dict],
         note: str = "",
+        x_tick_labels: dict[float, str] | None = None,
     ) -> None:
         self.plot_title = title
         self.x_label = x_label
         self.y_label = y_label
         self.series = series
         self.note = note
+        self.x_tick_labels = x_tick_labels or {}
         self.update()
 
     def _build_x_ticks(self, x_min: float, x_max: float, max_ticks: int = 6) -> list[float]:
@@ -253,6 +266,7 @@ class LogPlotWidget(QWidget):
         grid_pen = QPen(QColor("#28303b"), 1)
         axis_pen = QPen(QColor("#556070"), 1.3)
         label_pen = QPen(QColor("#aeb8c6"), 1)
+        metrics = QFontMetrics(painter.font())
 
         for tick in range(5):
             fraction = tick / 4 if 4 > 0 else 0
@@ -270,8 +284,11 @@ class LogPlotWidget(QWidget):
             painter.setPen(grid_pen)
             painter.drawLine(x, plot_rect.top(), x, plot_rect.bottom())
             painter.setPen(label_pen)
-            tick_text = f"{tick_value:.0f}" if float(tick_value).is_integer() else f"{tick_value:.3g}"
-            painter.drawText(QRectF(x - 20, plot_rect.bottom() + 6, 40, 18), Qt.AlignHCenter | Qt.AlignTop, tick_text)
+            tick_text = self.x_tick_labels.get(float(tick_value))
+            if tick_text is None:
+                tick_text = f"{tick_value:.0f}" if float(tick_value).is_integer() else f"{tick_value:.3g}"
+            tick_width = max(40, min(110, metrics.horizontalAdvance(tick_text) + 8))
+            painter.drawText(QRectF(x - tick_width / 2, plot_rect.bottom() + 6, tick_width, 18), Qt.AlignHCenter | Qt.AlignTop, tick_text)
 
         painter.setPen(axis_pen)
         painter.drawLine(plot_rect.left(), plot_rect.bottom(), plot_rect.right(), plot_rect.bottom())
@@ -304,7 +321,8 @@ class LogPlotWidget(QWidget):
                 point_hits.append(
                     (
                         point,
-                        f"{label}\n{self.x_label}: {self._format_value(x_value)}\n{self.y_label}: {self._format_value(y_value)}",
+                        f"{label}\n{self.x_label}: {self.x_tick_labels.get(float(x_value), self._format_value(x_value))}\n"
+                        f"{self.y_label}: {self._format_value(y_value)}",
                     )
                 )
         self._point_hits = point_hits
@@ -318,7 +336,6 @@ class LogPlotWidget(QWidget):
         painter.drawText(QRectF(-plot_rect.height() / 2, -16, plot_rect.height(), 20), Qt.AlignCenter, self.y_label)
         painter.restore()
 
-        metrics = QFontMetrics(painter.font())
         legend_x = plot_rect.left()
         legend_y = outer_rect.top() + 32
         max_legend_width = plot_rect.width()
@@ -767,19 +784,24 @@ class TrainingLauncher(QMainWindow):
         self.predict_compact_built = False
         self.predict_compact_loading = False
         self.predict_compact_pending_indices: list[int] = []
-        self.predict_thumbnail_cache: dict[str, QIcon] = {}
-        self.predict_display_cache: dict[tuple[str, int, int], QPixmap] = {}
-        self.predict_compare_models: list[str] = []
-        self.predict_compare_checkpoints: dict[str, Path] = {}
-        self.predict_gradcam_cache: dict[tuple[str, str, str, int, str], QPixmap] = {}
-        self.predict_compare_display_cache: dict[tuple[object, ...], QPixmap] = {}
+        self.predict_browser_render_key: tuple[int, int, str] | None = None
+        self.predict_thumbnail_cache: OrderedDict[str, QIcon] = OrderedDict()
+        self.predict_display_cache: OrderedDict[tuple[str, int, int], QPixmap] = OrderedDict()
+        self.predict_compare_items: list[dict[str, object]] = []
+        self.predict_gradcam_cache: OrderedDict[tuple[str, str, str, int, str], QPixmap] = OrderedDict()
+        self.predict_gradcam_diagnostics: OrderedDict[tuple[str, str, str, int, str], str] = OrderedDict()
+        self.predict_compare_display_cache: OrderedDict[tuple[object, ...], QPixmap] = OrderedDict()
         self.predict_gradcam_thread: QThread | None = None
         self.predict_gradcam_worker: GradCamComparisonWorker | None = None
         self.predict_gradcam_request_key: tuple[object, ...] | None = None
         self.predict_gradcam_pending_request: dict[str, object] | None = None
+        self._predict_checkpoint_selector_syncing = False
         self.predict_resize_timer = QTimer(self)
         self.predict_resize_timer.setSingleShot(True)
         self.predict_resize_timer.timeout.connect(self._refresh_predict_after_resize)
+        self.predict_browser_thumbnail_timer = QTimer(self)
+        self.predict_browser_thumbnail_timer.setSingleShot(True)
+        self.predict_browser_thumbnail_timer.timeout.connect(self.process_predict_compact_thumbnail_batch)
         self.predict_detected_model_name: str | None = None
         self.test_split_thread: QThread | None = None
         self.test_split_worker: TestSplitEvaluationWorker | None = None
@@ -803,12 +825,14 @@ class TrainingLauncher(QMainWindow):
         self._build_ui()
         self._install_wheel_guards()
         self.apply_visual_design()
+        self.refresh_predict_checkpoint_selector(select_default=True)
         self.refresh_training_settings_summary()
         self.refresh_command_preview()
         self.update_predict_detected_model()
         self.update_test_split_detected_model()
         self.refresh_predict_compare_summary()
         self.refresh_predict_page()
+        self.on_predict_browser_mode_changed()
         self.on_predict_compact_toggled(self.predict_compact_checkbox.isChecked())
         self.refresh_training_log_runs()
 
@@ -1256,6 +1280,25 @@ class TrainingLauncher(QMainWindow):
         self.predict_model_combo.addItems(self.available_models)
         self.predict_model_combo.hide()
 
+        self.predict_checkpoint_tree = QTreeWidget()
+        self.predict_checkpoint_tree.setColumnCount(3)
+        self.predict_checkpoint_tree.setHeaderLabels(["Model", "Best", "Last"])
+        self.predict_checkpoint_tree.setRootIsDecorated(False)
+        self.predict_checkpoint_tree.setAlternatingRowColors(True)
+        self.predict_checkpoint_tree.setIndentation(0)
+        self.predict_checkpoint_tree.setMinimumHeight(176)
+        self.predict_checkpoint_tree.setMaximumHeight(210)
+        self.predict_checkpoint_tree.itemChanged.connect(self.on_predict_checkpoint_tree_item_changed)
+
+        self.predict_select_all_best_button = QPushButton("Select All Best")
+        self.predict_select_all_best_button.clicked.connect(self.select_all_predict_best_checkpoints)
+        self.predict_select_all_best_button.setFixedHeight(28)
+
+        self.predict_clear_selection_button = QPushButton("Clear")
+        self.predict_clear_selection_button.clicked.connect(self.clear_predict_checkpoint_selection)
+        self.predict_clear_selection_button.setFixedWidth(68)
+        self.predict_clear_selection_button.setFixedHeight(28)
+
         self.predict_device_combo = QComboBox()
         self.predict_device_combo.addItems(["auto", "cpu", "cuda"])
 
@@ -1264,9 +1307,11 @@ class TrainingLauncher(QMainWindow):
         self.predict_image_size_spin.setValue(224)
 
         self.predict_checkpoint_edit = QLineEdit(str(self.default_predict_checkpoint_path()))
+        self.predict_checkpoint_edit.setReadOnly(True)
         self.predict_checkpoint_edit.editingFinished.connect(self.update_predict_detected_model)
         self.predict_checkpoint_browse_button = QPushButton("Browse...")
         self.predict_checkpoint_browse_button.clicked.connect(self.choose_predict_checkpoint)
+        self.predict_checkpoint_browse_button.hide()
         self.predict_model_combo.currentTextChanged.connect(self.on_predict_model_changed)
 
         self.predict_detected_model_label = QLabel("Model will be auto-detected from the checkpoint.")
@@ -1286,20 +1331,29 @@ class TrainingLauncher(QMainWindow):
 
         self.predict_compact_checkbox = QCheckBox("Compact Mode")
         self.predict_compact_checkbox.toggled.connect(self.on_predict_compact_toggled)
+        self.predict_compact_checkbox.hide()
 
         self.predict_compare_checkbox = QCheckBox("Model Comparison")
         self.predict_compare_checkbox.toggled.connect(self.on_predict_compare_toggled)
+        self.predict_compare_checkbox.setEnabled(False)
+        self.predict_compare_checkbox.setToolTip("Automatically enabled when two or more checkpoints are selected.")
 
         self.predict_compare_models_button = QPushButton("Add")
-        self.predict_compare_models_button.clicked.connect(self.add_predict_compare_model)
+        self.predict_compare_models_button.clicked.connect(self.select_all_predict_best_checkpoints)
+        self.predict_compare_models_button.setText("Select All Best")
+        self.predict_compare_models_button.setFixedHeight(28)
 
         self.predict_compare_clear_button = QPushButton("Clear")
-        self.predict_compare_clear_button.clicked.connect(self.clear_predict_compare_models)
+        self.predict_compare_clear_button.clicked.connect(self.clear_predict_checkpoint_selection)
         self.predict_compare_clear_button.setFixedWidth(68)
+        self.predict_compare_clear_button.setFixedHeight(28)
 
-        self.predict_compare_models_label = QLabel("Current model only.")
-        self.predict_compare_models_label.setWordWrap(True)
+        self.predict_compare_models_label = QLabel("No checkpoints selected.")
+        self.predict_compare_models_label.setWordWrap(False)
         self.predict_compare_models_label.setProperty("muted", True)
+        self.predict_compare_models_label.setMaximumHeight(28)
+        self.predict_compare_models_label.setMinimumHeight(28)
+        self.predict_compare_models_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         self.predict_export_include_paths_checkbox = QCheckBox("Include path setup")
         self.predict_export_include_paths_checkbox.setChecked(True)
@@ -1307,9 +1361,10 @@ class TrainingLauncher(QMainWindow):
         self.predict_export_button = QPushButton("Export Predicting as Python Code")
         self.predict_export_button.clicked.connect(self.export_predicting_as_python_code)
 
-        self.predict_gradcam_button = QPushButton("Show Grad-CAM")
+        self.predict_gradcam_button = QPushButton("Generate / Show Grad-CAM")
         self.predict_gradcam_button.clicked.connect(self.show_predict_gradcam_for_current_page)
         self.predict_gradcam_button.setEnabled(False)
+        self.predict_gradcam_button.setToolTip("Generate Grad-CAM overlays for the current compare image, or show cached overlays if already available.")
 
         self.predict_prev_button = QPushButton("Previous")
         self.predict_prev_button.clicked.connect(self.show_previous_prediction)
@@ -1321,14 +1376,22 @@ class TrainingLauncher(QMainWindow):
         self.predict_selected_label.setWordWrap(True)
         self.predict_selected_label.setProperty("muted", True)
 
+        self.predict_browser_mode_combo = QComboBox()
+        self.predict_browser_mode_combo.addItem("Thumbnails", "thumbnails")
+        self.predict_browser_mode_combo.addItem("List", "list")
+        self.predict_browser_mode_combo.currentIndexChanged.connect(self.on_predict_browser_mode_changed)
+
         self.predict_status_label = QLabel("Ready.")
         self.predict_status_label.setWordWrap(True)
         self.predict_status_label.setObjectName("SectionStatus")
+        self.predict_status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         self.predict_progress_bar = QProgressBar()
         self.predict_progress_bar.setRange(0, 100)
         self.predict_progress_bar.setValue(0)
         self.predict_progress_bar.setFormat("%p%")
+        self.predict_progress_bar.setFixedHeight(20)
+        self.predict_progress_bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         self.predict_page_label = QLabel("0 / 0")
         self.predict_page_label.setProperty("muted", True)
@@ -1337,39 +1400,118 @@ class TrainingLauncher(QMainWindow):
         self.predict_image_label.setObjectName("ImagePreview")
         self.predict_image_label.setAlignment(Qt.AlignCenter)
         self.predict_image_label.setMinimumHeight(420)
+        self.predict_image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self.predict_result_label = QLabel("Prediction result will appear here.")
         self.predict_result_label.setWordWrap(True)
         self.predict_result_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.predict_result_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        self.predict_compare_context_label = QLabel("Compare details will appear here.")
+        self.predict_compare_context_label.setWordWrap(True)
+        self.predict_compare_context_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.predict_compare_context_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        self.predict_compare_context_toggle = QToolButton()
+        self.predict_compare_context_toggle.setText("Compare Context")
+        self.predict_compare_context_toggle.setCheckable(True)
+        self.predict_compare_context_toggle.setChecked(False)
+        self.predict_compare_context_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.predict_compare_context_toggle.setArrowType(Qt.RightArrow)
+        self.predict_compare_context_toggle.toggled.connect(self.on_predict_compare_context_toggled)
+
+        self.predict_compare_context_summary_label = QLabel("No compare context available.")
+        self.predict_compare_context_summary_label.setWordWrap(False)
+        self.predict_compare_context_summary_label.setProperty("muted", True)
+        self.predict_compare_context_summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        self.predict_compare_shared_image_label = QLabel("Select images and click Predict.")
+        self.predict_compare_shared_image_label.setObjectName("ImagePreview")
+        self.predict_compare_shared_image_label.setAlignment(Qt.AlignCenter)
+        self.predict_compare_shared_image_label.setMinimumHeight(220)
+        self.predict_compare_shared_image_label.setMaximumHeight(280)
+        self.predict_compare_shared_image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self.predict_compare_context_content = QWidget()
+        self.predict_compare_context_content_layout = QVBoxLayout(self.predict_compare_context_content)
+        self.predict_compare_context_content_layout.setContentsMargins(0, 0, 0, 0)
+        self.predict_compare_context_content_layout.setSpacing(6)
+        self.predict_compare_context_content_layout.addWidget(self.predict_compare_context_label)
+        self.predict_compare_context_content_layout.addWidget(self.predict_compare_shared_image_label)
+        self.predict_compare_context_content.setVisible(False)
+
+        self.predict_compare_cards_widget = QWidget()
+        self.predict_compare_cards_layout = QGridLayout(self.predict_compare_cards_widget)
+        self.predict_compare_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.predict_compare_cards_layout.setHorizontalSpacing(10)
+        self.predict_compare_cards_layout.setVerticalSpacing(10)
+        self.predict_compare_cards_layout.setColumnStretch(0, 1)
+        self.predict_compare_cards_layout.setColumnStretch(1, 1)
+
+        self.predict_compare_cards_scroll = QScrollArea()
+        self.predict_compare_cards_scroll.setWidgetResizable(True)
+        self.predict_compare_cards_scroll.setWidget(self.predict_compare_cards_widget)
+        self.predict_compare_cards_scroll.setFrameShape(QScrollArea.NoFrame)
 
         self.predict_compact_list = QListWidget()
         self.predict_compact_list.setViewMode(QListView.IconMode)
         self.predict_compact_list.setResizeMode(QListView.Adjust)
         self.predict_compact_list.setMovement(QListView.Static)
-        self.predict_compact_list.setSpacing(12)
+        self.predict_compact_list.setSpacing(10)
         self.predict_compact_list.setIconSize(QSize(160, 160))
         self.predict_compact_list.setGridSize(QSize(190, 250))
         self.predict_compact_list.setWordWrap(True)
-        self.predict_compact_list.setUniformItemSizes(True)
+        self.predict_compact_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.predict_compact_list.setUniformItemSizes(False)
+        self.predict_compact_list.setMinimumHeight(280)
         self.predict_compact_list.itemClicked.connect(self.on_predict_compact_item_clicked)
+        self.predict_compact_list.verticalScrollBar().valueChanged.connect(self.schedule_predict_visible_thumbnail_update)
+        self.predict_compact_list.horizontalScrollBar().valueChanged.connect(self.schedule_predict_visible_thumbnail_update)
 
         self.predict_display_stack = QStackedWidget()
 
         single_predict_page = QWidget()
         single_predict_layout = QVBoxLayout(single_predict_page)
+        single_predict_layout.setContentsMargins(4, 4, 4, 4)
+        single_predict_layout.setSpacing(10)
         single_predict_layout.addWidget(self.predict_image_label, stretch=1)
 
         predict_result_group = QGroupBox("Prediction Result")
         predict_result_layout = QVBoxLayout(predict_result_group)
+        predict_result_layout.setContentsMargins(10, 8, 10, 10)
+        predict_result_layout.setSpacing(4)
         predict_result_layout.addWidget(self.predict_result_label)
+        predict_result_group.setMaximumHeight(180)
         single_predict_layout.addWidget(predict_result_group)
 
-        compact_predict_page = QWidget()
-        compact_predict_layout = QVBoxLayout(compact_predict_page)
-        compact_predict_layout.addWidget(self.predict_compact_list)
+        compare_predict_page = QWidget()
+        compare_predict_layout = QVBoxLayout(compare_predict_page)
+        compare_predict_layout.setContentsMargins(4, 4, 4, 4)
+        compare_predict_layout.setSpacing(8)
+        compare_context_section = QWidget()
+        compare_context_layout = QVBoxLayout(compare_context_section)
+        compare_context_layout.setContentsMargins(2, 0, 2, 0)
+        compare_context_layout.setSpacing(4)
+        compare_context_header = QHBoxLayout()
+        compare_context_header.setContentsMargins(0, 0, 0, 0)
+        compare_context_header.setSpacing(8)
+        compare_context_header.addWidget(self.predict_compare_context_toggle)
+        compare_context_header.addWidget(self.predict_compare_context_summary_label, stretch=1)
+        compare_context_layout.addLayout(compare_context_header)
+        compare_context_layout.addWidget(self.predict_compare_context_content)
+        compare_predict_layout.addWidget(compare_context_section, stretch=0)
+        compare_cards_section = QWidget()
+        compare_cards_section_layout = QVBoxLayout(compare_cards_section)
+        compare_cards_section_layout.setContentsMargins(0, 0, 0, 0)
+        compare_cards_section_layout.setSpacing(6)
+        compare_cards_label = QLabel("Model Compare")
+        compare_cards_label.setProperty("muted", True)
+        compare_cards_section_layout.addWidget(compare_cards_label)
+        compare_cards_section_layout.addWidget(self.predict_compare_cards_scroll, stretch=1)
+        compare_predict_layout.addWidget(compare_cards_section, stretch=1)
 
         self.predict_display_stack.addWidget(single_predict_page)
-        self.predict_display_stack.addWidget(compact_predict_page)
+        self.predict_display_stack.addWidget(compare_predict_page)
 
     def _init_test_split_controls(self) -> None:
         self.test_split_device_combo = QComboBox()
@@ -1673,43 +1815,128 @@ class TrainingLauncher(QMainWindow):
 
         predict_tab = QWidget()
         predict_layout = QVBoxLayout(predict_tab)
+        predict_layout.setContentsMargins(6, 6, 6, 6)
+        predict_layout.setSpacing(8)
+
+        predict_selector_group = QGroupBox("Checkpoint Selector")
+        predict_selector_group.setMinimumWidth(0)
+        predict_selector_group.setMaximumWidth(16777215)
+        predict_selector_layout = QVBoxLayout(predict_selector_group)
+        predict_selector_layout.setContentsMargins(8, 8, 8, 8)
+        predict_selector_layout.setSpacing(5)
+        predict_selector_layout.addWidget(self.predict_checkpoint_tree, stretch=1)
+        predict_selector_actions = QHBoxLayout()
+        predict_selector_actions.setContentsMargins(0, 0, 0, 0)
+        predict_selector_actions.setSpacing(6)
+        predict_selector_actions.addWidget(self.predict_select_all_best_button)
+        predict_selector_actions.addWidget(self.predict_clear_selection_button)
+        predict_selector_actions.addStretch(1)
+        predict_selector_layout.addLayout(predict_selector_actions)
+
+        predict_browser_group = QGroupBox("Image Browser")
+        predict_browser_layout = QVBoxLayout(predict_browser_group)
+        predict_browser_layout.setContentsMargins(8, 8, 8, 8)
+        predict_browser_layout.setSpacing(5)
+        predict_browser_header = QHBoxLayout()
+        predict_browser_header.setContentsMargins(0, 0, 0, 0)
+        predict_browser_header.setSpacing(6)
+        predict_browser_view_label = QLabel("View")
+        predict_browser_view_label.setProperty("muted", True)
+        predict_browser_header.addWidget(predict_browser_view_label)
+        self.predict_browser_mode_combo.setMaximumWidth(132)
+        predict_browser_header.addWidget(self.predict_browser_mode_combo)
+        predict_browser_header.addStretch(1)
+        predict_browser_layout.addLayout(predict_browser_header)
+        predict_browser_layout.addWidget(self.predict_compact_list, stretch=1)
+        predict_browser_actions = QHBoxLayout()
+        predict_browser_actions.setContentsMargins(0, 0, 0, 0)
+        predict_browser_actions.setSpacing(6)
+        predict_browser_actions.addWidget(self.predict_select_images_button)
+        predict_browser_actions.addWidget(self.predict_select_folder_button)
+        predict_browser_actions.addStretch(1)
+        predict_browser_layout.addLayout(predict_browser_actions)
+
+        predict_left_panel = QWidget()
+        predict_left_layout = QVBoxLayout(predict_left_panel)
+        predict_left_layout.setContentsMargins(0, 0, 0, 0)
+        predict_left_layout.setSpacing(8)
+        predict_left_layout.addWidget(predict_selector_group, stretch=0)
+        predict_left_layout.addWidget(predict_browser_group, stretch=1)
+        predict_left_panel.setMinimumWidth(320)
+        predict_left_panel.setMaximumWidth(420)
 
         predict_config_group = QGroupBox("Predict Config")
-        predict_form = QFormLayout(predict_config_group)
-        predict_form.addRow("Detected Model", self.predict_detected_model_label)
-        predict_form.addRow("Device", self.predict_device_combo)
-        predict_form.addRow("Image Size", self.predict_image_size_spin)
-        predict_form.addRow("", self.predict_compare_checkbox)
-        compare_model_layout = QHBoxLayout()
-        compare_model_layout.addWidget(self.predict_compare_models_label, stretch=1)
-        compare_model_layout.addWidget(self.predict_compare_models_button)
-        compare_model_layout.addWidget(self.predict_compare_clear_button)
-        predict_form.addRow("Compare Models", compare_model_layout)
-        checkpoint_layout = QHBoxLayout()
-        checkpoint_layout.addWidget(self.predict_checkpoint_edit, stretch=1)
-        checkpoint_layout.addWidget(self.predict_checkpoint_browse_button)
-        predict_form.addRow("Checkpoint", checkpoint_layout)
-        predict_form.addRow("Images", self.predict_selected_label)
-        predict_layout.addWidget(predict_config_group)
+        predict_config_group.setMinimumWidth(460)
+        predict_config_group.setMaximumHeight(330)
+        predict_config_layout = QVBoxLayout(predict_config_group)
+        predict_config_layout.setContentsMargins(8, 8, 8, 8)
+        predict_config_layout.setSpacing(6)
 
-        predict_controls = QHBoxLayout()
-        predict_controls.addWidget(self.predict_select_images_button)
-        predict_controls.addWidget(self.predict_select_folder_button)
-        predict_controls.addWidget(self.predict_run_button)
-        predict_controls.addWidget(self.predict_queue_button)
-        predict_controls.addWidget(self.predict_compact_checkbox)
-        predict_controls.addWidget(self.predict_gradcam_button)
-        predict_controls.addWidget(self.predict_export_include_paths_checkbox)
-        predict_controls.addWidget(self.predict_export_button)
-        predict_controls.addStretch(1)
-        predict_controls.addWidget(self.predict_prev_button)
-        predict_controls.addWidget(self.predict_page_label)
-        predict_controls.addWidget(self.predict_next_button)
-        predict_layout.addLayout(predict_controls)
+        predict_info_grid = QGridLayout()
+        predict_info_grid.setContentsMargins(0, 0, 0, 0)
+        predict_info_grid.setHorizontalSpacing(8)
+        predict_info_grid.setVerticalSpacing(4)
+        predict_device_title = QLabel("Device")
+        predict_device_title.setProperty("muted", True)
+        predict_image_size_title = QLabel("Image Size")
+        predict_image_size_title.setProperty("muted", True)
+        predict_info_grid.addWidget(predict_device_title, 0, 0)
+        predict_info_grid.addWidget(self.predict_device_combo, 0, 1)
+        predict_info_grid.addWidget(predict_image_size_title, 0, 2)
+        predict_info_grid.addWidget(self.predict_image_size_spin, 0, 3)
+        predict_info_grid.addWidget(self.predict_compare_checkbox, 0, 4, 1, 1, Qt.AlignRight | Qt.AlignVCenter)
+        predict_info_grid.setColumnStretch(1, 2)
+        predict_info_grid.setColumnStretch(4, 1)
+        predict_config_layout.addLayout(predict_info_grid)
 
-        predict_layout.addWidget(self.predict_status_label)
-        predict_layout.addWidget(self.predict_progress_bar)
-        predict_layout.addWidget(self.predict_display_stack, stretch=1)
+        self.predict_compare_models_label.setProperty("muted", False)
+        predict_config_layout.addWidget(self.predict_compare_models_label)
+
+        predict_action_row = QHBoxLayout()
+        predict_action_row.setContentsMargins(0, 0, 0, 0)
+        predict_action_row.setSpacing(6)
+        predict_action_row.addWidget(self.predict_run_button)
+        predict_action_row.addWidget(self.predict_queue_button)
+        predict_action_row.addWidget(self.predict_gradcam_button)
+        predict_action_row.addStretch(1)
+        predict_action_row.addWidget(self.predict_export_include_paths_checkbox)
+        predict_action_row.addWidget(self.predict_export_button)
+        predict_config_layout.addLayout(predict_action_row)
+
+        predict_footer_row = QHBoxLayout()
+        predict_footer_row.setContentsMargins(0, 0, 0, 0)
+        predict_footer_row.setSpacing(8)
+        predict_footer_row.addWidget(self.predict_status_label, stretch=3)
+        predict_footer_row.addWidget(self.predict_progress_bar, stretch=2)
+        predict_nav_layout = QHBoxLayout()
+        predict_nav_layout.setContentsMargins(0, 0, 0, 0)
+        predict_nav_layout.setSpacing(6)
+        predict_nav_layout.addWidget(self.predict_prev_button)
+        predict_nav_layout.addWidget(self.predict_page_label)
+        predict_nav_layout.addWidget(self.predict_next_button)
+        predict_footer_row.addLayout(predict_nav_layout, stretch=0)
+        predict_config_layout.addLayout(predict_footer_row)
+        predict_config_layout.addStretch(0)
+
+        predict_preview_group = QGroupBox("Prediction Preview")
+        predict_preview_layout = QVBoxLayout(predict_preview_group)
+        predict_preview_layout.setContentsMargins(8, 8, 8, 8)
+        predict_preview_layout.setSpacing(8)
+        predict_preview_layout.addWidget(self.predict_display_stack, stretch=1)
+
+        predict_right_panel = QWidget()
+        predict_right_layout = QVBoxLayout(predict_right_panel)
+        predict_right_layout.setContentsMargins(0, 0, 0, 0)
+        predict_right_layout.setSpacing(10)
+        predict_right_layout.addWidget(predict_config_group, stretch=0)
+        predict_right_layout.addWidget(predict_preview_group, stretch=1)
+
+        predict_columns_layout = QHBoxLayout()
+        predict_columns_layout.setContentsMargins(0, 0, 0, 0)
+        predict_columns_layout.setSpacing(10)
+        predict_columns_layout.addWidget(predict_left_panel, stretch=3)
+        predict_columns_layout.addWidget(predict_right_panel, stretch=7)
+        predict_layout.addLayout(predict_columns_layout, stretch=1)
 
         test_split_tab = QWidget()
         test_split_layout = QVBoxLayout(test_split_tab)
@@ -2325,9 +2552,14 @@ class TrainingLauncher(QMainWindow):
 
         if self.predict_compare_checkbox.isChecked():
             model_spec_lines = []
-            for model_name in self.selected_predict_models():
+            compare_items = self.selected_predict_compare_items(include_main=True, allow_missing_main=True)
+            for item in compare_items:
+                model_name = str(item.get("detected_model_name", "")).strip()
+                checkpoint_path = Path(str(item.get("checkpoint_path", ""))).expanduser()
+                if not model_name:
+                    continue
                 model_spec_lines.append(
-                    f"    ({model_name!r}, {self._project_root_expression_for_path(self.checkpoint_path_for_predict_model(model_name))}),"
+                    f"    ({model_name!r}, {self._project_root_expression_for_path(checkpoint_path)}),"
                 )
             helper_name = "compare_models_and_display_compact" if self.predict_compact_checkbox.isChecked() else "display_gradcam_comparison"
             code_lines.extend(
@@ -2404,10 +2636,26 @@ class TrainingLauncher(QMainWindow):
         if not self.predict_image_paths:
             QMessageBox.warning(self, "No Images Selected", "Select one or more images before exporting notebook prediction code.")
             return
-        for model_name in self.selected_predict_models():
-            checkpoint_path = self.checkpoint_path_for_predict_model(model_name)
+        try:
+            compare_items = self.selected_predict_compare_items(include_main=True, allow_missing_main=False)
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid Checkpoint", str(exc))
+            return
+        if self.predict_compare_checkbox.isChecked():
+            model_names = [str(item.get("detected_model_name", "")).strip() for item in compare_items]
+            if len([name for name in model_names if name]) != len(set(name for name in model_names if name)):
+                QMessageBox.warning(
+                    self,
+                    "Export Not Supported Yet",
+                    "Notebook export for compare mode currently requires unique model architectures.\n"
+                    "The desktop Predicting tab can compare duplicate architectures, but the exported notebook helper still expects unique model names.",
+                )
+                return
+        for item in compare_items:
+            checkpoint_path = Path(str(item.get("checkpoint_path", ""))).expanduser()
             if not checkpoint_path.is_file():
-                QMessageBox.warning(self, "Invalid Checkpoint", f"Checkpoint file does not exist for {model_name}:\n{checkpoint_path}")
+                item_label = str(item.get("summary_text", checkpoint_path))
+                QMessageBox.warning(self, "Invalid Checkpoint", f"Checkpoint file does not exist for {item_label}:\n{checkpoint_path}")
                 return
 
         include_path_setup = self.predict_export_include_paths_checkbox.isChecked()
@@ -2512,6 +2760,14 @@ class TrainingLauncher(QMainWindow):
                     "display_confusion_matrix(log_paths, view=view, top_k=top_k)",
                 ]
             )
+        elif "test splits" in plot_value:
+            code_lines.extend(
+                [
+                    "from core.notebook_log_analysis import plot_test_split_comparison_from_logs",
+                    "",
+                    "plot_test_split_comparison_from_logs(log_paths)",
+                ]
+            )
         else:
             code_lines.extend(
                 [
@@ -2592,7 +2848,7 @@ class TrainingLauncher(QMainWindow):
             except Exception:
                 detected_model = None
         self.test_split_detected_model_name = detected_model
-        if detected_model is not None and detected_model in self.available_models:
+        if detected_model is not None:
             self.test_split_detected_model_label.setText(detected_model)
             self.test_split_detected_model_label.setProperty("muted", False)
         elif checkpoint_text:
@@ -2605,7 +2861,12 @@ class TrainingLauncher(QMainWindow):
         self.test_split_detected_model_label.style().polish(self.test_split_detected_model_label)
 
     def current_predict_model_name(self) -> str | None:
-        return self.predict_detected_model_name if self.predict_detected_model_name in self.available_models else None
+        return self.predict_detected_model_name if isinstance(self.predict_detected_model_name, str) and self.predict_detected_model_name.strip() else None
+
+    def discover_predict_checkpoint_models(self) -> list[str]:
+        from pipeline.predicting import discover_checkpoint_model_names
+
+        return discover_checkpoint_model_names(DEFAULT_CHECKPOINT_DIR)
 
     def ensure_predict_model_detected(self) -> str | None:
         current_model = self.current_predict_model_name()
@@ -2621,8 +2882,9 @@ class TrainingLauncher(QMainWindow):
             except Exception:
                 detected_model = None
             self.predict_detected_model_name = detected_model
-            if detected_model is not None and detected_model in self.available_models:
-                self.predict_model_combo.setCurrentText(detected_model)
+            if detected_model is not None:
+                if detected_model in self.available_models:
+                    self.predict_model_combo.setCurrentText(detected_model)
                 self.predict_detected_model_label.setText(detected_model)
                 self.predict_detected_model_label.setProperty("muted", False)
                 self.predict_detected_model_label.style().unpolish(self.predict_detected_model_label)
@@ -2636,15 +2898,16 @@ class TrainingLauncher(QMainWindow):
         detected_model: str | None = None
         if checkpoint_path is not None and checkpoint_path.is_file():
             try:
-                from pipeline.predicting import guess_model_name_from_checkpoint_path
+                from pipeline.predicting import infer_model_name_from_checkpoint
 
-                detected_model = guess_model_name_from_checkpoint_path(checkpoint_path.resolve())
+                detected_model = infer_model_name_from_checkpoint(checkpoint_path.resolve())
             except Exception:
                 detected_model = None
 
         self.predict_detected_model_name = detected_model
-        if detected_model is not None and detected_model in self.available_models:
-            self.predict_model_combo.setCurrentText(detected_model)
+        if detected_model is not None:
+            if detected_model in self.available_models:
+                self.predict_model_combo.setCurrentText(detected_model)
             self.predict_detected_model_label.setText(detected_model)
             self.predict_detected_model_label.setProperty("muted", False)
         elif checkpoint_text:
@@ -2666,6 +2929,302 @@ class TrainingLauncher(QMainWindow):
         self._last_predict_model_name = self.predict_model_combo.currentText()
         self.refresh_predict_compare_summary()
 
+    def prompt_for_predict_model_confirmation(self, checkpoint_path: Path) -> str | None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Confirm Checkpoint Model")
+        dialog.resize(460, 170)
+        layout = QVBoxLayout(dialog)
+        prompt = QLabel(
+            "The checkpoint model could not be detected automatically.\n"
+            "Choose the architecture that matches this checkpoint:",
+            dialog,
+        )
+        prompt.setWordWrap(True)
+        layout.addWidget(prompt)
+        checkpoint_label = QLabel(str(checkpoint_path), dialog)
+        checkpoint_label.setWordWrap(True)
+        checkpoint_label.setProperty("muted", True)
+        layout.addWidget(checkpoint_label)
+        model_combo = QComboBox(dialog)
+        model_combo.addItems(self.discover_predict_checkpoint_models())
+        layout.addWidget(model_combo)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        return model_combo.currentText().strip() or None
+
+    def build_predict_compare_item(
+        self,
+        checkpoint_path: Path,
+        *,
+        source: str,
+        allow_manual_confirmation: bool,
+    ) -> dict[str, object]:
+        from pipeline.predicting import validate_prediction_checkpoint
+
+        requested_model_name: str | None = None
+        try:
+            metadata = validate_prediction_checkpoint(checkpoint_path)
+        except ValueError as exc:
+            if "Could not determine model type for checkpoint:" not in str(exc) or not allow_manual_confirmation:
+                raise
+            requested_model_name = self.prompt_for_predict_model_confirmation(checkpoint_path.expanduser().resolve())
+            if requested_model_name is None:
+                raise ValueError("A model selection is required for checkpoints that cannot be auto-detected.") from exc
+            metadata = validate_prediction_checkpoint(checkpoint_path, requested_model_name=requested_model_name)
+
+        resolved_checkpoint = Path(str(metadata["checkpoint_path"])).resolve()
+        detected_model_name = str(metadata["resolved_model_name"])
+        parent_name = resolved_checkpoint.parent.name
+        display_label = f"{detected_model_name} [{parent_name}/{resolved_checkpoint.name}]"
+        summary_text = (
+            f"{detected_model_name} | {parent_name}/{resolved_checkpoint.name}"
+            if parent_name else f"{detected_model_name} | {resolved_checkpoint.name}"
+        )
+        return {
+            "item_id": uuid.uuid4().hex,
+            "checkpoint_path": str(resolved_checkpoint),
+            "detected_model_name": detected_model_name,
+            "display_label": display_label,
+            "summary_text": summary_text,
+            "source": source,
+            "validation_state": "valid",
+        }
+
+    def current_predict_main_item(self, *, allow_missing: bool) -> dict[str, object] | None:
+        checkpoint_text = self.predict_checkpoint_edit.text().strip()
+        if not checkpoint_text:
+            if allow_missing:
+                return None
+            raise ValueError("Choose a prediction checkpoint first.")
+        checkpoint_path = Path(checkpoint_text).expanduser()
+        if allow_missing and not checkpoint_path.is_file():
+            return None
+        try:
+            return self.build_predict_compare_item(checkpoint_path, source="main", allow_manual_confirmation=False)
+        except Exception:
+            if allow_missing:
+                return None
+            raise
+
+    def selected_predict_compare_items(self, *, include_main: bool, allow_missing_main: bool = False) -> list[dict[str, object]]:
+        items: list[dict[str, object]] = []
+        if include_main:
+            main_item = self.current_predict_main_item(allow_missing=allow_missing_main)
+            if main_item is not None:
+                items.append(main_item)
+        items.extend(self.predict_compare_items)
+        return items
+
+    def predict_compare_item_summary(self, item: dict[str, object], *, include_source: bool = True) -> str:
+        source = str(item.get("source", "extra"))
+        prefix = "Main" if source == "main" else "Add"
+        summary = str(item.get("summary_text", "")).strip() or str(item.get("display_label", "")).strip()
+        return f"{prefix}: {summary}" if include_source else summary
+
+    def predict_compare_item_compact_label(self, item: dict[str, object]) -> str:
+        checkpoint_text = str(item.get("checkpoint_path", "")).strip()
+        if checkpoint_text:
+            checkpoint_path = Path(checkpoint_text)
+            parent_name = checkpoint_path.parent.name
+            stem = checkpoint_path.stem
+            if parent_name:
+                return f"{parent_name}/{stem}"
+            if stem:
+                return stem
+        summary = str(item.get("summary_text", "")).strip()
+        if " | " in summary:
+            return summary.split(" | ", 1)[1].replace(".pth", "")
+        return summary or str(item.get("display_label", "")).strip()
+
+    def iter_predict_checkpoint_selector_items(self) -> list[QTreeWidgetItem]:
+        items: list[QTreeWidgetItem] = []
+        for index in range(self.predict_checkpoint_tree.topLevelItemCount()):
+            model_item = self.predict_checkpoint_tree.topLevelItem(index)
+            if model_item is not None:
+                items.append(model_item)
+        return items
+
+    def refresh_predict_checkpoint_selector(self, *, select_default: bool = False) -> None:
+        previous_selected_paths = {
+            str(item.get("checkpoint_path", ""))
+            for item in self.selected_predict_compare_items(include_main=True, allow_missing_main=True)
+        }
+        default_checkpoint_path = ""
+        if select_default:
+            checkpoint_text = self.predict_checkpoint_edit.text().strip()
+            if checkpoint_text:
+                try:
+                    default_checkpoint_path = str(Path(checkpoint_text).expanduser().resolve())
+                except Exception:
+                    default_checkpoint_path = ""
+
+        self._predict_checkpoint_selector_syncing = True
+        self.predict_checkpoint_tree.blockSignals(True)
+        self.predict_checkpoint_tree.clear()
+        selected_any = False
+        fallback_best_item: QTreeWidgetItem | None = None
+        for model_name in self.discover_predict_checkpoint_models():
+            model_item = QTreeWidgetItem([model_name, "", ""])
+            model_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            self.predict_checkpoint_tree.addTopLevelItem(model_item)
+            run_tooltip = self.load_latest_run_log_for_checkpoint_dir(DEFAULT_CHECKPOINT_DIR / model_name)
+            if run_tooltip is not None:
+                model_item.setToolTip(0, self.make_run_tooltip_text(run_tooltip))
+            for column, checkpoint_kind in ((1, "best"), (2, "last")):
+                checkpoint_path = DEFAULT_CHECKPOINT_DIR / model_name / f"{checkpoint_kind}.pth"
+                resolved_checkpoint_path = str(checkpoint_path.resolve())
+                available = checkpoint_path.is_file()
+                model_item.setData(column, Qt.UserRole, {"model_name": model_name, "checkpoint_kind": checkpoint_kind, "checkpoint_path": resolved_checkpoint_path})
+                if available:
+                    model_item.setFlags(model_item.flags() | Qt.ItemIsUserCheckable)
+                    selected = resolved_checkpoint_path in previous_selected_paths or (
+                        select_default and default_checkpoint_path and resolved_checkpoint_path == default_checkpoint_path and not previous_selected_paths
+                    )
+                    model_item.setCheckState(column, Qt.Checked if selected else Qt.Unchecked)
+                    model_item.setText(column, "")
+                    model_item.setForeground(column, QBrush(QColor("#d7e6f5")))
+                    if run_tooltip is not None:
+                        model_item.setToolTip(column, self.make_run_tooltip_text(run_tooltip, checkpoint_kind=checkpoint_kind, checkpoint_path=checkpoint_path))
+                    if selected:
+                        selected_any = True
+                    if fallback_best_item is None and checkpoint_kind == "best":
+                        fallback_best_item = model_item
+                else:
+                    model_item.setText(column, "Missing")
+                    model_item.setForeground(column, QBrush(QColor("#7f8a98")))
+                    model_item.setToolTip(column, f"{checkpoint_kind}: missing\n{checkpoint_path}")
+        if select_default and not previous_selected_paths and not selected_any and fallback_best_item is not None:
+            fallback_best_item.setCheckState(1, Qt.Checked)
+        self.predict_checkpoint_tree.resizeColumnToContents(0)
+        self.predict_checkpoint_tree.resizeColumnToContents(1)
+        self.predict_checkpoint_tree.resizeColumnToContents(2)
+        self.predict_checkpoint_tree.blockSignals(False)
+        self._predict_checkpoint_selector_syncing = False
+        self.sync_predict_checkpoint_selection_state(reset_results=False)
+
+    def selected_predict_checkpoint_selector_items(self) -> list[dict[str, object]]:
+        items: list[dict[str, object]] = []
+        for tree_item in self.iter_predict_checkpoint_selector_items():
+            for column in (1, 2):
+                if tree_item.checkState(column) != Qt.Checked:
+                    continue
+                payload = tree_item.data(column, Qt.UserRole)
+                if isinstance(payload, dict):
+                    items.append(payload)
+        return items
+
+    def sync_predict_checkpoint_selection_state(self, *, reset_results: bool) -> None:
+        selected_payloads = self.selected_predict_checkpoint_selector_items()
+        ordered_items: list[dict[str, object]] = []
+        errors: list[str] = []
+        for index, payload in enumerate(selected_payloads):
+            checkpoint_path = Path(str(payload.get("checkpoint_path", ""))).expanduser()
+            source = "main" if index == 0 else "extra"
+            try:
+                ordered_items.append(self.build_predict_compare_item(checkpoint_path, source=source, allow_manual_confirmation=False))
+            except Exception as exc:
+                errors.append(str(exc))
+
+        main_item = ordered_items[0] if ordered_items else None
+        self.predict_compare_items = [
+            {**item, "source": "extra"}
+            for item in ordered_items[1:]
+        ]
+
+        self.predict_checkpoint_edit.blockSignals(True)
+        self.predict_checkpoint_edit.setText(str(main_item.get("checkpoint_path", "")) if main_item is not None else "")
+        self.predict_checkpoint_edit.blockSignals(False)
+
+        compare_enabled = len(ordered_items) >= 2
+        self.predict_compare_checkbox.blockSignals(True)
+        self.predict_compare_checkbox.setChecked(compare_enabled)
+        self.predict_compare_checkbox.blockSignals(False)
+
+        if main_item is not None:
+            detected_model = str(main_item.get("detected_model_name", "")).strip() or None
+            self.predict_detected_model_name = detected_model
+            if detected_model is not None and detected_model in self.available_models:
+                self.predict_model_combo.setCurrentText(detected_model)
+            if len(ordered_items) == 1 and detected_model is not None:
+                self.predict_detected_model_label.setText(detected_model)
+            elif len(ordered_items) >= 2 and detected_model is not None:
+                self.predict_detected_model_label.setText(f"{detected_model} + {len(ordered_items) - 1} more checkpoint(s)")
+            else:
+                self.predict_detected_model_label.setText(f"{len(ordered_items)} checkpoint(s) selected")
+            self.predict_detected_model_label.setProperty("muted", False)
+        else:
+            self.predict_detected_model_name = None
+            if errors:
+                self.predict_detected_model_label.setText(errors[0])
+                self.predict_detected_model_label.setProperty("muted", False)
+            else:
+                self.predict_detected_model_label.setText("Select one or more checkpoints from the selector.")
+                self.predict_detected_model_label.setProperty("muted", True)
+        self.predict_detected_model_label.style().unpolish(self.predict_detected_model_label)
+        self.predict_detected_model_label.style().polish(self.predict_detected_model_label)
+
+        if reset_results:
+            self.predict_results = []
+            self.current_predict_index = -1
+            self.predict_compact_built = False
+            self.predict_browser_render_key = None
+
+        self.refresh_predict_compare_summary()
+        self.refresh_predict_action_states()
+        if reset_results:
+            self.refresh_predict_page(refresh_compact=True)
+
+    def refresh_predict_action_states(self) -> None:
+        selection_count = len(self.selected_predict_checkpoint_selector_items())
+        enable_prediction_actions = selection_count > 0 and self.predict_thread is None
+        self.predict_run_button.setEnabled(enable_prediction_actions)
+        self.predict_queue_button.setEnabled(enable_prediction_actions)
+        self.predict_export_button.setEnabled(enable_prediction_actions)
+        self.predict_browser_mode_combo.setEnabled(self.predict_thread is None)
+        self.predict_select_all_best_button.setEnabled(self.predict_thread is None)
+        self.predict_clear_selection_button.setEnabled(selection_count > 0 and self.predict_thread is None)
+        self.predict_compare_models_button.setEnabled(self.predict_thread is None)
+        self.predict_compare_clear_button.setEnabled(selection_count > 0 and self.predict_thread is None)
+
+    def on_predict_checkpoint_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        if self._predict_checkpoint_selector_syncing or column not in {1, 2}:
+            return
+        if item.checkState(column) == Qt.Checked:
+            other_column = 2 if column == 1 else 1
+            self._predict_checkpoint_selector_syncing = True
+            self.predict_checkpoint_tree.blockSignals(True)
+            item.setCheckState(other_column, Qt.Unchecked)
+            self.predict_checkpoint_tree.blockSignals(False)
+            self._predict_checkpoint_selector_syncing = False
+        self.sync_predict_checkpoint_selection_state(reset_results=True)
+
+    def select_all_predict_best_checkpoints(self) -> None:
+        self._predict_checkpoint_selector_syncing = True
+        self.predict_checkpoint_tree.blockSignals(True)
+        for tree_item in self.iter_predict_checkpoint_selector_items():
+            best_payload = tree_item.data(1, Qt.UserRole)
+            last_payload = tree_item.data(2, Qt.UserRole)
+            best_available = isinstance(best_payload, dict) and Path(str(best_payload.get("checkpoint_path", ""))).is_file()
+            tree_item.setCheckState(1, Qt.Checked if best_available else Qt.Unchecked)
+            tree_item.setCheckState(2, Qt.Unchecked)
+        self.predict_checkpoint_tree.blockSignals(False)
+        self._predict_checkpoint_selector_syncing = False
+        self.sync_predict_checkpoint_selection_state(reset_results=True)
+
+    def clear_predict_checkpoint_selection(self) -> None:
+        self._predict_checkpoint_selector_syncing = True
+        self.predict_checkpoint_tree.blockSignals(True)
+        for tree_item in self.iter_predict_checkpoint_selector_items():
+            tree_item.setCheckState(1, Qt.Unchecked)
+            tree_item.setCheckState(2, Qt.Unchecked)
+        self.predict_checkpoint_tree.blockSignals(False)
+        self._predict_checkpoint_selector_syncing = False
+        self.sync_predict_checkpoint_selection_state(reset_results=True)
+
     def refresh_command_preview(self) -> None:
         quoted_parts = []
         for part in [sys.executable, *self.build_command()]:
@@ -2681,96 +3240,123 @@ class TrainingLauncher(QMainWindow):
         self.refresh_training_settings_summary()
 
     def refresh_predict_compare_summary(self) -> None:
-        current_model = self.current_predict_model_name()
+        main_item = self.current_predict_main_item(allow_missing=True)
+        image_count = len(self.predict_image_paths)
+        image_text = f"{image_count} image" if image_count == 1 else f"{image_count} images"
+        tooltip_lines: list[str] = []
+        if main_item is not None:
+            tooltip_lines.append(f"Primary: {main_item.get('checkpoint_path', '')}")
         if not self.predict_compare_checkbox.isChecked():
-            if current_model is not None:
-                self.predict_compare_models_label.setText(f"Current checkpoint: {current_model}")
+            if main_item is not None:
+                summary_label = self.predict_compare_item_compact_label(main_item)
+                self.predict_compare_models_label.setText(f"Single | {summary_label} | {image_text}")
+                tooltip_lines = [
+                    f"Mode: Single",
+                    f"Checkpoint: {main_item.get('checkpoint_path', '')}",
+                    f"Images: {image_count}",
+                ]
             else:
-                self.predict_compare_models_label.setText("Current checkpoint only. Model will be detected when needed.")
+                self.predict_compare_models_label.setText(f"No checkpoint selected | {image_text}")
+                tooltip_lines = [f"Images: {image_count}"]
+            self.predict_compare_models_label.setToolTip("\n".join(line for line in tooltip_lines if line))
             self.predict_compare_models_button.setEnabled(False)
             self.predict_compare_clear_button.setEnabled(False)
             return
         self.predict_compare_models_button.setEnabled(True)
-        self.predict_compare_clear_button.setEnabled(bool(self.predict_compare_models))
-        models = [name for name in self.predict_compare_models if name in self.available_models]
-        if current_model is None and not models:
-            self.predict_compare_models_label.setText("Add one or more comparison models.")
+        self.predict_compare_clear_button.setEnabled(bool(self.predict_compare_items))
+        compare_items = self.selected_predict_compare_items(include_main=True, allow_missing_main=True)
+        if not compare_items:
+            self.predict_compare_models_label.setText(f"Compare | no checkpoints | {image_text}")
+            self.predict_compare_models_label.setToolTip(f"Mode: Compare\nImages: {image_count}")
             return
-        parts: list[str] = []
-        if current_model is not None:
-            parts.append(f"Main: {current_model}")
-        for model_name in models:
-            checkpoint_path = self.checkpoint_path_for_predict_model(model_name)
-            parts.append(f"Add: {model_name} [{checkpoint_path.name}]")
-        self.predict_compare_models_label.setText(", ".join(parts))
+        compact_parts = [self.predict_compare_item_compact_label(item) for item in compare_items]
+        self.predict_compare_models_label.setText(
+            f"Compare ({len(compare_items)}) | {', '.join(compact_parts)} | {image_text}"
+        )
+        tooltip_lines = [
+            f"Mode: Compare ({len(compare_items)})",
+            *(f"{index}. {item.get('checkpoint_path', '')}" for index, item in enumerate(compare_items, start=1)),
+            f"Images: {image_count}",
+        ]
+        self.predict_compare_models_label.setToolTip("\n".join(line for line in tooltip_lines if line))
 
     def selected_predict_models(self) -> list[str]:
-        current_model = self.current_predict_model_name()
+        items = self.selected_predict_compare_items(include_main=self.predict_compare_checkbox.isChecked(), allow_missing_main=True)
         if not self.predict_compare_checkbox.isChecked():
+            current_model = self.current_predict_model_name()
             return [current_model] if current_model is not None else []
-        models = [name for name in self.predict_compare_models if name in self.available_models]
-        if current_model is not None and current_model not in models:
-            models.insert(0, current_model)
         seen: set[str] = set()
         ordered: list[str] = []
-        for model_name in models:
-            if model_name not in seen:
-                ordered.append(model_name)
-                seen.add(model_name)
+        for item in items:
+            display_label = str(item.get("display_label", "")).strip()
+            if display_label and display_label not in seen:
+                ordered.append(display_label)
+                seen.add(display_label)
         return ordered
 
     def on_predict_compare_toggled(self, checked: bool) -> None:
         if not checked:
-            self.predict_compare_models = []
-            self.predict_compare_checkpoints = {}
+            self.predict_compare_items = []
         self.predict_results = []
         self.current_predict_index = -1
         self.predict_compact_built = False
+        self.predict_browser_render_key = None
         self.refresh_predict_compare_summary()
         self.refresh_predict_page(refresh_compact=True)
 
     def add_predict_compare_model(self) -> None:
-        available_choices = [name for name in self.available_models if name != self.current_predict_model_name()]
-        if not available_choices:
-            QMessageBox.information(self, "No Models Available", "No extra models are available to add right now.")
-            return
-
         dialog = QDialog(self)
-        dialog.setWindowTitle("Add Comparison Model")
-        dialog.resize(520, 180)
+        dialog.setWindowTitle("Add Comparison Checkpoint")
+        dialog.resize(620, 210)
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
-        model_combo = QComboBox(dialog)
-        model_combo.addItems(available_choices)
         checkpoint_edit = QLineEdit(dialog)
         checkpoint_button = QPushButton("Browse...", dialog)
-
-        def update_checkpoint_placeholder() -> None:
-            model_name = model_combo.currentText()
-            current_path = self.predict_compare_checkpoints.get(model_name, DEFAULT_CHECKPOINT_DIR / model_name / "best.pth")
-            checkpoint_edit.setText(str(current_path))
+        detected_label = QLabel("Choose a checkpoint. The model will be detected automatically when possible.", dialog)
+        detected_label.setWordWrap(True)
+        detected_label.setProperty("muted", True)
+        selected_item: dict[str, object] | None = None
 
         def browse_checkpoint() -> None:
-            model_name = model_combo.currentText()
-            current_path = checkpoint_edit.text().strip() or str(DEFAULT_CHECKPOINT_DIR / model_name / "best.pth")
+            current_path = checkpoint_edit.text().strip() or str(DEFAULT_CHECKPOINT_DIR)
             selected_path, _ = QFileDialog.getOpenFileName(
                 dialog,
-                f"Select Checkpoint For {model_name}",
+                "Select Comparison Checkpoint",
                 str(self._resolve_dialog_dir(current_path, DEFAULT_CHECKPOINT_DIR)),
                 "PyTorch Checkpoints (*.pth *.pt);;All Files (*.*)",
             )
             if selected_path:
                 checkpoint_edit.setText(selected_path)
+                refresh_detected_item()
 
-        model_combo.currentTextChanged.connect(lambda _text: update_checkpoint_placeholder())
+        def refresh_detected_item() -> None:
+            nonlocal selected_item
+            checkpoint_text = checkpoint_edit.text().strip()
+            if not checkpoint_text:
+                selected_item = None
+                detected_label.setText("Choose a checkpoint. The model will be detected automatically when possible.")
+                detected_label.setProperty("muted", True)
+            else:
+                try:
+                    selected_item = self.build_predict_compare_item(Path(checkpoint_text), source="extra", allow_manual_confirmation=False)
+                except Exception as exc:
+                    selected_item = None
+                    detected_label.setText(f"Could not validate checkpoint yet:\n{exc}")
+                    detected_label.setProperty("muted", False)
+                else:
+                    detected_label.setText(self.predict_compare_item_summary(selected_item, include_source=False))
+                    detected_label.setProperty("muted", False)
+            detected_label.style().unpolish(detected_label)
+            detected_label.style().polish(detected_label)
+
         checkpoint_button.clicked.connect(browse_checkpoint)
+        checkpoint_edit.editingFinished.connect(refresh_detected_item)
         checkpoint_layout = QHBoxLayout()
         checkpoint_layout.addWidget(checkpoint_edit, stretch=1)
         checkpoint_layout.addWidget(checkpoint_button)
-        form.addRow("Model", model_combo)
         form.addRow("Checkpoint", checkpoint_layout)
+        form.addRow("Detected", detected_label)
         layout.addLayout(form)
-        update_checkpoint_placeholder()
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
         buttons.accepted.connect(dialog.accept)
@@ -2779,37 +3365,51 @@ class TrainingLauncher(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
 
-        model_name = model_combo.currentText().strip()
         checkpoint_text = checkpoint_edit.text().strip()
-        if not model_name or not checkpoint_text:
+        if not checkpoint_text:
             return
-        checkpoint_path = Path(checkpoint_text).expanduser()
-        if not checkpoint_path.is_file():
-            QMessageBox.warning(self, "Invalid Checkpoint", f"Checkpoint file does not exist:\n{checkpoint_path}")
+        try:
+            compare_item = self.build_predict_compare_item(Path(checkpoint_text), source="extra", allow_manual_confirmation=True)
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid Checkpoint", str(exc))
             return
-        if model_name not in self.predict_compare_models:
-            self.predict_compare_models.append(model_name)
-        self.predict_compare_checkpoints[model_name] = checkpoint_path
+        resolved_checkpoint_text = str(compare_item.get("checkpoint_path", ""))
+        existing_paths = {str(item.get("checkpoint_path", "")) for item in self.predict_compare_items}
+        main_checkpoint_text = self.predict_checkpoint_edit.text().strip()
+        main_checkpoint_path = ""
+        if main_checkpoint_text:
+            try:
+                main_checkpoint_path = str(Path(main_checkpoint_text).expanduser().resolve())
+            except Exception:
+                main_checkpoint_path = ""
+        if resolved_checkpoint_text == main_checkpoint_path or resolved_checkpoint_text in existing_paths:
+            QMessageBox.information(
+                self,
+                "Checkpoint Already Added",
+                f"This checkpoint is already part of the comparison set:\n{resolved_checkpoint_text}",
+            )
+            return
+        self.predict_compare_items.append(compare_item)
         self.predict_results = []
         self.current_predict_index = -1
         self.predict_compact_built = False
+        self.predict_browser_render_key = None
         self.refresh_predict_compare_summary()
         self.refresh_predict_page(refresh_compact=True)
 
     def clear_predict_compare_models(self) -> None:
-        self.predict_compare_models = []
-        self.predict_compare_checkpoints = {}
+        self.predict_compare_items = []
         self.predict_results = []
         self.current_predict_index = -1
         self.predict_compact_built = False
+        self.predict_browser_render_key = None
         self.refresh_predict_compare_summary()
         self.refresh_predict_page(refresh_compact=True)
 
     def checkpoint_path_for_predict_model(self, model_name: str) -> Path:
-        if model_name == self.current_predict_model_name():
-            return Path(self.predict_checkpoint_edit.text().strip()).expanduser()
-        if model_name in self.predict_compare_checkpoints:
-            return self.predict_compare_checkpoints[model_name]
+        for item in self.selected_predict_compare_items(include_main=True, allow_missing_main=True):
+            if str(item.get("display_label", "")) == model_name:
+                return Path(str(item.get("checkpoint_path", ""))).expanduser()
         return DEFAULT_CHECKPOINT_DIR / model_name / "best.pth"
 
     def checkpoint_output_name(self) -> str:
@@ -2946,25 +3546,49 @@ class TrainingLauncher(QMainWindow):
                 message += "\n\nPrediction was not started to avoid hanging on unreadable inputs."
             raise ValueError(message)
 
+        compare_items = self.selected_predict_compare_items(include_main=True, allow_missing_main=False)
+        compare_enabled = len(compare_items) >= 2
         model_specs: list[dict[str, object]] = []
-        if self.predict_compare_checkbox.isChecked():
-            for model_name in self.selected_predict_models():
-                checkpoint_path = self.checkpoint_path_for_predict_model(model_name)
+        if compare_enabled:
+            if len(compare_items) < 2:
+                raise ValueError("Add at least one extra comparison checkpoint before running compare mode.")
+            for item in compare_items:
+                checkpoint_path = Path(str(item.get("checkpoint_path", ""))).expanduser().resolve()
+                model_name = str(item.get("detected_model_name", "")).strip()
                 if not checkpoint_path.is_file():
-                    raise ValueError(f"Checkpoint file does not exist for {model_name}:\n{checkpoint_path}")
-                model_specs.append({"model_name_hint": model_name, "checkpoint_path": str(checkpoint_path.resolve())})
+                    raise ValueError(f"Checkpoint file does not exist:\n{checkpoint_path}")
+                if not model_name:
+                    raise ValueError(f"Could not determine model type for checkpoint:\n{checkpoint_path}")
+                model_specs.append(
+                    {
+                        "model_name_hint": model_name,
+                        "display_label": str(item.get("display_label", model_name)),
+                        "checkpoint_path": str(checkpoint_path),
+                    }
+                )
         else:
-            checkpoint_path = Path(self.predict_checkpoint_edit.text().strip()).expanduser()
+            main_item = self.current_predict_main_item(allow_missing=False)
+            assert main_item is not None
+            checkpoint_path = Path(str(main_item.get("checkpoint_path", ""))).expanduser().resolve()
+            model_name = str(main_item.get("detected_model_name", "")).strip()
             if not checkpoint_path.is_file():
                 raise ValueError(f"Checkpoint file does not exist:\n{checkpoint_path}")
-            model_specs.append({"model_name_hint": self.current_predict_model_name(), "checkpoint_path": str(checkpoint_path.resolve())})
+            if not model_name:
+                raise ValueError(f"Could not determine model type for checkpoint:\n{checkpoint_path}")
+            model_specs.append(
+                {
+                    "model_name_hint": model_name,
+                    "display_label": str(main_item.get("display_label", model_name)),
+                    "checkpoint_path": str(checkpoint_path),
+                }
+            )
 
         return {
             "image_paths": [str(path.expanduser().resolve()) for path in self.predict_image_paths],
             "model_specs": model_specs,
             "image_size": int(self.predict_image_size_spin.value()),
             "device": self.predict_device_combo.currentText(),
-            "compare_enabled": bool(self.predict_compare_checkbox.isChecked()),
+            "compare_enabled": compare_enabled,
         }
 
     def predict_config_summary(self, config: dict[str, object]) -> str:
@@ -3350,12 +3974,20 @@ class TrainingLauncher(QMainWindow):
             return
         image_paths = [Path(str(path)).expanduser().resolve() for path in config.get("image_paths", [])] if isinstance(config.get("image_paths"), list) else []
         model_specs_raw = config.get("model_specs") if isinstance(config.get("model_specs"), list) else []
-        model_specs: list[tuple[str | None, Path]] = []
+        model_specs: list[dict[str, object]] = []
         for item in model_specs_raw:
             if not isinstance(item, dict):
                 continue
             checkpoint_path = Path(str(item.get("checkpoint_path", ""))).expanduser().resolve()
-            model_specs.append((item.get("model_name_hint") if isinstance(item.get("model_name_hint"), str | type(None)) else None, checkpoint_path))
+            model_name_hint = item.get("model_name_hint") if isinstance(item.get("model_name_hint"), str | type(None)) else None
+            display_label = str(item.get("display_label", model_name_hint or checkpoint_path.name))
+            model_specs.append(
+                {
+                    "model_name_hint": model_name_hint,
+                    "display_label": display_label,
+                    "checkpoint_path": checkpoint_path,
+                }
+            )
         if not image_paths:
             QMessageBox.warning(self, "Invalid Predict Config", "No images were saved in the queued predict job.")
             return False
@@ -3989,12 +4621,83 @@ class TrainingLauncher(QMainWindow):
             key=lambda path: path.stat().st_mtime if path.is_file() else 0.0,
             reverse=True,
         )
+        workflow_split_summaries = self.load_workflow_test_split_summaries()
         loaded: list[dict] = []
         for path in log_files:
             data = run_log_compat.load_run_log(path)
             if data is not None:
+                log_key = str(path.expanduser().resolve()).lower()
+                if not self.test_split_summary_for_run(data):
+                    summary = workflow_split_summaries.get(log_key)
+                    if summary is not None:
+                        data["test_split_summary"] = summary
                 loaded.append(data)
         return loaded
+
+    def load_workflow_test_split_summaries(self) -> dict[str, dict]:
+        workflow_dir = PROJECT_ROOT / "logs" / "workflow_runs"
+        if not workflow_dir.is_dir():
+            return {}
+
+        summaries: dict[str, dict] = {}
+        for path in sorted(workflow_dir.glob("*.json"), key=lambda item: item.stat().st_mtime if item.is_file() else 0.0, reverse=True):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            artifacts = payload.get("artifacts") if isinstance(payload.get("artifacts"), dict) else {}
+            training_log = artifacts.get("training_run_log")
+            if not training_log:
+                continue
+            try:
+                training_key = str(Path(str(training_log)).expanduser().resolve()).lower()
+            except Exception:
+                training_key = str(training_log).lower()
+            if training_key in summaries:
+                continue
+            split_summary = self.test_split_summary_for_run(payload)
+            if split_summary is None:
+                split_summary = self.load_test_split_summary_from_path(artifacts.get("test_split_json"))
+            if split_summary is not None:
+                summaries[training_key] = split_summary
+        return summaries
+
+    @staticmethod
+    def load_test_split_summary_from_path(path_text) -> dict | None:
+        if not isinstance(path_text, str) or not path_text.strip():
+            return None
+        try:
+            payload = json.loads(Path(path_text).expanduser().resolve().read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if isinstance(payload, dict) and isinstance(payload.get("splits"), list) and payload.get("splits"):
+            return payload
+        return None
+
+    @staticmethod
+    def test_split_summary_for_run(run: dict) -> dict | None:
+        summary = run.get("test_split_summary") if isinstance(run, dict) else None
+        if isinstance(summary, dict) and isinstance(summary.get("splits"), list) and summary.get("splits"):
+            return summary
+        return None
+
+    def update_training_plot_value_options(self) -> None:
+        has_test_splits = any(self.test_split_summary_for_run(run) is not None for run in self.training_log_runs)
+        current_text = self.training_plot_value_combo.currentText()
+        options = ["Accuracy", "Loss", "Timing", "Efficiency", "Confusion Matrix"]
+        if has_test_splits:
+            options.append("Test Splits")
+        existing = [self.training_plot_value_combo.itemText(index) for index in range(self.training_plot_value_combo.count())]
+        if existing == options:
+            return
+        self.training_plot_value_combo.blockSignals(True)
+        self.training_plot_value_combo.clear()
+        self.training_plot_value_combo.addItems(options)
+        next_text = current_text if current_text in options else "Accuracy"
+        self.training_plot_value_combo.setCurrentText(next_text)
+        self.training_plot_value_combo.blockSignals(False)
 
     def get_run_by_id(self, run_id: str | None) -> dict | None:
         if run_id is None:
@@ -4042,10 +4745,85 @@ class TrainingLauncher(QMainWindow):
         status = self.normalize_run_status(run)
         started = str(run.get("start_time_utc", "unknown"))[:16].replace("T", " ")
         best_eval = self.format_metric(self.infer_best_eval_acc(run))
-        return f"{started}  {model_name}\n{status}  best={best_eval}"
+        final_test = run.get("final_test") if isinstance(run.get("final_test"), dict) else {}
+        test_acc = self.format_metric(final_test.get("acc"))
+        return f"{started}  {model_name}\n{status}  best={best_eval}  test={test_acc}"
+
+    @staticmethod
+    def format_custom_transform_details(args: dict) -> list[str]:
+        augmentation_config = args.get("augmentation_config") if isinstance(args.get("augmentation_config"), dict) else {}
+        if not isinstance(augmentation_config, dict):
+            return []
+
+        lines: list[str] = []
+        downsample = augmentation_config.get("downsample")
+        if isinstance(downsample, dict) and downsample.get("enabled"):
+            lines.append(
+                "custom.downsample: "
+                f"p={downsample.get('probability', '-')}, "
+                f"scale=({downsample.get('min_scale', '-')}, {downsample.get('max_scale', '-')})"
+            )
+        mild_blur = augmentation_config.get("mild_blur")
+        if isinstance(mild_blur, dict) and mild_blur.get("enabled"):
+            lines.append(f"custom.mild_blur: p={mild_blur.get('probability', '-')}")
+        random_erasing = augmentation_config.get("random_erasing")
+        if isinstance(random_erasing, dict) and random_erasing.get("enabled"):
+            lines.append(f"custom.random_erasing: p={random_erasing.get('probability', '-')}")
+        color_jitter = augmentation_config.get("color_jitter")
+        if isinstance(color_jitter, dict):
+            lines.append(f"custom.color_jitter: enabled={color_jitter.get('enabled', '-')}")
+        horizontal_flip = augmentation_config.get("horizontal_flip")
+        if isinstance(horizontal_flip, dict):
+            lines.append(f"custom.horizontal_flip: enabled={horizontal_flip.get('enabled', '-')}")
+        return lines
+
+    def load_latest_run_log_for_checkpoint_dir(self, checkpoint_dir: Path) -> dict | None:
+        run_logs_dir = checkpoint_dir / RUN_LOG_DIRNAME
+        if not run_logs_dir.is_dir():
+            return None
+        log_paths = sorted(
+            run_logs_dir.glob("*.json"),
+            key=lambda path: path.stat().st_mtime if path.is_file() else 0.0,
+            reverse=True,
+        )
+        for path in log_paths:
+            data = run_log_compat.load_run_log(path)
+            if data is not None:
+                return data
+        return None
+
+    def make_run_tooltip_text(self, run: dict, *, checkpoint_kind: str | None = None, checkpoint_path: Path | None = None) -> str:
+        args = (run.get("args") or {}) if isinstance(run.get("args"), dict) else {}
+        summary = (run.get("summary") or {}) if isinstance(run.get("summary"), dict) else {}
+        final_test = run.get("final_test") if isinstance(run.get("final_test"), dict) else {}
+        lines = [self.run_display_name(run)]
+        if checkpoint_kind and checkpoint_path is not None:
+            lines.append(f"checkpoint: {checkpoint_kind} ({checkpoint_path.name})")
+        lines.extend(
+            [
+                f"status: {self.normalize_run_status(run)}",
+                f"best_eval_acc: {self.format_metric(self.infer_best_eval_acc(run))}",
+                f"test_acc: {self.format_metric(final_test.get('acc'))}",
+                f"epochs: {summary.get('last_completed_epoch', args.get('epochs', '-'))}/{args.get('epochs', '-')}",
+                f"image_size: {args.get('image_size', '-')}",
+                f"batch_size: {args.get('batch_size', '-')}",
+                f"optimizer: {args.get('optimizer', '-')}",
+                f"lr: {args.get('lr', '-')}",
+                f"scheduler: {args.get('scheduler', '-')}",
+                f"freeze_backbone: {args.get('freeze_backbone', '-')}",
+                f"amp: {args.get('amp', '-')}",
+                f"validation_split: {args.get('use_validation_split', '-')}",
+                f"seed: {args.get('seed', '-')}",
+                f"transforms: {args.get('train_transforms_preset', '-')}",
+            ]
+        )
+        if str(args.get("train_transforms_preset", "-")) == "custom":
+            lines.extend(self.format_custom_transform_details(args))
+        return "\n".join(str(line) for line in lines)
 
     def refresh_training_log_runs(self) -> None:
         self.training_log_runs = self.load_training_log_files()
+        self.update_training_plot_value_options()
         previous_available_id = None
         available_item = self.training_log_available_list.currentItem()
         if available_item is not None:
@@ -4078,14 +4856,17 @@ class TrainingLauncher(QMainWindow):
         selected_row = 0
         for index, run in enumerate(self.training_log_runs):
             run_id = str(run.get("run_id", "unknown"))
+            run_tooltip = self.make_run_tooltip_text(run)
             if run_id in previous_selected_ids:
                 selected_item = QListWidgetItem(self.make_run_list_label(run))
                 selected_item.setData(Qt.UserRole, run_id)
+                selected_item.setToolTip(run_tooltip)
                 self.training_log_selected_list.addItem(selected_item)
                 continue
 
             available_item = QListWidgetItem(self.make_run_list_label(run))
             available_item.setData(Qt.UserRole, run_id)
+            available_item.setToolTip(run_tooltip)
             self.training_log_available_list.addItem(available_item)
             if previous_available_id is not None and run_id == previous_available_id:
                 selected_row = self.training_log_available_list.count() - 1
@@ -4111,6 +4892,7 @@ class TrainingLauncher(QMainWindow):
         if run_id not in self.selected_compare_run_ids():
             new_item = QListWidgetItem(self.make_run_list_label(current_run))
             new_item.setData(Qt.UserRole, run_id)
+            new_item.setToolTip(self.make_run_tooltip_text(current_run))
             row = self.training_log_available_list.row(item)
             self.training_log_available_list.takeItem(row)
             self.training_log_selected_list.addItem(new_item)
@@ -4434,6 +5216,53 @@ class TrainingLauncher(QMainWindow):
             "note": note,
         }
 
+    def build_test_split_plot(self, runs: list[dict]) -> dict:
+        split_names: list[str] = []
+        split_rows_by_run: list[tuple[dict, list[dict]]] = []
+        for run in runs:
+            split_summary = self.test_split_summary_for_run(run)
+            if split_summary is None:
+                continue
+            split_rows = [item for item in split_summary.get("splits", []) if isinstance(item, dict)]
+            if not split_rows:
+                continue
+            split_rows_by_run.append((run, split_rows))
+            for item in split_rows:
+                split_name = str(item.get("split", "")).strip()
+                if split_name and split_name not in split_names:
+                    split_names.append(split_name)
+
+        split_index = {split_name: index + 1 for index, split_name in enumerate(split_names)}
+        series: list[dict] = []
+        for index, (run, split_rows) in enumerate(split_rows_by_run):
+            points: list[tuple[float, float]] = []
+            for item in split_rows:
+                split_name = str(item.get("split", "")).strip()
+                accuracy = self.safe_float(item.get("accuracy"))
+                if split_name in split_index and accuracy is not None:
+                    points.append((float(split_index[split_name]), accuracy))
+            if points:
+                series.append(
+                    {
+                        "label": self.run_display_name(run),
+                        "color": self.stage_color(f"test_split_{index}", index),
+                        "points": points,
+                    }
+                )
+
+        skipped_count = len(runs) - len(split_rows_by_run)
+        note = "X axis follows the split order recorded in the logs."
+        if skipped_count > 0:
+            note += f" {skipped_count} selected run(s) had no test split summary."
+        return {
+            "title": "Test Split Accuracy",
+            "x_label": "Test Split",
+            "y_label": "Accuracy",
+            "series": series,
+            "note": note if series else "No test split summary recorded for this selection.",
+            "x_tick_labels": {float(index): name.replace("_", " ") for name, index in split_index.items()},
+        }
+
     def refresh_training_log_plot(self) -> None:
         selected_runs = self.selected_compare_runs()
         if not selected_runs:
@@ -4447,9 +5276,10 @@ class TrainingLauncher(QMainWindow):
         is_timing = plot_value == "timing"
         is_efficiency = "efficiency" in plot_value
         is_confusion = "confusion" in plot_value
+        is_test_splits = "test splits" in plot_value
 
-        self.training_plot_stage_label.setVisible(not is_efficiency and not is_confusion)
-        self.training_plot_stage_combo.setVisible(not is_efficiency and not is_confusion)
+        self.training_plot_stage_label.setVisible(not is_efficiency and not is_confusion and not is_test_splits)
+        self.training_plot_stage_combo.setVisible(not is_efficiency and not is_confusion and not is_test_splits)
         self.training_plot_timing_label.setVisible(is_timing)
         self.training_plot_timing_combo.setVisible(is_timing)
         self.training_plot_timing_combo.setEnabled(is_timing)
@@ -4479,6 +5309,10 @@ class TrainingLauncher(QMainWindow):
             return
 
         self.training_plot_stack.setCurrentWidget(self.training_plot_widget)
+        if is_test_splits:
+            self.training_plot_widget.set_plot(**self.build_test_split_plot(selected_runs))
+            return
+
         value_kind = "accuracy" if is_accuracy else ("loss" if is_loss else "timing")
         if len(selected_runs) >= 2:
             plot = self.build_compare_plot(selected_runs, value_kind=value_kind, timing_metric=timing_metric)
@@ -4556,7 +5390,69 @@ class TrainingLauncher(QMainWindow):
                 f"avg_train_pure_per_batch={self.format_metric(train_avg_batch)}s, "
                 f"avg_test_pure_per_batch={self.format_metric(test_avg_batch)}s"
             )
+        split_compare = self.render_compare_test_splits(runs)
+        if split_compare:
+            lines.extend(["", split_compare])
         return "\n".join(lines)
+
+    def render_compare_test_splits(self, runs: list[dict]) -> str:
+        split_names: list[str] = []
+        rows: list[tuple[str, dict[str, float]]] = []
+        for run in runs:
+            split_summary = self.test_split_summary_for_run(run)
+            if split_summary is None:
+                continue
+            split_values: dict[str, float] = {}
+            for item in split_summary.get("splits", []):
+                if not isinstance(item, dict):
+                    continue
+                split_name = str(item.get("split", "")).strip()
+                accuracy = self.safe_float(item.get("accuracy"))
+                if not split_name or accuracy is None:
+                    continue
+                split_values[split_name] = accuracy
+                if split_name not in split_names:
+                    split_names.append(split_name)
+            if split_values:
+                rows.append((self.run_display_name(run), split_values))
+        if not rows:
+            return ""
+
+        label_width = min(max(len(label) for label, _ in rows), 42)
+        header = f"{'Run':<{label_width}} " + " ".join(f"{name[:12]:>12}" for name in split_names)
+        lines = ["Test Split Accuracy Compare:", header, "-" * len(header)]
+        for label, split_values in rows:
+            cells = [self.format_metric(split_values.get(name)) for name in split_names]
+            lines.append(f"{label[:label_width]:<{label_width}} " + " ".join(f"{cell:>12}" for cell in cells))
+        return "\n".join(lines)
+
+    def render_test_split_summary(self, run: dict) -> list[str]:
+        split_summary = self.test_split_summary_for_run(run)
+        if split_summary is None:
+            return []
+
+        lines = [
+            "",
+            "Test Split Summary:",
+            f"- model_name: {split_summary.get('model_name', '-')}",
+            f"- test_splits_root: {split_summary.get('test_splits_root', '-')}",
+            f"- clean_accuracy: {self.format_metric(split_summary.get('clean_accuracy'))}",
+            f"- robustness_average: {self.format_metric(split_summary.get('robustness_average'))}",
+            f"- total_seconds: {self.format_metric(split_summary.get('total_seconds'))}",
+            "- splits:",
+        ]
+        for item in split_summary.get("splits", []):
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "  "
+                f"{item.get('split', '-')}: "
+                f"accuracy={self.format_metric(item.get('accuracy'))}, "
+                f"avg_confidence={self.format_metric(item.get('avg_confidence'))}, "
+                f"evaluated={item.get('evaluated_images', '-')}/{item.get('total_images', '-')}, "
+                f"skipped={item.get('skipped_images', '-')}"
+            )
+        return lines
 
     def render_run_summary(self, run: dict) -> str:
         args = run.get("args") if isinstance(run.get("args"), dict) else {}
@@ -4653,6 +5549,7 @@ class TrainingLauncher(QMainWindow):
                 ]
             )
 
+        lines.extend(self.render_test_split_summary(run))
         lines.extend(["", *self.summarize_error_block(self.extract_analysis_block(run, stage_name="final_test"))])
 
         return "\n".join(lines)
@@ -4924,12 +5821,14 @@ class TrainingLauncher(QMainWindow):
         if selected_paths:
             self.predict_image_paths = [Path(path) for path in selected_paths]
             self.predict_results = []
-            self.current_predict_index = -1
+            self.current_predict_index = 0 if self.predict_image_paths else -1
             self.predict_compact_built = False
             self.predict_compact_loading = False
             self.predict_compact_pending_indices = []
+            self.predict_browser_render_key = None
+            self.clear_predict_visual_caches()
             self.predict_progress_bar.setValue(0)
-            self.refresh_predict_page()
+            self.refresh_predict_page(refresh_compact=True)
 
     def choose_predict_folders(self) -> None:
         selected_dirs = self.select_multiple_directories(
@@ -4946,10 +5845,12 @@ class TrainingLauncher(QMainWindow):
 
         self.predict_image_paths = sorted(path.resolve() for path in image_paths if path.is_file())
         self.predict_results = []
-        self.current_predict_index = -1
+        self.current_predict_index = 0 if self.predict_image_paths else -1
         self.predict_compact_built = False
         self.predict_compact_loading = False
         self.predict_compact_pending_indices = []
+        self.predict_browser_render_key = None
+        self.clear_predict_visual_caches()
         self.predict_progress_bar.setValue(0)
         if not self.predict_image_paths:
             self.predict_status_label.setText("No supported images found in the selected folder(s).")
@@ -4957,7 +5858,7 @@ class TrainingLauncher(QMainWindow):
             self.predict_status_label.setText(
                 f"Loaded {len(self.predict_image_paths)} image(s) from {len(selected_dirs)} folder(s)."
             )
-        self.refresh_predict_page()
+        self.refresh_predict_page(refresh_compact=True)
 
     def select_multiple_files(self, title: str, start_dir: Path, file_filter: str) -> list[str]:
         dialog = QFileDialog(self, title, str(start_dir))
@@ -5010,6 +5911,9 @@ class TrainingLauncher(QMainWindow):
             QMessageBox.information(self, "Job Already Running", "Another training, predicting, or test-split job is already running.")
 
     def refresh_predict_page(self, refresh_compact: bool = False) -> None:
+        if not self.predict_results and self.predict_image_paths and not (0 <= self.current_predict_index < len(self.predict_image_paths)):
+            self.current_predict_index = 0
+
         if self.predict_image_paths:
             if len(self.predict_image_paths) == 1:
                 self.predict_selected_label.setText(str(self.predict_image_paths[0]))
@@ -5021,46 +5925,46 @@ class TrainingLauncher(QMainWindow):
             self.predict_selected_label.setText("No images selected.")
 
         has_results = bool(self.predict_results) and 0 <= self.current_predict_index < len(self.predict_results)
-        self.predict_prev_button.setEnabled(has_results and self.current_predict_index > 0)
-        self.predict_next_button.setEnabled(has_results and self.current_predict_index < len(self.predict_results) - 1)
+        total_items = len(self.predict_results) if self.predict_results else len(self.predict_image_paths)
+        has_selection = total_items > 0 and 0 <= self.current_predict_index < total_items
+        self.predict_prev_button.setEnabled(has_selection and self.current_predict_index > 0)
+        self.predict_next_button.setEnabled(has_selection and self.current_predict_index < total_items - 1)
         self.predict_gradcam_button.setEnabled(has_results and isinstance(self.predict_results[self.current_predict_index], dict) and self.is_predict_compare_result(self.predict_results[self.current_predict_index]) if has_results else False)
         self.predict_page_label.setText(
-            f"{self.current_predict_index + 1 if has_results else 0} / {len(self.predict_results)}"
+            f"{self.current_predict_index + 1 if has_selection else 0} / {total_items}"
         )
-        if refresh_compact:
-            self.refresh_predict_compact_view()
+        self.refresh_predict_compact_view()
+        self.predict_display_stack.setCurrentIndex(0)
+        self.update_predict_gradcam_ui_state()
 
         if not has_results:
-            self.predict_image_label.setPixmap(QPixmap())
-            self.predict_image_label.setText("Select images and click Predict.")
-            self.predict_result_label.setText("Prediction result will appear here.")
+            if has_selection and self.predict_image_paths:
+                image_path = self.predict_image_paths[self.current_predict_index]
+                self.set_predict_preview_pixmap(self.predict_image_label, image_path)
+                self.predict_result_label.setText(
+                    f"Image: {image_path}\n"
+                    f"Ready to predict this image.\n"
+                    f"Selected {self.current_predict_index + 1} of {len(self.predict_image_paths)}."
+                )
+            else:
+                self.predict_image_label.setPixmap(QPixmap())
+                self.predict_image_label.setText("Select images and click Predict.")
+                self.predict_result_label.setText("Prediction result will appear here.")
             return
 
         result = self.predict_results[self.current_predict_index]
-        if isinstance(result, dict) and self.is_predict_compare_result(result):
+        compare_active = (
+            self.predict_compare_checkbox.isChecked()
+            and isinstance(result, dict)
+            and isinstance(result.get("comparisons"), dict)
+            and len(result.get("comparisons", {})) >= 2
+        )
+        if compare_active:
             self.refresh_predict_compare_page(result)
             return
 
         image_path = Path(str(result["image_path"]))
-        cache_key = (str(image_path), max(self.predict_image_label.width(), 1), max(self.predict_image_label.height(), 1))
-        pixmap = self.predict_display_cache.get(cache_key)
-        if pixmap is None:
-            loaded = QPixmap(str(image_path))
-            if not loaded.isNull():
-                pixmap = loaded.scaled(
-                    self.predict_image_label.size(),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation,
-                )
-                self.predict_display_cache[cache_key] = pixmap
-            else:
-                pixmap = QPixmap()
-        if pixmap.isNull():
-            self.predict_image_label.setPixmap(QPixmap())
-            self.predict_image_label.setText(f"Could not load image:\n{image_path}")
-        else:
-            self.predict_image_label.setText("")
-            self.predict_image_label.setPixmap(pixmap)
+        self.set_predict_preview_pixmap(self.predict_image_label, image_path)
 
         actual_label = result.get("actual_label")
         is_correct = result.get("is_correct")
@@ -5079,6 +5983,7 @@ class TrainingLauncher(QMainWindow):
             f"Ground Truth: {actual_text}\n"
             f"Predict Correct: {correctness_text}"
         )
+        self.update_predict_gradcam_ui_state()
 
     def is_predict_compare_result(self, result: dict) -> bool:
         comparisons = result.get("comparisons")
@@ -5087,28 +5992,281 @@ class TrainingLauncher(QMainWindow):
     def refresh_predict_compare_page(self, result: dict) -> None:
         image_path = Path(str(result["image_path"]))
         comparisons = result.get("comparisons") if isinstance(result.get("comparisons"), dict) else {}
-        compare_pixmap = self.build_predict_compare_pixmap(image_path, comparisons)
-        if compare_pixmap.isNull():
-            self.predict_image_label.setPixmap(QPixmap())
-            self.predict_image_label.setText(f"Could not load comparison image:\n{image_path}")
-        else:
-            scaled = compare_pixmap.scaled(self.predict_image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self.predict_image_label.setText("")
-            self.predict_image_label.setPixmap(scaled)
-
+        self.predict_display_stack.setCurrentIndex(1)
+        self.set_predict_preview_pixmap(self.predict_compare_shared_image_label, image_path)
         actual_label = result.get("actual_label")
         actual_text = actual_label if actual_label is not None else "Unknown"
-        lines = [f"Image: {image_path}", f"Ground Truth: {actual_text}"]
-        for model_name in self.selected_predict_models():
-            model_result = comparisons.get(model_name)
+        self.predict_compare_context_label.setText(
+            f"Image: {image_path}\n"
+            f"Ground Truth: {actual_text}\n"
+            f"Compared Items: {len(comparisons)}"
+        )
+        self.predict_compare_context_summary_label.setText(
+            f"{image_path.name} | GT: {actual_text} | Compared: {len(comparisons)}"
+        )
+        self.predict_compare_context_summary_label.setToolTip(str(image_path))
+        self.populate_predict_compare_cards(image_path, comparisons)
+        self.update_predict_gradcam_ui_state()
+
+    def current_predict_gradcam_request(self) -> dict[str, object] | None:
+        if not self.predict_results or not (0 <= self.current_predict_index < len(self.predict_results)):
+            return None
+        current_result = self.predict_results[self.current_predict_index]
+        if not isinstance(current_result, dict) or not self.is_predict_compare_result(current_result):
+            return None
+        comparisons = current_result.get("comparisons") if isinstance(current_result.get("comparisons"), dict) else {}
+        return self.build_predict_gradcam_request(Path(str(current_result["image_path"])), comparisons)
+
+    def update_predict_gradcam_ui_state(self) -> None:
+        request = self.current_predict_gradcam_request()
+        if request is None:
+            self.predict_gradcam_button.setText("Generate / Show Grad-CAM")
+            self.predict_gradcam_button.setToolTip("Grad-CAM is available for compare results after prediction.")
+            return
+        missing_specs = request.get("missing_specs")
+        request_key = request.get("request_key")
+        if isinstance(request_key, tuple) and self.predict_gradcam_request_key == request_key:
+            self.predict_gradcam_button.setText("Generating Grad-CAM...")
+            self.predict_gradcam_button.setToolTip("Grad-CAM overlays are currently being generated for this compare image.")
+        elif isinstance(missing_specs, list) and missing_specs:
+            self.predict_gradcam_button.setText("Generate Grad-CAM")
+            self.predict_gradcam_button.setToolTip("Generate missing Grad-CAM overlays for the current compare image.")
+        else:
+            self.predict_gradcam_button.setText("Show Grad-CAM")
+            self.predict_gradcam_button.setToolTip("All Grad-CAM overlays are cached for the current compare image.")
+
+    def on_predict_compare_context_toggled(self, checked: bool) -> None:
+        self.predict_compare_context_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+        self.predict_compare_context_content.setVisible(checked)
+
+    def set_predict_preview_pixmap(self, target_label: QLabel, image_path: Path, *, source_pixmap: QPixmap | None = None) -> None:
+        if source_pixmap is not None and not source_pixmap.isNull():
+            pixmap = source_pixmap.scaled(
+                target_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+        else:
+            cache_key = (str(image_path), max(target_label.width(), 1), max(target_label.height(), 1))
+            pixmap = self.predict_cache_get(self.predict_display_cache, cache_key)
+            if pixmap is None:
+                loaded = QPixmap(str(image_path))
+                if not loaded.isNull():
+                    pixmap = loaded.scaled(
+                        target_label.size(),
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation,
+                    )
+                    self.predict_cache_put(self.predict_display_cache, cache_key, pixmap, PREDICT_DISPLAY_CACHE_LIMIT)
+                else:
+                    pixmap = QPixmap()
+        if pixmap.isNull():
+            target_label.setPixmap(QPixmap())
+            target_label.setText(f"Could not load image:\n{image_path}")
+        else:
+            target_label.setText("")
+            target_label.setPixmap(pixmap)
+
+    def predict_cache_get(self, cache: OrderedDict, key):
+        value = cache.get(key)
+        if value is not None:
+            cache.move_to_end(key)
+        return value
+
+    def predict_cache_put(self, cache: OrderedDict, key, value, limit: int) -> None:
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > limit:
+            oldest_key, _ = cache.popitem(last=False)
+            if cache is self.predict_gradcam_cache:
+                self.predict_gradcam_diagnostics.pop(oldest_key, None)
+
+    def clear_predict_visual_caches(self, *, keep_gradcam: bool = False) -> None:
+        self.predict_thumbnail_cache.clear()
+        self.predict_display_cache.clear()
+        self.predict_compare_display_cache.clear()
+        if not keep_gradcam:
+            self.predict_gradcam_cache.clear()
+            self.predict_gradcam_diagnostics.clear()
+
+    def is_predict_overlay_meaningful(self, image_path: Path, overlay_pixmap: QPixmap | None) -> bool:
+        if overlay_pixmap is None or overlay_pixmap.isNull():
+            return False
+        original_pixmap = QPixmap(str(image_path))
+        if original_pixmap.isNull():
+            return True
+        sample_size = QSize(48, 48)
+        overlay_image = overlay_pixmap.scaled(sample_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation).toImage()
+        original_image = original_pixmap.scaled(sample_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation).toImage()
+        if overlay_image.size() != original_image.size():
+            return True
+        total_delta = 0
+        pixel_count = max(overlay_image.width() * overlay_image.height(), 1)
+        for y in range(overlay_image.height()):
+            for x in range(overlay_image.width()):
+                overlay_color = overlay_image.pixelColor(x, y)
+                original_color = original_image.pixelColor(x, y)
+                total_delta += abs(overlay_color.red() - original_color.red())
+                total_delta += abs(overlay_color.green() - original_color.green())
+                total_delta += abs(overlay_color.blue() - original_color.blue())
+        average_delta = total_delta / float(pixel_count * 3)
+        return average_delta >= 6.0
+
+    def clear_predict_compare_cards(self) -> None:
+        while self.predict_compare_cards_layout.count():
+            item = self.predict_compare_cards_layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget is not None:
+                widget.deleteLater()
+            elif child_layout is not None:
+                while child_layout.count():
+                    child_item = child_layout.takeAt(0)
+                    child_widget = child_item.widget()
+                    if child_widget is not None:
+                        child_widget.deleteLater()
+
+    def populate_predict_compare_cards(self, image_path: Path, comparisons: dict) -> None:
+        self.clear_predict_compare_cards()
+        request = self.build_predict_gradcam_request(image_path, comparisons)
+        overlay_lookup: dict[str, QPixmap] = {}
+        diagnostic_lookup: dict[str, str] = {}
+        loading_labels: set[str] = set()
+        if request is not None:
+            model_specs = request.get("model_specs")
+            if isinstance(model_specs, list):
+                for display_label, _model_name, checkpoint_path in model_specs:
+                    cache_key = (
+                        str(image_path.resolve()),
+                        str(display_label),
+                        str(Path(checkpoint_path)),
+                        self.predict_image_size_spin.value(),
+                        self.predict_device_combo.currentText(),
+                    )
+                    overlay = self.predict_cache_get(self.predict_gradcam_cache, cache_key)
+                    if overlay is not None:
+                        overlay_lookup[str(display_label)] = overlay
+                    diagnostic_reason = self.predict_cache_get(self.predict_gradcam_diagnostics, cache_key)
+                    if isinstance(diagnostic_reason, str) and diagnostic_reason.strip():
+                        diagnostic_lookup[str(display_label)] = diagnostic_reason.strip()
+            request_key = request.get("request_key")
+            missing_specs = request.get("missing_specs")
+            if (
+                isinstance(request_key, tuple)
+                and request_key == self.predict_gradcam_request_key
+                and isinstance(missing_specs, list)
+            ):
+                for display_label, _model_name, _checkpoint_path in missing_specs:
+                    loading_labels.add(str(display_label))
+
+        ordered_labels = self.selected_predict_models()
+        for index, display_label in enumerate(ordered_labels):
+            model_result = comparisons.get(display_label)
             if not isinstance(model_result, dict):
                 continue
-            predicted = model_result.get("predicted_class", "-")
+            card = QFrame()
+            card.setObjectName("PredictCompareCard")
+            card.setToolTip(str(model_result.get("checkpoint_path", "")))
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(12, 10, 12, 10)
+            card_layout.setSpacing(8)
+            card.setStyleSheet(
+                """
+                QFrame#PredictCompareCard {
+                    background-color: rgba(61, 75, 91, 0.36);
+                    border: 1px solid rgba(136, 173, 206, 0.32);
+                    border-radius: 12px;
+                }
+                """
+            )
+
+            title_label = QLabel(display_label)
+            title_label.setStyleSheet("font-weight: 600;")
+            title_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            card_layout.addWidget(title_label)
+
+            model_name = str(model_result.get("model_name", display_label)).strip() or display_label
+            checkpoint_hint = Path(str(model_result.get("checkpoint_path", ""))).name
+            header_label = QLabel(f"Model: {model_name}\nCheckpoint: {checkpoint_hint}")
+            header_label.setWordWrap(True)
+            header_label.setProperty("muted", True)
+            card_layout.addWidget(header_label)
+
+            divider = QFrame()
+            divider.setFrameShape(QFrame.HLine)
+            divider.setFrameShadow(QFrame.Plain)
+            divider.setStyleSheet("color: rgba(136, 173, 206, 0.22); background-color: rgba(136, 173, 206, 0.22);")
+            divider.setMaximumHeight(1)
+            card_layout.addWidget(divider)
+
+            preview_label = QLabel("Preview unavailable.")
+            preview_label.setAlignment(Qt.AlignCenter)
+            preview_label.setMinimumHeight(170)
+            preview_label.setMaximumHeight(210)
+            preview_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            preview_label.setStyleSheet(
+                """
+                QLabel {
+                    background-color: rgba(18, 24, 31, 0.62);
+                    border-radius: 10px;
+                    padding: 4px;
+                }
+                """
+            )
+            overlay_pixmap = overlay_lookup.get(display_label)
+            overlay_is_meaningful = self.is_predict_overlay_meaningful(image_path, overlay_pixmap)
+            self.set_predict_preview_pixmap(preview_label, image_path, source_pixmap=overlay_pixmap)
+            card_layout.addWidget(preview_label, stretch=1)
+
+            predicted = str(model_result.get("predicted_class", "-"))
             confidence = float(model_result.get("confidence", 0.0))
             is_correct = model_result.get("is_correct")
             status = "Correct" if is_correct is True else ("Wrong" if is_correct is False else "Unknown")
-            lines.append(f"{model_name}: {predicted} | conf={confidence:.4f} | {status}")
-        self.predict_result_label.setText("\n".join(lines))
+            if display_label in loading_labels:
+                preview_mode = "Grad-CAM loading..."
+                preview_note = "Generating overlay for this model"
+            elif overlay_pixmap is None:
+                diagnostic_reason = diagnostic_lookup.get(display_label)
+                if diagnostic_reason:
+                    preview_mode = "Grad-CAM unavailable"
+                    preview_note = diagnostic_reason
+                else:
+                    preview_mode = "Original preview"
+                    preview_note = "Grad-CAM not generated yet"
+            elif overlay_is_meaningful:
+                preview_mode = "Grad-CAM overlay"
+                preview_note = None
+            else:
+                preview_mode = "Fallback to original preview"
+                preview_note = diagnostic_lookup.get(display_label, "Overlay too similar to original")
+            details_text = (
+                f"Predicted: {predicted}\n"
+                f"Confidence: {confidence:.4f}\n"
+                f"Correctness: {status}\n"
+                f"Display: {preview_mode}"
+            )
+            if preview_note:
+                details_text += f"\nReason: {preview_note}"
+            details_label = QLabel(
+                details_text
+            )
+            details_label.setWordWrap(True)
+            details_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            details_label.setStyleSheet("padding-top: 2px;")
+            card_layout.addWidget(details_label)
+
+            row = index // 2
+            column = index % 2
+            self.predict_compare_cards_layout.addWidget(card, row, column)
+
+        if self.predict_compare_cards_layout.count() == 0:
+            empty_label = QLabel("No compare details are available for this result.")
+            empty_label.setWordWrap(True)
+            empty_label.setAlignment(Qt.AlignCenter)
+            empty_label.setProperty("muted", True)
+            self.predict_compare_cards_layout.addWidget(empty_label, 0, 0, 1, 2)
+
+        self.predict_compare_cards_layout.setRowStretch((len(ordered_labels) + 1) // 2, 1)
 
     def build_predict_compare_pixmap(self, image_path: Path, comparisons: dict) -> QPixmap:
         request = self.build_predict_gradcam_request(image_path, comparisons)
@@ -5116,7 +6274,7 @@ class TrainingLauncher(QMainWindow):
             return QPixmap()
         request_key = request["request_key"]
         assert isinstance(request_key, tuple)
-        cached = self.predict_compare_display_cache.get(request_key)
+        cached = self.predict_cache_get(self.predict_compare_display_cache, request_key)
         if cached is not None:
             return cached
 
@@ -5129,23 +6287,23 @@ class TrainingLauncher(QMainWindow):
         model_specs = request["model_specs"]
         assert isinstance(model_specs, list)
 
-        for model_name, checkpoint_path in model_specs:
+        for display_label, model_name, checkpoint_path in model_specs:
             cache_key = (
                 str(image_path.resolve()),
-                model_name,
+                display_label,
                 str(checkpoint_path),
                 self.predict_image_size_spin.value(),
                 self.predict_device_combo.currentText(),
             )
-            overlay = self.predict_gradcam_cache.get(cache_key)
+            overlay = self.predict_cache_get(self.predict_gradcam_cache, cache_key)
             if overlay is None:
-                columns.append((f"{model_name} (Preview)", original))
+                columns.append((f"{display_label} (Preview)", original))
             else:
-                columns.append((model_name, overlay))
+                columns.append((display_label, overlay))
 
         compare_pixmap = self.compose_labeled_pixmap(columns)
         if not missing_specs:
-            self.predict_compare_display_cache[request_key] = compare_pixmap
+            self.predict_cache_put(self.predict_compare_display_cache, request_key, compare_pixmap, PREDICT_COMPARE_DISPLAY_CACHE_LIMIT)
         return compare_pixmap
 
     def build_predict_gradcam_request(self, image_path: Path, comparisons: dict) -> dict[str, object] | None:
@@ -5154,25 +6312,28 @@ class TrainingLauncher(QMainWindow):
         image_path = image_path.resolve()
         image_size = self.predict_image_size_spin.value()
         device = self.predict_device_combo.currentText()
-        model_specs: list[tuple[str, Path]] = []
-        missing_specs: list[tuple[str, Path]] = []
+        model_specs: list[tuple[str, str, Path]] = []
+        missing_specs: list[tuple[str, str, Path]] = []
         cache_keys: list[tuple[str, str, str, int, str]] = []
 
-        for model_name in self.selected_predict_models():
-            model_result = comparisons.get(model_name)
+        for display_label in self.selected_predict_models():
+            model_result = comparisons.get(display_label)
             if not isinstance(model_result, dict):
+                continue
+            model_name = str(model_result.get("model_name", display_label)).strip()
+            if not model_name:
                 continue
             checkpoint_raw = model_result.get("checkpoint_path", "")
             checkpoint_path = Path(str(checkpoint_raw)).expanduser().resolve()
-            model_specs.append((model_name, checkpoint_path))
-            cache_key = (str(image_path), model_name, str(checkpoint_path), image_size, device)
+            model_specs.append((display_label, model_name, checkpoint_path))
+            cache_key = (str(image_path), display_label, str(checkpoint_path), image_size, device)
             cache_keys.append(cache_key)
-            if cache_key not in self.predict_gradcam_cache:
-                missing_specs.append((model_name, checkpoint_path))
+            if self.predict_cache_get(self.predict_gradcam_cache, cache_key) is None:
+                missing_specs.append((display_label, model_name, checkpoint_path))
 
         request_key: tuple[object, ...] = (
             str(image_path),
-            tuple((model_name, str(checkpoint_path)) for model_name, checkpoint_path in model_specs),
+            tuple((display_label, model_name, str(checkpoint_path)) for display_label, model_name, checkpoint_path in model_specs),
             image_size,
             device,
         )
@@ -5205,9 +6366,9 @@ class TrainingLauncher(QMainWindow):
         if not isinstance(image_path, Path) or not isinstance(image_size, int) or not isinstance(device, str):
             return
 
-        model_specs: list[tuple[str, Path]] = []
-        for model_name, checkpoint_path in missing_specs:
-            model_specs.append((str(model_name), Path(checkpoint_path)))
+        model_specs: list[tuple[str, str, Path]] = []
+        for display_label, model_name, checkpoint_path in missing_specs:
+            model_specs.append((str(display_label), str(model_name), Path(checkpoint_path)))
 
         self.predict_gradcam_request_key = request_key
         self.predict_gradcam_thread = QThread(self)
@@ -5245,22 +6406,28 @@ class TrainingLauncher(QMainWindow):
         if isinstance(missing_specs, list) and missing_specs:
             self.predict_status_label.setText("Generating Grad-CAM for current page...")
             self.start_predict_gradcam_generation(request)
+            self.refresh_predict_compare_page(current_result)
         else:
             self.refresh_predict_compare_page(current_result)
 
     def on_predict_gradcam_finished(self, request_key: object, overlays: object) -> None:
         if isinstance(overlays, list):
             for item in overlays:
-                if not isinstance(item, tuple) or len(item) != 2:
+                if not isinstance(item, tuple) or len(item) not in {2, 3}:
                     continue
-                cache_key, image_data = item
+                cache_key, image_data = item[0], item[1]
+                diagnostic_reason = item[2] if len(item) == 3 else None
                 if not isinstance(cache_key, tuple):
                     continue
                 if isinstance(image_data, bytes):
                     pixmap = QPixmap()
                     pixmap.loadFromData(image_data, "PNG")
                     if not pixmap.isNull():
-                        self.predict_gradcam_cache[cache_key] = pixmap
+                        self.predict_cache_put(self.predict_gradcam_cache, cache_key, pixmap, PREDICT_GRADCAM_CACHE_LIMIT)
+                if isinstance(diagnostic_reason, str) and diagnostic_reason.strip():
+                    self.predict_cache_put(self.predict_gradcam_diagnostics, cache_key, diagnostic_reason.strip(), PREDICT_GRADCAM_CACHE_LIMIT)
+                else:
+                    self.predict_gradcam_diagnostics.pop(cache_key, None)
         if isinstance(request_key, tuple):
             self.predict_compare_display_cache.pop(request_key, None)
         self.finish_predict_gradcam_request(request_key)
@@ -5289,6 +6456,8 @@ class TrainingLauncher(QMainWindow):
             pending_request = self.predict_gradcam_pending_request
             self.predict_gradcam_pending_request = None
             self.start_predict_gradcam_generation(pending_request)
+        else:
+            self.update_predict_gradcam_ui_state()
 
     def compose_labeled_pixmap(self, columns: list[tuple[str, QPixmap]]) -> QPixmap:
         valid_columns = [(label, pixmap) for label, pixmap in columns if not pixmap.isNull()]
@@ -5316,39 +6485,38 @@ class TrainingLauncher(QMainWindow):
         return canvas
 
     def refresh_predict_compact_view(self) -> None:
-        if self.predict_compact_built and self.predict_compact_list.count() == len(self.predict_results):
+        browser_mode = str(self.predict_browser_mode_combo.currentData() or "thumbnails")
+        render_key = (len(self.predict_image_paths), len(self.predict_results), browser_mode)
+        if self.predict_compact_built and self.predict_browser_render_key == render_key and self.predict_compact_list.count() == len(self.predict_image_paths):
             if 0 <= self.current_predict_index < self.predict_compact_list.count():
                 self.predict_compact_list.setCurrentRow(self.current_predict_index)
+            self.schedule_predict_visible_thumbnail_update()
             return
 
         self.predict_compact_list.clear()
-        if not self.predict_results:
+        if not self.predict_image_paths:
             self.predict_compact_built = False
             self.predict_compact_loading = False
             self.predict_compact_pending_indices = []
+            self.predict_browser_render_key = None
             return
 
-        for index, result in enumerate(self.predict_results):
+        for index, image_path in enumerate(self.predict_image_paths):
             item = QListWidgetItem()
-            image_path = Path(str(result["image_path"]))
             icon = self.predict_thumbnail_cache.get(str(image_path))
             if icon is not None:
                 item.setIcon(icon)
 
-            if self.is_predict_compare_result(result):
+            result = self.predict_results[index] if index < len(self.predict_results) else None
+            if isinstance(result, dict) and self.is_predict_compare_result(result):
                 actual_label = result.get("actual_label")
                 actual_text = actual_label if actual_label is not None else "Unknown"
                 comparisons = result.get("comparisons") if isinstance(result.get("comparisons"), dict) else {}
-                lines = [image_path.name, f"GT: {actual_text}"]
-                for model_name in self.selected_predict_models():
-                    model_result = comparisons.get(model_name)
-                    if not isinstance(model_result, dict):
-                        continue
-                    lines.append(
-                        f"{model_name}: {model_result.get('predicted_class', '-')} {float(model_result.get('confidence', 0.0)):.2%}"
-                    )
-                item.setText("\n".join(lines))
-            else:
+                if browser_mode == "thumbnails":
+                    item.setText(f"{image_path.name}\nGT: {actual_text}\nCompared {len(comparisons)}")
+                else:
+                    item.setText(f"{image_path.name} | GT: {actual_text} | Compared {len(comparisons)}")
+            elif isinstance(result, dict):
                 is_correct = result.get("is_correct")
                 if is_correct is True:
                     correctness_text = "Yes"
@@ -5358,30 +6526,92 @@ class TrainingLauncher(QMainWindow):
                     correctness_text = "Unknown"
                 actual_label = result.get("actual_label")
                 actual_text = actual_label if actual_label is not None else "Unknown"
-
+                if browser_mode == "thumbnails":
+                    item.setText(
+                        f"{image_path.name}\n"
+                        f"{result['predicted_class']} | {float(result['confidence']):.2%}\n"
+                        f"GT: {actual_text}"
+                    )
+                else:
+                    item.setText(
+                        f"{image_path.name} | Pred: {result['predicted_class']} | "
+                        f"True: {actual_text} | {float(result['confidence']):.2%} | Correct: {correctness_text}"
+                    )
+            else:
                 item.setText(
-                    f"{result['predicted_class']}\n"
-                    f"True: {actual_text}\n"
-                    f"{float(result['confidence']):.2%}\n"
-                    f"Correct: {correctness_text}"
+                    f"{image_path.name}\n{image_path.parent.name}" if browser_mode == "thumbnails"
+                    else str(image_path)
                 )
-            item.setTextAlignment(Qt.AlignHCenter)
-            item.setSizeHint(QSize(190, 250))
+            item.setTextAlignment(Qt.AlignHCenter if browser_mode == "thumbnails" else Qt.AlignLeft | Qt.AlignVCenter)
+            item.setSizeHint(QSize(190, 220) if browser_mode == "thumbnails" else QSize(260, 56))
             item.setData(Qt.UserRole, index)
             self.predict_compact_list.addItem(item)
 
         if 0 <= self.current_predict_index < self.predict_compact_list.count():
             self.predict_compact_list.setCurrentRow(self.current_predict_index)
         self.predict_compact_built = True
-        self.predict_compact_pending_indices = [
-            index for index, result in enumerate(self.predict_results)
-            if str(result["image_path"]) not in self.predict_thumbnail_cache
+        self.predict_browser_render_key = render_key
+        self.predict_compact_pending_indices = []
+        self.predict_compact_loading = False
+        self.schedule_predict_visible_thumbnail_update()
+
+    def predict_browser_priority_indices(self) -> list[int]:
+        count = self.predict_compact_list.count()
+        if count <= 0:
+            return []
+        viewport_rect = self.predict_compact_list.viewport().rect()
+        visible_indices: list[int] = []
+        for index in range(count):
+            item = self.predict_compact_list.item(index)
+            if item is None:
+                continue
+            item_rect = self.predict_compact_list.visualItemRect(item)
+            if item_rect.isValid() and item_rect.intersects(viewport_rect):
+                visible_indices.append(index)
+        if not visible_indices:
+            visible_indices = [index for index in range(min(count, 20))]
+        window_start = max(min(visible_indices) - 8, 0)
+        window_end = min(max(visible_indices) + 8, count - 1)
+        ordered: list[int] = []
+        seen: set[int] = set()
+        if 0 <= self.current_predict_index < count:
+            for index in range(max(self.current_predict_index - 4, 0), min(self.current_predict_index + 5, count)):
+                if index not in seen:
+                    ordered.append(index)
+                    seen.add(index)
+        for index in visible_indices:
+            if index not in seen:
+                ordered.append(index)
+                seen.add(index)
+        for index in range(window_start, window_end + 1):
+            if index not in seen:
+                ordered.append(index)
+                seen.add(index)
+        return ordered
+
+    def schedule_predict_visible_thumbnail_update(self, *_args) -> None:
+        if not self.predict_image_paths or self.predict_compact_list.count() == 0:
+            return
+        priority_indices = [
+            index for index in self.predict_browser_priority_indices()
+            if 0 <= index < len(self.predict_image_paths)
+            and self.predict_cache_get(self.predict_thumbnail_cache, str(self.predict_image_paths[index])) is None
         ]
-        if self.predict_compact_pending_indices:
-            self.predict_compact_loading = True
-            QTimer.singleShot(0, self.process_predict_compact_thumbnail_batch)
-        else:
+        if not priority_indices:
+            self.predict_compact_pending_indices = []
             self.predict_compact_loading = False
+            return
+        existing = list(self.predict_compact_pending_indices)
+        merged: list[int] = []
+        seen: set[int] = set()
+        for index in [*priority_indices, *existing]:
+            if index not in seen:
+                merged.append(index)
+                seen.add(index)
+        self.predict_compact_pending_indices = merged
+        if not self.predict_compact_loading:
+            self.predict_compact_loading = True
+            self.predict_browser_thumbnail_timer.start(0)
 
     def process_predict_compact_thumbnail_batch(self) -> None:
         if not self.predict_compact_pending_indices:
@@ -5393,48 +6623,69 @@ class TrainingLauncher(QMainWindow):
         self.predict_compact_pending_indices = self.predict_compact_pending_indices[batch_size:]
 
         for index in batch:
-            if index >= len(self.predict_results) or index >= self.predict_compact_list.count():
+            if index >= len(self.predict_image_paths) or index >= self.predict_compact_list.count():
                 continue
-            result = self.predict_results[index]
-            image_path = Path(str(result["image_path"]))
-            icon = self.predict_thumbnail_cache.get(str(image_path))
+            image_path = self.predict_image_paths[index]
+            icon = self.predict_cache_get(self.predict_thumbnail_cache, str(image_path))
             if icon is None:
                 pixmap = QPixmap(str(image_path))
                 if not pixmap.isNull():
-                    pixmap = pixmap.scaled(160, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    target_size = self.predict_compact_list.iconSize()
+                    pixmap = pixmap.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     icon = QIcon(pixmap)
-                    self.predict_thumbnail_cache[str(image_path)] = icon
+                    self.predict_cache_put(self.predict_thumbnail_cache, str(image_path), icon, PREDICT_THUMBNAIL_CACHE_LIMIT)
             if icon is not None:
                 self.predict_compact_list.item(index).setIcon(icon)
 
         if self.predict_compact_pending_indices:
-            QTimer.singleShot(0, self.process_predict_compact_thumbnail_batch)
+            self.predict_browser_thumbnail_timer.start(0)
         else:
             self.predict_compact_loading = False
 
     def on_predict_compact_toggled(self, checked: bool) -> None:
-        self.predict_display_stack.setCurrentIndex(1 if checked else 0)
-        self.predict_prev_button.setVisible(not checked)
-        self.predict_next_button.setVisible(not checked)
-        self.predict_page_label.setVisible(not checked)
-        if checked:
-            self.refresh_predict_compact_view()
+        self.predict_display_stack.setCurrentIndex(0)
+        self.refresh_predict_compact_view()
 
     def on_predict_compact_item_clicked(self, item: QListWidgetItem) -> None:
         index = item.data(Qt.UserRole)
         if isinstance(index, int):
             self.current_predict_index = index
-            if not self.predict_compact_checkbox.isChecked():
-                self.refresh_predict_page()
+            self.refresh_predict_page()
+
+    def on_predict_browser_mode_changed(self, *_args) -> None:
+        browser_mode = str(self.predict_browser_mode_combo.currentData() or "thumbnails")
+        if browser_mode == "list":
+            self.predict_compact_list.setViewMode(QListView.ListMode)
+            self.predict_compact_list.setResizeMode(QListView.Adjust)
+            self.predict_compact_list.setMovement(QListView.Static)
+            self.predict_compact_list.setSpacing(4)
+            self.predict_compact_list.setIconSize(QSize(56, 56))
+            self.predict_compact_list.setGridSize(QSize())
+        else:
+            self.predict_compact_list.setViewMode(QListView.IconMode)
+            self.predict_compact_list.setResizeMode(QListView.Adjust)
+            self.predict_compact_list.setMovement(QListView.Static)
+            self.predict_compact_list.setSpacing(10)
+            self.predict_compact_list.setIconSize(QSize(120, 120))
+            self.predict_compact_list.setGridSize(QSize(148, 196))
+        self.predict_compact_built = False
+        self.predict_browser_render_key = None
+        self.predict_compact_pending_indices = []
+        self.refresh_predict_compact_view()
 
     def show_previous_prediction(self) -> None:
         if self.current_predict_index > 0:
             self.current_predict_index -= 1
+            if 0 <= self.current_predict_index < self.predict_compact_list.count():
+                self.predict_compact_list.setCurrentRow(self.current_predict_index)
             self.refresh_predict_page()
 
     def show_next_prediction(self) -> None:
-        if self.current_predict_index < len(self.predict_results) - 1:
+        total_items = len(self.predict_results) if self.predict_results else len(self.predict_image_paths)
+        if self.current_predict_index < total_items - 1:
             self.current_predict_index += 1
+            if 0 <= self.current_predict_index < self.predict_compact_list.count():
+                self.predict_compact_list.setCurrentRow(self.current_predict_index)
             self.refresh_predict_page()
 
     def _resolve_dialog_dir(self, current_text: str, fallback: Path) -> Path:
@@ -5448,23 +6699,30 @@ class TrainingLauncher(QMainWindow):
         super().resizeEvent(event)
         if self.predict_results and 0 <= self.current_predict_index < len(self.predict_results):
             self.predict_resize_timer.start(90)
+        self.schedule_predict_visible_thumbnail_update()
 
     def _refresh_predict_after_resize(self) -> None:
         if self.predict_results and 0 <= self.current_predict_index < len(self.predict_results):
             self.refresh_predict_page()
 
     def set_prediction_running_state(self, running: bool) -> None:
-        self.predict_run_button.setEnabled(not running)
-        self.predict_queue_button.setEnabled(not running)
+        selection_count = len(self.selected_predict_checkpoint_selector_items())
+        self.predict_run_button.setEnabled(not running and selection_count > 0)
+        self.predict_queue_button.setEnabled(not running and selection_count > 0)
         self.predict_select_images_button.setEnabled(not running)
         self.predict_select_folder_button.setEnabled(not running)
-        self.predict_checkpoint_browse_button.setEnabled(not running)
+        self.predict_browser_mode_combo.setEnabled(not running)
+        self.predict_checkpoint_tree.setEnabled(not running)
+        self.predict_select_all_best_button.setEnabled(not running)
+        self.predict_clear_selection_button.setEnabled(not running and selection_count > 0)
+        self.predict_checkpoint_browse_button.setEnabled(False)
         self.predict_model_combo.setEnabled(not running)
         self.predict_device_combo.setEnabled(not running)
         self.predict_image_size_spin.setEnabled(not running)
-        self.predict_compare_checkbox.setEnabled(not running)
-        self.predict_compare_models_button.setEnabled(not running and self.predict_compare_checkbox.isChecked())
-        self.predict_compare_clear_button.setEnabled(not running and self.predict_compare_checkbox.isChecked() and bool(self.predict_compare_models))
+        self.predict_compare_checkbox.setEnabled(False)
+        self.predict_compare_models_button.setEnabled(not running)
+        self.predict_compare_clear_button.setEnabled(not running and selection_count > 0)
+        self.predict_export_button.setEnabled(not running and selection_count > 0)
         self.predict_gradcam_button.setEnabled(not running and bool(self.predict_results) and 0 <= self.current_predict_index < len(self.predict_results) and isinstance(self.predict_results[self.current_predict_index], dict) and self.is_predict_compare_result(self.predict_results[self.current_predict_index]) if self.predict_results else False)
         self.set_global_queue_running_state(running)
 
@@ -5509,6 +6767,7 @@ class TrainingLauncher(QMainWindow):
         self.predict_compact_built = False
         self.predict_compact_loading = False
         self.predict_compact_pending_indices = []
+        self.predict_browser_render_key = None
         self.predict_compare_display_cache.clear()
         self.predict_resize_timer.stop()
         total_seconds = float(timing.get("total_seconds", 0.0))
@@ -5759,7 +7018,7 @@ class PredictionWorker(QObject):
         self,
         *,
         image_paths: list[Path],
-        model_specs: list[tuple[str | None, Path]],
+        model_specs: list[dict[str, object]],
         image_size: int,
         device: str,
     ) -> None:
@@ -5789,20 +7048,26 @@ class PredictionWorker(QObject):
             }
             timing_by_model: dict[str, dict[str, float | str]] = {}
 
-            for model_index, (model_name_hint, checkpoint_path) in enumerate(self.model_specs, start=1):
+            for model_index, spec in enumerate(self.model_specs, start=1):
+                checkpoint_path = spec.get("checkpoint_path") if isinstance(spec, dict) else None
+                model_name_hint = spec.get("model_name_hint") if isinstance(spec, dict) else None
+                display_label = spec.get("display_label") if isinstance(spec, dict) else None
+                if not isinstance(checkpoint_path, Path):
+                    raise ValueError("Prediction worker received an invalid checkpoint path.")
                 resolved_checkpoint = checkpoint_path.expanduser().resolve()
-                resolved_model_name = model_name_hint
+                resolved_model_name = model_name_hint if isinstance(model_name_hint, str) else None
                 if resolved_model_name is None:
                     self.status.emit(f"Detecting model {model_index}/{len(self.model_specs)} from checkpoint...", True)
                     resolved_model_name = infer_model_name_from_checkpoint(resolved_checkpoint)
                 if not resolved_model_name:
                     raise ValueError(f"Could not determine model type for checkpoint: {resolved_checkpoint}")
                 model_name = str(resolved_model_name)
-                self.status.emit(f"Loading model {model_index}/{len(self.model_specs)}: {model_name}", True)
+                result_label = str(display_label).strip() if isinstance(display_label, str) and str(display_label).strip() else model_name
+                self.status.emit(f"Loading model {model_index}/{len(self.model_specs)}: {result_label}", True)
                 model, class_to_idx = load_model(resolved_checkpoint, model_name, resolved_device)
                 idx_to_class = {idx: name for name, idx in class_to_idx.items()}
                 self.status.emit(
-                    f"Running {model_name} on {len(self.image_paths)} image(s) ({model_index}/{len(self.model_specs)})",
+                    f"Running {result_label} on {len(self.image_paths)} image(s) ({model_index}/{len(self.model_specs)})",
                     False,
                 )
 
@@ -5826,8 +7091,10 @@ class PredictionWorker(QObject):
                     result_entry = results_by_path[str(resolved_image)]
                     comparisons = result_entry["comparisons"]
                     assert isinstance(comparisons, dict)
-                    comparisons[model_name] = {
+                    comparisons[result_label] = {
                         **result,
+                        "model_name": model_name,
+                        "display_label": result_label,
                         "checkpoint_path": str(resolved_checkpoint),
                         "actual_label": actual_label,
                         "is_correct": None if actual_label is None else result["predicted_class"] == actual_label,
@@ -5835,7 +7102,8 @@ class PredictionWorker(QObject):
 
                 num_images = len(self.image_paths)
                 num_batches = (num_images + predict_batch_size - 1) // predict_batch_size if num_images > 0 else 0
-                timing_by_model[model_name] = {
+                timing_by_model[result_label] = {
+                    "model_name": model_name,
                     "checkpoint_path": str(resolved_checkpoint),
                     "pure_seconds": pure_seconds,
                     "avg_pure_per_image_seconds": (pure_seconds / num_images) if num_images > 0 else 0.0,
@@ -5886,7 +7154,7 @@ class GradCamComparisonWorker(QObject):
         self,
         *,
         image_path: Path,
-        model_specs: list[tuple[str, Path]],
+        model_specs: list[tuple[str, str, Path]],
         image_size: int,
         device: str,
         request_key: tuple[object, ...],
@@ -5900,30 +7168,31 @@ class GradCamComparisonWorker(QObject):
 
     def run(self) -> None:
         try:
-            from core.gradcam import render_gradcam_overlay_bytes
+            from core.gradcam import render_gradcam_overlay_bytes_with_diagnostics
 
-            overlays: list[tuple[tuple[str, str, str, int, str], bytes]] = []
+            overlays: list[tuple[tuple[str, str, str, int, str], bytes, str | None]] = []
             resolved_image_path = self.image_path.resolve()
-            for model_name, checkpoint_path in self.model_specs:
+            for display_label, model_name, checkpoint_path in self.model_specs:
                 resolved_checkpoint = checkpoint_path.expanduser().resolve()
                 cache_key = (
                     str(resolved_image_path),
-                    model_name,
+                    display_label,
                     str(resolved_checkpoint),
                     self.image_size,
                     self.device,
                 )
                 try:
-                    image_data = render_gradcam_overlay_bytes(
+                    image_data, diagnostic_reason = render_gradcam_overlay_bytes_with_diagnostics(
                         image_path=resolved_image_path,
                         checkpoint_path=resolved_checkpoint,
                         model_name=model_name,
                         image_size=self.image_size,
                         device=self.device,
                     )
-                except Exception:
+                except Exception as exc:
+                    overlays.append((cache_key, b"", f"Grad-CAM unavailable: {exc}"))
                     continue
-                overlays.append((cache_key, image_data))
+                overlays.append((cache_key, image_data, diagnostic_reason))
             self.finished.emit(self.request_key, overlays)
         except Exception as exc:
             self.failed.emit(self.request_key, str(exc))

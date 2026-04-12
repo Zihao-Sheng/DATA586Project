@@ -1,0 +1,274 @@
+{
+  "schema_version": 7,
+  "run_id": "20260412T122332Z_992593e7",
+  "status": "interrupted",
+  "start_time_utc": "2026-04-12T12:23:32+00:00",
+  "end_time_utc": "2026-04-12T12:27:35+00:00",
+  "error_message": "KeyboardInterrupt",
+  "status_reason": "graceful_stop_requested",
+  "command": "C:\\Users\\18447\\DATA586Project\\scripts\\pipeline\\training.py --model efficientnet_dora --data-root C:\\Users\\18447\\DATA586Project\\data\\food-101 --checkpoint-dir C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora --epochs 30 --batch-size 32 --num-workers 4 --image-size 224 --train-transforms-preset custom --lr 0.001000 --optimizer adam --scheduler none --seed 42 --custom-downsample --custom-downsample-prob 0.50 --custom-downsample-min-scale 0.22 --custom-downsample-max-scale 0.55 --custom-mild-blur --custom-mild-blur-prob 0.10 --custom-random-erasing --custom-random-erasing-prob 0.08 --custom-color-jitter --custom-horizontal-flip --progress-format gui --stop-file C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora\\.stop_requested --freeze-backbone --use-validation-split --validation-proportion 0.10 --resume C:/Users/18447/DATA586Project/checkpoints/efficientnet_dora/last.pth",
+  "args": {
+    "model": "efficientnet_dora",
+    "data_root": "C:\\Users\\18447\\DATA586Project\\data\\food-101",
+    "checkpoint_dir": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora",
+    "epochs": 30,
+    "start_epoch": 20,
+    "planned_epochs_this_run": 10,
+    "batch_size": 32,
+    "num_workers": 4,
+    "image_size": 224,
+    "train_transforms_preset": "custom",
+    "mild_blur_enabled": false,
+    "mild_blur_prob": 0.0,
+    "augmentation_config": {
+      "downsample": {
+        "enabled": true,
+        "probability": 0.5,
+        "min_scale": 0.22,
+        "max_scale": 0.55
+      },
+      "mild_blur": {
+        "enabled": true,
+        "probability": 0.1
+      },
+      "random_erasing": {
+        "enabled": true,
+        "probability": 0.08
+      },
+      "color_jitter": {
+        "enabled": true
+      },
+      "horizontal_flip": {
+        "enabled": true
+      }
+    },
+    "lr": 0.001,
+    "optimizer": "adam",
+    "scheduler": "none",
+    "amp": false,
+    "seed": 42,
+    "weight_decay": 0.0,
+    "scheduler_t_max": null,
+    "scheduler_step_size": null,
+    "scheduler_gamma": null,
+    "scheduler_patience": null,
+    "device": "cuda",
+    "freeze_backbone": true,
+    "use_validation_split": true,
+    "validation_proportion": 0.1,
+    "resume": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora\\last.pth"
+  },
+  "dataset": {
+    "num_classes": 101,
+    "class_count_from_mapping": 101,
+    "class_names": [
+      "apple_pie",
+      "baby_back_ribs",
+      "baklava",
+      "beef_carpaccio",
+      "beef_tartare",
+      "beet_salad",
+      "beignets",
+      "bibimbap",
+      "bread_pudding",
+      "breakfast_burrito",
+      "bruschetta",
+      "caesar_salad",
+      "cannoli",
+      "caprese_salad",
+      "carrot_cake",
+      "ceviche",
+      "cheesecake",
+      "cheese_plate",
+      "chicken_curry",
+      "chicken_quesadilla",
+      "chicken_wings",
+      "chocolate_cake",
+      "chocolate_mousse",
+      "churros",
+      "clam_chowder",
+      "club_sandwich",
+      "crab_cakes",
+      "creme_brulee",
+      "croque_madame",
+      "cup_cakes",
+      "deviled_eggs",
+      "donuts",
+      "dumplings",
+      "edamame",
+      "eggs_benedict",
+      "escargots",
+      "falafel",
+      "filet_mignon",
+      "fish_and_chips",
+      "foie_gras",
+      "french_fries",
+      "french_onion_soup",
+      "french_toast",
+      "fried_calamari",
+      "fried_rice",
+      "frozen_yogurt",
+      "garlic_bread",
+      "gnocchi",
+      "greek_salad",
+      "grilled_cheese_sandwich",
+      "grilled_salmon",
+      "guacamole",
+      "gyoza",
+      "hamburger",
+      "hot_and_sour_soup",
+      "hot_dog",
+      "huevos_rancheros",
+      "hummus",
+      "ice_cream",
+      "lasagna",
+      "lobster_bisque",
+      "lobster_roll_sandwich",
+      "macaroni_and_cheese",
+      "macarons",
+      "miso_soup",
+      "mussels",
+      "nachos",
+      "omelette",
+      "onion_rings",
+      "oysters",
+      "pad_thai",
+      "paella",
+      "pancakes",
+      "panna_cotta",
+      "peking_duck",
+      "pho",
+      "pizza",
+      "pork_chop",
+      "poutine",
+      "prime_rib",
+      "pulled_pork_sandwich",
+      "ramen",
+      "ravioli",
+      "red_velvet_cake",
+      "risotto",
+      "samosa",
+      "sashimi",
+      "scallops",
+      "seaweed_salad",
+      "shrimp_and_grits",
+      "spaghetti_bolognese",
+      "spaghetti_carbonara",
+      "spring_rolls",
+      "steak",
+      "strawberry_shortcake",
+      "sushi",
+      "tacos",
+      "takoyaki",
+      "tiramisu",
+      "tuna_tartare",
+      "waffles"
+    ],
+    "train_examples": 68175,
+    "eval_examples": 7575,
+    "test_examples": 25250,
+    "eval_name": "val",
+    "use_validation_split": true,
+    "validation_proportion": 0.1,
+    "train_transforms_preset": "custom",
+    "mild_blur_enabled": false,
+    "mild_blur_prob": 0.0,
+    "augmentation_config": {
+      "downsample": {
+        "enabled": true,
+        "probability": 0.5,
+        "min_scale": 0.22,
+        "max_scale": 0.55
+      },
+      "mild_blur": {
+        "enabled": true,
+        "probability": 0.1
+      },
+      "random_erasing": {
+        "enabled": true,
+        "probability": 0.08
+      },
+      "color_jitter": {
+        "enabled": true
+      },
+      "horizontal_flip": {
+        "enabled": true
+      }
+    }
+  },
+  "model": {
+    "name": "efficientnet_dora",
+    "total_params": 20885254,
+    "trainable_params": 578385,
+    "frozen_params": 20306869,
+    "checkpoint_dir": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora",
+    "best_checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora\\best.pth",
+    "last_checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora\\last.pth",
+    "amp_enabled": false
+  },
+  "expected": {
+    "train_batches_per_epoch": 2131,
+    "val_batches_per_epoch": 237,
+    "final_test_batches": 790
+  },
+  "epochs": [],
+  "final_test": null,
+  "summary": {
+    "best_eval_acc": null,
+    "best_eval_epoch": null,
+    "last_completed_epoch": 20,
+    "last_eval_acc": null,
+    "last_eval_loss": null,
+    "final_test_acc": null,
+    "final_test_loss": null
+  },
+  "timing_summary": {
+    "total_wall_time_seconds": 244.0635098000057,
+    "total_pure_execution_time_seconds": 0.0,
+    "initialization_and_overhead_time_seconds": 244.0635098000057,
+    "stage_totals": {
+      "train": {
+        "total_seconds": 0.0,
+        "pure_seconds": 0.0,
+        "batches": 0.0
+      },
+      "val": {
+        "total_seconds": 0.0,
+        "pure_seconds": 0.0,
+        "batches": 0.0
+      },
+      "test": {
+        "total_seconds": 0.0,
+        "pure_seconds": 0.0,
+        "batches": 0.0
+      }
+    }
+  },
+  "analysis": {
+    "last_eval_stage": "val",
+    "last_eval": null,
+    "final_test": null
+  },
+  "artifacts": {
+    "best_checkpoint": {
+      "path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora\\best.pth",
+      "initial_signature": {
+        "exists": true,
+        "size": 89262045,
+        "mtime_ns": 1775805115462464700
+      },
+      "final_signature": null,
+      "saved_epoch": null,
+      "saved_best_acc": null
+    },
+    "last_checkpoint": {
+      "path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora\\last.pth",
+      "initial_signature": {
+        "exists": true,
+        "size": 89262045,
+        "mtime_ns": 1775805177583496800
+      },
+      "final_signature": null
+    }
+  }
+}

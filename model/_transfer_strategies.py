@@ -4,6 +4,7 @@ import copy
 from typing import Callable
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torchvision import models
 
@@ -134,6 +135,57 @@ class LoRAConv2d(nn.Module):
         return self.base(inputs) + self.lora_up(self.lora_down(inputs)) * self.scaling
 
 
+class DoRALinear(nn.Module):
+    def __init__(self, base: nn.Linear, rank: int = 8, alpha: float = 16.0) -> None:
+        super().__init__()
+        self.base = copy.deepcopy(base)
+        for param in self.base.parameters():
+            param.requires_grad = False
+        self.scaling = alpha / rank
+        self.dora_down = nn.Linear(base.in_features, rank, bias=False)
+        self.dora_up = nn.Linear(rank, base.out_features, bias=False)
+        with torch.no_grad():
+            magnitude = self.base.weight.norm(dim=1, keepdim=True).clamp_min(1e-6)
+        self.magnitude = nn.Parameter(magnitude)
+        nn.init.kaiming_uniform_(self.dora_down.weight, a=5 ** 0.5)
+        nn.init.zeros_(self.dora_up.weight)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        adapted_weight = self.base.weight + self.dora_up.weight @ self.dora_down.weight * self.scaling
+        direction = adapted_weight / adapted_weight.norm(dim=1, keepdim=True).clamp_min(1e-6)
+        return F.linear(inputs, direction * self.magnitude, self.base.bias)
+
+
+class DoRAConv2d(nn.Module):
+    def __init__(self, base: nn.Conv2d, rank: int = 4, alpha: float = 8.0) -> None:
+        super().__init__()
+        self.base = copy.deepcopy(base)
+        for param in self.base.parameters():
+            param.requires_grad = False
+        self.scaling = alpha / rank
+        self.dora_down = nn.Parameter(torch.empty(rank, base.weight.shape[1], *base.kernel_size))
+        self.dora_up = nn.Parameter(torch.empty(base.out_channels, rank))
+        with torch.no_grad():
+            magnitude = self.base.weight.flatten(1).norm(dim=1).view(base.out_channels, 1, 1, 1).clamp_min(1e-6)
+        self.magnitude = nn.Parameter(magnitude)
+        nn.init.kaiming_uniform_(self.dora_down, a=5 ** 0.5)
+        nn.init.zeros_(self.dora_up)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        delta_weight = torch.einsum("or,rijk->oijk", self.dora_up, self.dora_down) * self.scaling
+        adapted_weight = self.base.weight + delta_weight
+        direction = adapted_weight / adapted_weight.flatten(1).norm(dim=1).view(-1, 1, 1, 1).clamp_min(1e-6)
+        return F.conv2d(
+            inputs,
+            direction * self.magnitude,
+            self.base.bias,
+            self.base.stride,
+            self.base.padding,
+            self.base.dilation,
+            self.base.groups,
+        )
+
+
 def _replace_child(parent: nn.Module, child_name: str, new_child: nn.Module) -> None:
     if isinstance(parent, (nn.Sequential, nn.ModuleList)):
         parent[int(child_name)] = new_child
@@ -152,6 +204,19 @@ def apply_lora_recursively(module: nn.Module) -> None:
             _replace_child(module, child_name, replacement)
             continue
         apply_lora_recursively(child)
+
+
+def apply_dora_recursively(module: nn.Module) -> None:
+    for child_name, child in list(module.named_children()):
+        replacement: nn.Module | None = None
+        if isinstance(child, nn.Conv2d):
+            replacement = DoRAConv2d(child)
+        elif isinstance(child, nn.Linear):
+            replacement = DoRALinear(child)
+        if replacement is not None:
+            _replace_child(module, child_name, replacement)
+            continue
+        apply_dora_recursively(child)
 
 
 def wrap_module_with_adapter(parent: nn.Module, child_name: str, channels: int) -> None:
@@ -218,6 +283,15 @@ def build_efficientnet_lora(num_classes: int, device: str | torch.device) -> nn.
     return _finalize_model(model, device)
 
 
+def build_efficientnet_dora(num_classes: int, device: str | torch.device) -> nn.Module:
+    model = load_efficientnet_v2_s_classifier(num_classes)
+    freeze_all(model)
+    apply_dora_recursively(model.features[6])
+    apply_dora_recursively(model.features[7])
+    model.classifier[1] = DoRALinear(model.classifier[1], rank=8, alpha=16.0)
+    return _finalize_model(model, device)
+
+
 def build_efficientnet_adapters(num_classes: int, device: str | torch.device) -> nn.Module:
     model = load_efficientnet_v2_s_classifier(num_classes)
     freeze_all(model)
@@ -271,6 +345,7 @@ def strategy_builder(backbone: str, strategy: str) -> Callable[[int, str | torch
         ("resnet18", "full_finetune"): build_resnet18_full_finetune,
         ("efficientnet", "linear_probe"): build_efficientnet_linear_probe,
         ("efficientnet", "lora"): build_efficientnet_lora,
+        ("efficientnet", "dora"): build_efficientnet_dora,
         ("efficientnet", "tsa"): build_efficientnet_adapters,
         ("efficientnet", "bn_tuning"): build_efficientnet_bn_tuning,
         ("efficientnet", "bn_last1"): build_efficientnet_bn_last1,
