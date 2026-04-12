@@ -2108,6 +2108,7 @@ class TrainingLauncher(QMainWindow):
         self.validation_proportion_spin.valueChanged.connect(self.refresh_command_preview)
         self.resume_checkbox.toggled.connect(self.on_resume_toggled)
         self.resume_path_edit.textChanged.connect(self.refresh_command_preview)
+        self.resume_path_edit.editingFinished.connect(self.on_resume_path_edited)
         self.command_preview_toggle.toggled.connect(self.on_command_preview_toggled)
         self.checkpoint_output_combo.currentTextChanged.connect(self.on_checkpoint_output_changed)
         self.checkpoint_output_combo.activated.connect(self.on_checkpoint_output_activated)
