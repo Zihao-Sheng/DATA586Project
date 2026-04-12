@@ -3483,7 +3483,7 @@ class TrainingLauncher(QMainWindow):
         self.validation_proportion_spin.setEnabled(checked)
         if self.training_validation_proportion_label is not None:
             self.training_validation_proportion_label.setVisible(checked)
-        self.validation_proportion_spin.setVisible(checked)
+            self.validation_proportion_spin.setVisible(checked)
         self.refresh_command_preview()
 
     def on_train_transforms_preset_changed(self, preset: str) -> None:
@@ -3494,6 +3494,187 @@ class TrainingLauncher(QMainWindow):
         )
         self.refresh_training_settings_summary()
         self.refresh_command_preview()
+
+    def _set_combo_to_value(self, combo: QComboBox, value: object) -> bool:
+        text = str(value).strip()
+        if not text:
+            return False
+        index = combo.findText(text)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+            return True
+        if combo.isEditable():
+            combo.setEditText(text)
+            return True
+        return False
+
+    def _apply_custom_augmentation_from_config(self, config: object) -> None:
+        if not isinstance(config, dict):
+            return
+        downsample = config.get("downsample")
+        if isinstance(downsample, dict):
+            self.custom_downsample_enabled = bool(downsample.get("enabled", self.custom_downsample_enabled))
+            if isinstance(downsample.get("probability"), (int, float)):
+                self.custom_downsample_prob = float(downsample["probability"])
+            if isinstance(downsample.get("min_scale"), (int, float)):
+                self.custom_downsample_min_scale = float(downsample["min_scale"])
+            if isinstance(downsample.get("max_scale"), (int, float)):
+                self.custom_downsample_max_scale = float(downsample["max_scale"])
+        blur = config.get("mild_blur")
+        if isinstance(blur, dict):
+            self.custom_mild_blur_enabled = bool(blur.get("enabled", self.custom_mild_blur_enabled))
+            if isinstance(blur.get("probability"), (int, float)):
+                self.custom_mild_blur_prob = float(blur["probability"])
+        erasing = config.get("random_erasing")
+        if isinstance(erasing, dict):
+            self.custom_random_erasing_enabled = bool(erasing.get("enabled", self.custom_random_erasing_enabled))
+            if isinstance(erasing.get("probability"), (int, float)):
+                self.custom_random_erasing_prob = float(erasing["probability"])
+        color_jitter = config.get("color_jitter")
+        if isinstance(color_jitter, dict):
+            self.custom_color_jitter_enabled = bool(color_jitter.get("enabled", self.custom_color_jitter_enabled))
+        horizontal_flip = config.get("horizontal_flip")
+        if isinstance(horizontal_flip, dict):
+            self.custom_horizontal_flip_enabled = bool(horizontal_flip.get("enabled", self.custom_horizontal_flip_enabled))
+
+    def load_resume_checkpoint_training_state(self, checkpoint_path: Path) -> tuple[dict[str, object], list[str]]:
+        import torch
+
+        resolved_path = checkpoint_path.expanduser().resolve()
+        if not resolved_path.is_file():
+            raise ValueError(f"Checkpoint file does not exist:\n{resolved_path}")
+
+        recovered: dict[str, object] = {}
+        notes: list[str] = []
+        run = self.load_latest_run_log_for_checkpoint_dir(resolved_path.parent)
+        if run is not None:
+            args = run.get("args") if isinstance(run.get("args"), dict) else {}
+            if isinstance(args, dict):
+                recovered.update(
+                    {
+                        "model": args.get("model"),
+                        "epochs": args.get("epochs"),
+                        "batch_size": args.get("batch_size"),
+                        "num_workers": args.get("num_workers"),
+                        "image_size": args.get("image_size"),
+                        "train_transforms_preset": args.get("train_transforms_preset"),
+                        "lr": args.get("lr"),
+                        "optimizer": args.get("optimizer"),
+                        "scheduler": args.get("scheduler"),
+                        "seed": args.get("seed"),
+                        "device": args.get("device"),
+                        "amp": args.get("amp"),
+                        "freeze_backbone": args.get("freeze_backbone"),
+                        "use_validation_split": args.get("use_validation_split"),
+                        "validation_proportion": args.get("validation_proportion"),
+                        "checkpoint_name": Path(str(args.get("checkpoint_dir", resolved_path.parent))).name,
+                        "mild_blur_enabled": args.get("mild_blur_enabled"),
+                        "mild_blur_prob": args.get("mild_blur_prob"),
+                        "custom_augmentation": args.get("augmentation_config"),
+                    }
+                )
+                notes.append("Loaded training parameters from the latest run log in this checkpoint folder.")
+
+        try:
+            checkpoint = torch.load(resolved_path, map_location="cpu")
+        except Exception as exc:
+            if not recovered:
+                raise ValueError(f"Could not read checkpoint metadata:\n{resolved_path}\n{exc}") from exc
+            notes.append(f"Checkpoint metadata could not be inspected directly: {exc}")
+            return recovered, notes
+
+        if isinstance(checkpoint, dict):
+            recovered.setdefault("model", checkpoint.get("model_name"))
+            recovered.setdefault("optimizer", checkpoint.get("optimizer"))
+            recovered.setdefault("scheduler", checkpoint.get("scheduler"))
+            recovered.setdefault("amp", checkpoint.get("amp"))
+            recovered.setdefault("seed", checkpoint.get("seed"))
+            recovered.setdefault("use_validation_split", checkpoint.get("use_validation_split"))
+            recovered.setdefault("validation_proportion", checkpoint.get("validation_proportion"))
+            recovered.setdefault("checkpoint_name", resolved_path.parent.name)
+            if "epoch" in checkpoint and isinstance(checkpoint.get("epoch"), (int, float)):
+                notes.append(f"Checkpoint epoch: {int(checkpoint['epoch'])}")
+            if "best_acc" in checkpoint and isinstance(checkpoint.get("best_acc"), (int, float)):
+                notes.append(f"Checkpoint best acc: {float(checkpoint['best_acc']):.4f}")
+        elif not recovered:
+            raise ValueError(f"Checkpoint payload is not a dictionary:\n{resolved_path}")
+
+        return recovered, notes
+
+    def apply_resume_checkpoint_to_training_ui(self, checkpoint_path: Path) -> None:
+        recovered, notes = self.load_resume_checkpoint_training_state(checkpoint_path)
+        resolved_path = checkpoint_path.expanduser().resolve()
+
+        model_name = recovered.get("model")
+        if isinstance(model_name, str):
+            normalized_model = model_name.strip()
+            for available_model in self.available_models:
+                if available_model.lower() == normalized_model.lower():
+                    self.model_combo.setCurrentText(available_model)
+                    break
+
+        checkpoint_name = recovered.get("checkpoint_name")
+        if isinstance(checkpoint_name, str) and checkpoint_name.strip():
+            self.refresh_checkpoint_output_options(preserve_text=checkpoint_name.strip())
+            self.checkpoint_output_combo.setEditText(checkpoint_name.strip())
+
+        if isinstance(recovered.get("epochs"), (int, float)):
+            self.epochs_spin.setValue(int(recovered["epochs"]))
+        if isinstance(recovered.get("batch_size"), (int, float)):
+            self.batch_size_spin.setValue(int(recovered["batch_size"]))
+        if isinstance(recovered.get("num_workers"), (int, float)):
+            self.num_workers_spin.setValue(int(recovered["num_workers"]))
+        if isinstance(recovered.get("image_size"), (int, float)):
+            self.image_size_spin.setValue(int(recovered["image_size"]))
+        if isinstance(recovered.get("lr"), (int, float)):
+            self.lr_spin.setValue(float(recovered["lr"]))
+
+        self._set_combo_to_value(self.optimizer_combo, recovered.get("optimizer"))
+        self._set_combo_to_value(self.scheduler_combo, recovered.get("scheduler"))
+        self._set_combo_to_value(self.train_transforms_preset_combo, recovered.get("train_transforms_preset"))
+        self._set_combo_to_value(self.device_combo, recovered.get("device"))
+
+        if isinstance(recovered.get("seed"), (int, float)):
+            self.seed_spin.setValue(int(recovered["seed"]))
+        if isinstance(recovered.get("amp"), bool):
+            self.amp_checkbox.setChecked(bool(recovered["amp"]))
+        if isinstance(recovered.get("freeze_backbone"), bool):
+            self.freeze_checkbox.setChecked(bool(recovered["freeze_backbone"]))
+        if isinstance(recovered.get("use_validation_split"), bool):
+            self.validation_checkbox.setChecked(bool(recovered["use_validation_split"]))
+        if isinstance(recovered.get("validation_proportion"), (int, float)):
+            self.validation_proportion_spin.setValue(float(recovered["validation_proportion"]))
+
+        if isinstance(recovered.get("mild_blur_enabled"), bool):
+            self.mild_blur_enabled = bool(recovered["mild_blur_enabled"])
+        if isinstance(recovered.get("mild_blur_prob"), (int, float)):
+            self.mild_blur_prob = float(recovered["mild_blur_prob"])
+        self._apply_custom_augmentation_from_config(recovered.get("custom_augmentation"))
+
+        self.resume_checkbox.setChecked(True)
+        self.resume_path_edit.setText(str(resolved_path))
+        self.refresh_checkpoint_output_options(preserve_text=self.checkpoint_output_combo.currentText().strip())
+        self.update_checkpoint_dir_label()
+        self.refresh_training_settings_summary()
+        self.refresh_command_preview()
+        note_text = " ".join(note for note in notes if note).strip()
+        self.status_label.setText("Resume loaded")
+        self.progress_label.setText(
+            f"Loaded training settings from {resolved_path.name}."
+            + (f" {note_text}" if note_text else "")
+        )
+
+    def on_resume_path_edited(self) -> None:
+        resume_path = self.resume_path_edit.text().strip()
+        if not resume_path:
+            return
+        checkpoint_path = Path(resume_path).expanduser()
+        if not checkpoint_path.is_file():
+            return
+        try:
+            self.apply_resume_checkpoint_to_training_ui(checkpoint_path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Resume Checkpoint Load Failed", str(exc))
 
     def validate_training_config_snapshot(self, config: dict[str, object]) -> str | None:
         checkpoint_name = str(config.get("checkpoint_name", "")).strip()
@@ -4442,8 +4623,10 @@ class TrainingLauncher(QMainWindow):
             "PyTorch Checkpoints (*.pth *.pt);;All Files (*.*)",
         )
         if selected_path:
-            self.resume_checkbox.setChecked(True)
-            self.resume_path_edit.setText(selected_path)
+            try:
+                self.apply_resume_checkpoint_to_training_ui(Path(selected_path))
+            except Exception as exc:
+                QMessageBox.warning(self, "Resume Checkpoint Load Failed", str(exc))
 
     def clear_resume_path(self) -> None:
         self.resume_path_edit.clear()
