@@ -1,0 +1,382 @@
+{
+  "items": [
+    {
+      "base_model_expected": "efficientnet_v2_s",
+      "checks": {
+        "capabilities_type_ok": true,
+        "discovered": true,
+        "gradcam_targets_non_empty": true,
+        "load_generated_module": true,
+        "metadata_base_model_match": true,
+        "metadata_method_type_match": true,
+        "metadata_pretrained_present": true,
+        "standard_interfaces": {
+          "build_model": true,
+          "build_optimizer": true,
+          "describe_model_structure": true,
+          "get_capabilities": true,
+          "get_default_gradcam_targets": true,
+          "get_model_metadata": true
+        },
+        "standard_interfaces_all_present": true,
+        "structure_base_family": "efficientnet_v2_s",
+        "structure_type_ok": true,
+        "trainable_params_check_skipped_reason": "PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\18447/.cache\\\\torch\\\\hub\\\\checkpoints\\\\efficientnet_v2_s-dd5fe13b.pth.d6f7fc7fd36a4156892721aae1bdaa16.partial'",
+        "trainable_params_match": null
+      },
+      "generated_model": "efficientnet_baseline_gen",
+      "legacy_model": "EfficientNet_Baseline",
+      "method_type_expected": "baseline"
+    },
+    {
+      "base_model_expected": "efficientnet_v2_s",
+      "checks": {
+        "capabilities_type_ok": true,
+        "discovered": true,
+        "gradcam_targets_non_empty": true,
+        "load_generated_module": true,
+        "metadata_base_model_match": true,
+        "metadata_method_type_match": true,
+        "metadata_pretrained_present": true,
+        "standard_interfaces": {
+          "build_model": true,
+          "build_optimizer": true,
+          "describe_model_structure": true,
+          "get_capabilities": true,
+          "get_default_gradcam_targets": true,
+          "get_model_metadata": true
+        },
+        "standard_interfaces_all_present": true,
+        "structure_base_family": "efficientnet_v2_s",
+        "structure_type_ok": true,
+        "trainable_params_check_skipped_reason": "PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\18447/.cache\\\\torch\\\\hub\\\\checkpoints\\\\efficientnet_v2_s-dd5fe13b.pth.a7e686db4d4242afb51e06959021a8f7.partial'",
+        "trainable_params_match": null
+      },
+      "generated_model": "efficientnet_bn_last1_gen",
+      "legacy_model": "EfficientNet_BN_Last1",
+      "method_type_expected": "bn_last1"
+    },
+    {
+      "base_model_expected": "efficientnet_v2_s",
+      "checks": {
+        "capabilities_type_ok": true,
+        "discovered": true,
+        "gradcam_targets_non_empty": true,
+        "load_generated_module": true,
+        "metadata_base_model_match": true,
+        "metadata_method_type_match": true,
+        "metadata_pretrained_present": true,
+        "standard_interfaces": {
+          "build_model": true,
+          "build_optimizer": true,
+          "describe_model_structure": true,
+          "get_capabilities": true,
+          "get_default_gradcam_targets": true,
+          "get_model_metadata": true
+        },
+        "standard_interfaces_all_present": true,
+        "structure_base_family": "efficientnet_v2_s",
+        "structure_type_ok": true,
+        "trainable_params_check_skipped_reason": "PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\18447/.cache\\\\torch\\\\hub\\\\checkpoints\\\\efficientnet_v2_s-dd5fe13b.pth.38a57ca3eaa749fcb822368d285b4477.partial'",
+        "trainable_params_match": null
+      },
+      "generated_model": "efficientnet_bn_last2_gen",
+      "legacy_model": "EfficientNet_BN_Last2",
+      "method_type_expected": "bn_last2"
+    },
+    {
+      "base_model_expected": "efficientnet_v2_s",
+      "checks": {
+        "capabilities_type_ok": true,
+        "discovered": true,
+        "gradcam_targets_non_empty": true,
+        "load_generated_module": true,
+        "metadata_base_model_match": true,
+        "metadata_method_type_match": true,
+        "metadata_pretrained_present": true,
+        "standard_interfaces": {
+          "build_model": true,
+          "build_optimizer": true,
+          "describe_model_structure": true,
+          "get_capabilities": true,
+          "get_default_gradcam_targets": true,
+          "get_model_metadata": true
+        },
+        "standard_interfaces_all_present": true,
+        "structure_base_family": "efficientnet_v2_s",
+        "structure_type_ok": true,
+        "trainable_params_check_skipped_reason": "PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\18447/.cache\\\\torch\\\\hub\\\\checkpoints\\\\efficientnet_v2_s-dd5fe13b.pth.aadb80ab41f74b02b3b55c71e2510752.partial'",
+        "trainable_params_match": null
+      },
+      "generated_model": "efficientnet_bn_tuning_gen",
+      "legacy_model": "EfficientNet_BN_Tuning",
+      "method_type_expected": "bn_tuning"
+    },
+    {
+      "base_model_expected": "efficientnet_v2_s",
+      "checks": {
+        "capabilities_type_ok": true,
+        "discovered": true,
+        "gradcam_targets_non_empty": true,
+        "load_generated_module": true,
+        "metadata_base_model_match": true,
+        "metadata_method_type_match": true,
+        "metadata_pretrained_present": true,
+        "standard_interfaces": {
+          "build_model": true,
+          "build_optimizer": true,
+          "describe_model_structure": true,
+          "get_capabilities": true,
+          "get_default_gradcam_targets": true,
+          "get_model_metadata": true
+        },
+        "standard_interfaces_all_present": true,
+        "structure_base_family": "efficientnet_v2_s",
+        "structure_type_ok": true,
+        "trainable_params_check_skipped_reason": "PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\18447/.cache\\\\torch\\\\hub\\\\checkpoints\\\\efficientnet_v2_s-dd5fe13b.pth.aa7710b1883148b4a2a5c2759c7b2fa1.partial'",
+        "trainable_params_match": null
+      },
+      "generated_model": "efficientnet_dora_gen",
+      "legacy_model": "EfficientNet_DoRA",
+      "method_type_expected": "dora"
+    },
+    {
+      "base_model_expected": "efficientnet_v2_s",
+      "checks": {
+        "capabilities_type_ok": true,
+        "discovered": true,
+        "gradcam_targets_non_empty": true,
+        "load_generated_module": true,
+        "metadata_base_model_match": true,
+        "metadata_method_type_match": true,
+        "metadata_pretrained_present": true,
+        "standard_interfaces": {
+          "build_model": true,
+          "build_optimizer": true,
+          "describe_model_structure": true,
+          "get_capabilities": true,
+          "get_default_gradcam_targets": true,
+          "get_model_metadata": true
+        },
+        "standard_interfaces_all_present": true,
+        "structure_base_family": "efficientnet_v2_s",
+        "structure_type_ok": true,
+        "trainable_params_check_skipped_reason": "PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\18447/.cache\\\\torch\\\\hub\\\\checkpoints\\\\efficientnet_v2_s-dd5fe13b.pth.47cebef20ff14c2abf2793a982a3458e.partial'",
+        "trainable_params_match": null
+      },
+      "generated_model": "efficientnet_full_finetune_gen",
+      "legacy_model": "EfficientNet_Full_Finetune",
+      "method_type_expected": "full_finetune"
+    },
+    {
+      "base_model_expected": "efficientnet_v2_s",
+      "checks": {
+        "capabilities_type_ok": true,
+        "discovered": true,
+        "gradcam_targets_non_empty": true,
+        "load_generated_module": true,
+        "metadata_base_model_match": true,
+        "metadata_method_type_match": true,
+        "metadata_pretrained_present": true,
+        "standard_interfaces": {
+          "build_model": true,
+          "build_optimizer": true,
+          "describe_model_structure": true,
+          "get_capabilities": true,
+          "get_default_gradcam_targets": true,
+          "get_model_metadata": true
+        },
+        "standard_interfaces_all_present": true,
+        "structure_base_family": "efficientnet_v2_s",
+        "structure_type_ok": true,
+        "trainable_params_check_skipped_reason": "PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\18447/.cache\\\\torch\\\\hub\\\\checkpoints\\\\efficientnet_v2_s-dd5fe13b.pth.d44ef2cd8b154c4db2e5e2a22cd461ce.partial'",
+        "trainable_params_match": null
+      },
+      "generated_model": "efficientnet_lora_gen",
+      "legacy_model": "EfficientNet_LoRA",
+      "method_type_expected": "lora"
+    },
+    {
+      "base_model_expected": "efficientnet_v2_s",
+      "checks": {
+        "capabilities_type_ok": true,
+        "discovered": true,
+        "gradcam_targets_non_empty": true,
+        "load_generated_module": true,
+        "metadata_base_model_match": true,
+        "metadata_method_type_match": true,
+        "metadata_pretrained_present": true,
+        "standard_interfaces": {
+          "build_model": true,
+          "build_optimizer": true,
+          "describe_model_structure": true,
+          "get_capabilities": true,
+          "get_default_gradcam_targets": true,
+          "get_model_metadata": true
+        },
+        "standard_interfaces_all_present": true,
+        "structure_base_family": "efficientnet_v2_s",
+        "structure_type_ok": true,
+        "trainable_params_check_skipped_reason": "PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\18447/.cache\\\\torch\\\\hub\\\\checkpoints\\\\efficientnet_v2_s-dd5fe13b.pth.08921b58392249628e90509f3a3432f9.partial'",
+        "trainable_params_match": null
+      },
+      "generated_model": "efficientnet_tsa_gen",
+      "legacy_model": "EfficientNet_TSA",
+      "method_type_expected": "tsa"
+    },
+    {
+      "base_model_expected": "resnet18",
+      "checks": {
+        "capabilities_type_ok": true,
+        "discovered": true,
+        "gradcam_targets_non_empty": true,
+        "load_generated_module": true,
+        "metadata_base_model_match": true,
+        "metadata_method_type_match": true,
+        "metadata_pretrained_present": true,
+        "standard_interfaces": {
+          "build_model": true,
+          "build_optimizer": true,
+          "describe_model_structure": true,
+          "get_capabilities": true,
+          "get_default_gradcam_targets": true,
+          "get_model_metadata": true
+        },
+        "standard_interfaces_all_present": true,
+        "structure_base_family": "resnet18",
+        "structure_type_ok": true,
+        "trainable_params_generated": 2565,
+        "trainable_params_legacy": 2565,
+        "trainable_params_match": true
+      },
+      "generated_model": "resnet18_baseline_gen",
+      "legacy_model": "ResNet18_Baseline",
+      "method_type_expected": "baseline"
+    },
+    {
+      "base_model_expected": "resnet18",
+      "checks": {
+        "capabilities_type_ok": true,
+        "discovered": true,
+        "gradcam_targets_non_empty": true,
+        "load_generated_module": true,
+        "metadata_base_model_match": true,
+        "metadata_method_type_match": true,
+        "metadata_pretrained_present": true,
+        "standard_interfaces": {
+          "build_model": true,
+          "build_optimizer": true,
+          "describe_model_structure": true,
+          "get_capabilities": true,
+          "get_default_gradcam_targets": true,
+          "get_model_metadata": true
+        },
+        "standard_interfaces_all_present": true,
+        "structure_base_family": "resnet18",
+        "structure_type_ok": true,
+        "trainable_params_generated": 12165,
+        "trainable_params_legacy": 12165,
+        "trainable_params_match": true
+      },
+      "generated_model": "resnet18_bn_tuning_gen",
+      "legacy_model": "ResNet18_BN_Tuning",
+      "method_type_expected": "bn_tuning"
+    },
+    {
+      "base_model_expected": "resnet18",
+      "checks": {
+        "capabilities_type_ok": true,
+        "discovered": true,
+        "gradcam_targets_non_empty": true,
+        "load_generated_module": true,
+        "metadata_base_model_match": true,
+        "metadata_method_type_match": true,
+        "metadata_pretrained_present": true,
+        "standard_interfaces": {
+          "build_model": true,
+          "build_optimizer": true,
+          "describe_model_structure": true,
+          "get_capabilities": true,
+          "get_default_gradcam_targets": true,
+          "get_model_metadata": true
+        },
+        "standard_interfaces_all_present": true,
+        "structure_base_family": "resnet18",
+        "structure_type_ok": true,
+        "trainable_params_generated": 11179077,
+        "trainable_params_legacy": 11179077,
+        "trainable_params_match": true
+      },
+      "generated_model": "resnet18_full_finetune_gen",
+      "legacy_model": "ResNet18_Full_Finetune",
+      "method_type_expected": "full_finetune"
+    },
+    {
+      "base_model_expected": "resnet18",
+      "checks": {
+        "capabilities_type_ok": true,
+        "discovered": true,
+        "gradcam_targets_non_empty": true,
+        "load_generated_module": true,
+        "metadata_base_model_match": true,
+        "metadata_method_type_match": true,
+        "metadata_pretrained_present": true,
+        "standard_interfaces": {
+          "build_model": true,
+          "build_optimizer": true,
+          "describe_model_structure": true,
+          "get_capabilities": true,
+          "get_default_gradcam_targets": true,
+          "get_model_metadata": true
+        },
+        "standard_interfaces_all_present": true,
+        "structure_base_family": "resnet18",
+        "structure_type_ok": true,
+        "trainable_params_generated": 22568,
+        "trainable_params_legacy": 22568,
+        "trainable_params_match": true
+      },
+      "generated_model": "resnet18_lora_gen",
+      "legacy_model": "ResNet18_LoRA",
+      "method_type_expected": "lora"
+    },
+    {
+      "base_model_expected": "resnet18",
+      "checks": {
+        "capabilities_type_ok": true,
+        "discovered": true,
+        "gradcam_targets_non_empty": true,
+        "load_generated_module": true,
+        "metadata_base_model_match": true,
+        "metadata_method_type_match": true,
+        "metadata_pretrained_present": true,
+        "standard_interfaces": {
+          "build_model": true,
+          "build_optimizer": true,
+          "describe_model_structure": true,
+          "get_capabilities": true,
+          "get_default_gradcam_targets": true,
+          "get_model_metadata": true
+        },
+        "standard_interfaces_all_present": true,
+        "structure_base_family": "resnet18",
+        "structure_type_ok": true,
+        "trainable_params_generated": 330245,
+        "trainable_params_legacy": 330245,
+        "trainable_params_match": true
+      },
+      "generated_model": "resnet18_tsa_gen",
+      "legacy_model": "ResNet18_TSA",
+      "method_type_expected": "tsa"
+    }
+  ],
+  "migration_version": "phase_migration_v1",
+  "summary": {
+    "all_discovered": true,
+    "all_interfaces_present": true,
+    "generated_models": 13,
+    "targets": 13,
+    "trainable_param_checks_skipped": 8,
+    "trainable_param_matches_known": 5
+  }
+}

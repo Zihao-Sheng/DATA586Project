@@ -1,0 +1,111 @@
+{
+  "legacy_retained": true,
+  "migration_version": "phase_migration_v1",
+  "records": [
+    {
+      "base_model": "efficientnet_v2_s",
+      "generated_file": "C:\\Users\\18447\\DATA586Project\\model\\efficientnet_baseline_gen.py",
+      "generated_model": "efficientnet_baseline_gen",
+      "legacy_model": "EfficientNet_Baseline",
+      "method_type": "baseline",
+      "spec_file": "C:\\Users\\18447\\DATA586Project\\model_specs\\efficientnet_baseline_gen.json"
+    },
+    {
+      "base_model": "efficientnet_v2_s",
+      "generated_file": "C:\\Users\\18447\\DATA586Project\\model\\efficientnet_bn_last1_gen.py",
+      "generated_model": "efficientnet_bn_last1_gen",
+      "legacy_model": "EfficientNet_BN_Last1",
+      "method_type": "bn_last1",
+      "spec_file": "C:\\Users\\18447\\DATA586Project\\model_specs\\efficientnet_bn_last1_gen.json"
+    },
+    {
+      "base_model": "efficientnet_v2_s",
+      "generated_file": "C:\\Users\\18447\\DATA586Project\\model\\efficientnet_bn_last2_gen.py",
+      "generated_model": "efficientnet_bn_last2_gen",
+      "legacy_model": "EfficientNet_BN_Last2",
+      "method_type": "bn_last2",
+      "spec_file": "C:\\Users\\18447\\DATA586Project\\model_specs\\efficientnet_bn_last2_gen.json"
+    },
+    {
+      "base_model": "efficientnet_v2_s",
+      "generated_file": "C:\\Users\\18447\\DATA586Project\\model\\efficientnet_bn_tuning_gen.py",
+      "generated_model": "efficientnet_bn_tuning_gen",
+      "legacy_model": "EfficientNet_BN_Tuning",
+      "method_type": "bn_tuning",
+      "spec_file": "C:\\Users\\18447\\DATA586Project\\model_specs\\efficientnet_bn_tuning_gen.json"
+    },
+    {
+      "base_model": "efficientnet_v2_s",
+      "generated_file": "C:\\Users\\18447\\DATA586Project\\model\\efficientnet_dora_gen.py",
+      "generated_model": "efficientnet_dora_gen",
+      "legacy_model": "EfficientNet_DoRA",
+      "method_type": "dora",
+      "spec_file": "C:\\Users\\18447\\DATA586Project\\model_specs\\efficientnet_dora_gen.json"
+    },
+    {
+      "base_model": "efficientnet_v2_s",
+      "generated_file": "C:\\Users\\18447\\DATA586Project\\model\\efficientnet_full_finetune_gen.py",
+      "generated_model": "efficientnet_full_finetune_gen",
+      "legacy_model": "EfficientNet_Full_Finetune",
+      "method_type": "full_finetune",
+      "spec_file": "C:\\Users\\18447\\DATA586Project\\model_specs\\efficientnet_full_finetune_gen.json"
+    },
+    {
+      "base_model": "efficientnet_v2_s",
+      "generated_file": "C:\\Users\\18447\\DATA586Project\\model\\efficientnet_lora_gen.py",
+      "generated_model": "efficientnet_lora_gen",
+      "legacy_model": "EfficientNet_LoRA",
+      "method_type": "lora",
+      "spec_file": "C:\\Users\\18447\\DATA586Project\\model_specs\\efficientnet_lora_gen.json"
+    },
+    {
+      "base_model": "efficientnet_v2_s",
+      "generated_file": "C:\\Users\\18447\\DATA586Project\\model\\efficientnet_tsa_gen.py",
+      "generated_model": "efficientnet_tsa_gen",
+      "legacy_model": "EfficientNet_TSA",
+      "method_type": "tsa",
+      "spec_file": "C:\\Users\\18447\\DATA586Project\\model_specs\\efficientnet_tsa_gen.json"
+    },
+    {
+      "base_model": "resnet18",
+      "generated_file": "C:\\Users\\18447\\DATA586Project\\model\\resnet18_baseline_gen.py",
+      "generated_model": "resnet18_baseline_gen",
+      "legacy_model": "ResNet18_Baseline",
+      "method_type": "baseline",
+      "spec_file": "C:\\Users\\18447\\DATA586Project\\model_specs\\resnet18_baseline_gen.json"
+    },
+    {
+      "base_model": "resnet18",
+      "generated_file": "C:\\Users\\18447\\DATA586Project\\model\\resnet18_bn_tuning_gen.py",
+      "generated_model": "resnet18_bn_tuning_gen",
+      "legacy_model": "ResNet18_BN_Tuning",
+      "method_type": "bn_tuning",
+      "spec_file": "C:\\Users\\18447\\DATA586Project\\model_specs\\resnet18_bn_tuning_gen.json"
+    },
+    {
+      "base_model": "resnet18",
+      "generated_file": "C:\\Users\\18447\\DATA586Project\\model\\resnet18_full_finetune_gen.py",
+      "generated_model": "resnet18_full_finetune_gen",
+      "legacy_model": "ResNet18_Full_Finetune",
+      "method_type": "full_finetune",
+      "spec_file": "C:\\Users\\18447\\DATA586Project\\model_specs\\resnet18_full_finetune_gen.json"
+    },
+    {
+      "base_model": "resnet18",
+      "generated_file": "C:\\Users\\18447\\DATA586Project\\model\\resnet18_lora_gen.py",
+      "generated_model": "resnet18_lora_gen",
+      "legacy_model": "ResNet18_LoRA",
+      "method_type": "lora",
+      "spec_file": "C:\\Users\\18447\\DATA586Project\\model_specs\\resnet18_lora_gen.json"
+    },
+    {
+      "base_model": "resnet18",
+      "generated_file": "C:\\Users\\18447\\DATA586Project\\model\\resnet18_tsa_gen.py",
+      "generated_model": "resnet18_tsa_gen",
+      "legacy_model": "ResNet18_TSA",
+      "method_type": "tsa",
+      "spec_file": "C:\\Users\\18447\\DATA586Project\\model_specs\\resnet18_tsa_gen.json"
+    }
+  ],
+  "strategy": "side_by_side_generated_equivalents"
+}

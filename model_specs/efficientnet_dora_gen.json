@@ -1,0 +1,28 @@
+{
+  "base_model": "efficientnet_v2_s",
+  "freeze_strategy": "frozen_backbone_peft",
+  "generator_version": "phase3_v1",
+  "gradcam_target_hint": [
+    "features.7"
+  ],
+  "metadata_version": "1.1",
+  "method_type": "dora",
+  "model_name": "efficientnet_dora_gen",
+  "peft_method": "dora",
+  "peft_params": {
+    "alpha": 16.0,
+    "rank": 8
+  },
+  "peft_targets": {
+    "classifier": true,
+    "feature_stages": [
+      6,
+      7
+    ],
+    "layer_keys": []
+  },
+  "pretrained": true,
+  "task_type": "classification",
+  "train_bn": false,
+  "unfreeze_stages": []
+}

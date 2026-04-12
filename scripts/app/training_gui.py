@@ -9,8 +9,8 @@ import uuid
 from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QProcess, QRect, QRectF, QSize, QSettings, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QTextCursor
+from PySide6.QtCore import QEvent, QMimeData, QObject, QPointF, QProcess, QRect, QRectF, QSize, QSettings, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QDrag, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -58,8 +58,9 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from core import run_log_compat
+from core import custom_model_generator, run_log_compat
 from app import app_themes, global_job_queue
+from app.custom_models_canvas import CustomModelCanvasWidget
 from core.model_registry import discover_model_names
 
 
@@ -140,6 +141,406 @@ def validate_predict_image_paths(image_paths: list[Path], sample_limit: int = 12
             if len(errors) >= 5:
                 break
     return readable, errors
+
+
+class CustomModelsWorkspaceWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._spec_path: Path | None = None
+        self._updating_form = False
+
+        self.model_name_edit = QLineEdit("efficientnet_custom_baseline")
+        self.base_model_combo = QComboBox()
+        self.base_model_combo.addItems(custom_model_generator.list_supported_base_models())
+        self.base_model_combo.currentTextChanged.connect(self._on_base_model_changed)
+        self.method_combo = QComboBox()
+        self.method_combo.currentTextChanged.connect(self._on_method_changed)
+
+        self.freeze_strategy_combo = QComboBox()
+        self.freeze_strategy_combo.addItems(sorted(custom_model_generator.SUPPORTED_FREEZE_STRATEGIES))
+
+        self.train_bn_checkbox = QCheckBox("Train BatchNorm layers")
+        self.unfreeze_profile_combo = QComboBox()
+        self.unfreeze_profile_combo.addItems(["none", "last1", "last2", "custom"])
+        self.unfreeze_profile_combo.currentTextChanged.connect(self._on_unfreeze_profile_changed)
+        self.unfreeze_stage_checks: list[QCheckBox] = []
+        unfreeze_stages_layout = QHBoxLayout()
+        unfreeze_stages_layout.setContentsMargins(0, 0, 0, 0)
+        unfreeze_stages_layout.setSpacing(6)
+        for stage in range(8):
+            box = QCheckBox(str(stage))
+            self.unfreeze_stage_checks.append(box)
+            unfreeze_stages_layout.addWidget(box)
+        unfreeze_stages_layout.addStretch(1)
+        self.unfreeze_stages_widget = QWidget()
+        self.unfreeze_stages_widget.setLayout(unfreeze_stages_layout)
+
+        self.peft_method_combo = QComboBox()
+        self.peft_method_combo.currentTextChanged.connect(self._on_peft_method_changed)
+
+        self.dora_stage_checks: list[QCheckBox] = []
+        dora_stages_layout = QHBoxLayout()
+        dora_stages_layout.setContentsMargins(0, 0, 0, 0)
+        dora_stages_layout.setSpacing(6)
+        for stage in range(8):
+            box = QCheckBox(str(stage))
+            self.dora_stage_checks.append(box)
+            dora_stages_layout.addWidget(box)
+        dora_stages_layout.addStretch(1)
+        self.dora_stages_widget = QWidget()
+        self.dora_stages_widget.setLayout(dora_stages_layout)
+        self.dora_classifier_checkbox = QCheckBox("Apply DoRA to classifier")
+        self.dora_classifier_checkbox.setChecked(True)
+        self.dora_rank_spin = QSpinBox()
+        self.dora_rank_spin.setRange(1, 128)
+        self.dora_rank_spin.setValue(8)
+        self.dora_alpha_spin = QDoubleSpinBox()
+        self.dora_alpha_spin.setRange(0.1, 512.0)
+        self.dora_alpha_spin.setDecimals(2)
+        self.dora_alpha_spin.setSingleStep(0.5)
+        self.dora_alpha_spin.setValue(16.0)
+        self.peft_layer_keys_edit = QLineEdit("layer4")
+        self.peft_layer_keys_edit.setPlaceholderText("Comma-separated module keys, e.g. layer4")
+
+        self.gradcam_hint_edit = QLineEdit("features.7")
+        self.gradcam_hint_edit.setPlaceholderText("Comma-separated layer names, e.g. features.7")
+
+        basic_group = QGroupBox("Basic Info")
+        basic_form = QFormLayout(basic_group)
+        basic_form.addRow("Model Name", self.model_name_edit)
+        basic_form.addRow("Base Model", self.base_model_combo)
+        basic_form.addRow("Method Type", self.method_combo)
+
+        strategy_group = QGroupBox("Training Strategy")
+        strategy_form = QFormLayout(strategy_group)
+        strategy_form.addRow("Freeze Strategy", self.freeze_strategy_combo)
+        strategy_form.addRow("", self.train_bn_checkbox)
+        strategy_form.addRow("Unfreeze Profile", self.unfreeze_profile_combo)
+        strategy_form.addRow("Unfreeze Stages", self.unfreeze_stages_widget)
+
+        peft_group = QGroupBox("PEFT Strategy")
+        peft_form = QFormLayout(peft_group)
+        peft_form.addRow("PEFT Method", self.peft_method_combo)
+        peft_form.addRow("DoRA Target Stages", self.dora_stages_widget)
+        peft_form.addRow("PEFT Layer Keys", self.peft_layer_keys_edit)
+        peft_form.addRow("", self.dora_classifier_checkbox)
+        peft_form.addRow("DoRA Rank", self.dora_rank_spin)
+        peft_form.addRow("DoRA Alpha", self.dora_alpha_spin)
+
+        gradcam_group = QGroupBox("Grad-CAM Hints")
+        gradcam_form = QFormLayout(gradcam_group)
+        gradcam_form.addRow("Default Targets", self.gradcam_hint_edit)
+
+        self.spec_path_label = QLabel("Spec File: (new unsaved spec)")
+        self.spec_path_label.setWordWrap(True)
+        self.model_output_label = QLabel("Generated Model Name: (pending)")
+        self.model_output_label.setWordWrap(True)
+        self.status_label = QLabel("Ready. Structured spec/template generation for EfficientNet and ResNet18.")
+        self.status_label.setWordWrap(True)
+        self.status_label.setProperty("muted", True)
+
+        actions_layout = QHBoxLayout()
+        self.new_spec_button = QPushButton("New Spec")
+        self.load_spec_button = QPushButton("Load Spec")
+        self.save_spec_button = QPushButton("Save Spec")
+        self.save_as_spec_button = QPushButton("Save As")
+        self.generate_model_button = QPushButton("Generate Model")
+        actions_layout.addWidget(self.new_spec_button)
+        actions_layout.addWidget(self.load_spec_button)
+        actions_layout.addWidget(self.save_spec_button)
+        actions_layout.addWidget(self.save_as_spec_button)
+        actions_layout.addStretch(1)
+        actions_layout.addWidget(self.generate_model_button)
+
+        self.new_spec_button.clicked.connect(self.new_spec)
+        self.load_spec_button.clicked.connect(self.load_spec)
+        self.save_spec_button.clicked.connect(self.save_spec)
+        self.save_as_spec_button.clicked.connect(self.save_spec_as)
+        self.generate_model_button.clicked.connect(self.generate_model)
+        self.model_name_edit.textChanged.connect(self._refresh_model_output_label)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(basic_group)
+        layout.addWidget(strategy_group)
+        layout.addWidget(peft_group)
+        layout.addWidget(gradcam_group)
+        layout.addLayout(actions_layout)
+        layout.addWidget(self.spec_path_label)
+        layout.addWidget(self.model_output_label)
+        layout.addWidget(self.status_label)
+
+        self.new_spec()
+
+    @staticmethod
+    def _set_combo_items(combo: QComboBox, items: list[str], selected: str | None = None) -> None:
+        keep = selected if selected in items else (items[0] if items else "")
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(items)
+        if keep:
+            combo.setCurrentText(keep)
+        combo.blockSignals(False)
+
+    def _selected_stage_indices(self, checks: list[QCheckBox]) -> list[int]:
+        return [index for index, box in enumerate(checks) if box.isChecked()]
+
+    def _set_stage_indices(self, checks: list[QCheckBox], indices: list[int]) -> None:
+        selected = set(indices)
+        for index, box in enumerate(checks):
+            box.setChecked(index in selected)
+
+    def _refresh_model_output_label(self) -> None:
+        self.model_output_label.setText(f"Generated Model Name: {self.model_name_edit.text().strip() or '(pending)'}")
+
+    def _on_unfreeze_profile_changed(self, profile: str) -> None:
+        if self._updating_form:
+            return
+        normalized = profile.strip().lower()
+        if normalized == "none":
+            self._set_stage_indices(self.unfreeze_stage_checks, [])
+        elif normalized == "last1":
+            self._set_stage_indices(self.unfreeze_stage_checks, [7])
+        elif normalized == "last2":
+            self._set_stage_indices(self.unfreeze_stage_checks, [6, 7])
+
+    def _on_base_model_changed(self, base_model: str) -> None:
+        if self._updating_form:
+            return
+        methods = custom_model_generator.supported_methods_for_base(base_model)
+        current_method = self.method_combo.currentText().strip().lower()
+        selected = current_method if current_method in methods else methods[0]
+        self._set_combo_items(self.method_combo, methods, selected)
+        self._on_method_changed(selected)
+
+    def _on_peft_method_changed(self, _: str) -> None:
+        if self._updating_form:
+            return
+        self._on_method_changed(self.method_combo.currentText())
+
+    def _on_method_changed(self, _: str) -> None:
+        if self._updating_form:
+            return
+        self._updating_form = True
+        try:
+            base_model = self.base_model_combo.currentText().strip().lower() or "efficientnet_v2_s"
+            method = self.method_combo.currentText().strip().lower() or "baseline"
+            preset = custom_model_generator.build_preset_spec(
+                model_name=self.model_name_edit.text().strip() or "temp_model",
+                base_model=base_model,
+                method_type=method,
+            )
+
+            self.freeze_strategy_combo.setCurrentText(preset.freeze_strategy)
+            self.train_bn_checkbox.setChecked(bool(preset.train_bn))
+            self._set_stage_indices(self.unfreeze_stage_checks, list(preset.unfreeze_stages))
+            if preset.unfreeze_stages == [7]:
+                self.unfreeze_profile_combo.setCurrentText("last1")
+            elif preset.unfreeze_stages == [6, 7]:
+                self.unfreeze_profile_combo.setCurrentText("last2")
+            elif not preset.unfreeze_stages:
+                self.unfreeze_profile_combo.setCurrentText("none")
+            else:
+                self.unfreeze_profile_combo.setCurrentText("custom")
+
+            expected_peft = preset.peft_method or "none"
+            self._set_combo_items(self.peft_method_combo, [expected_peft], expected_peft)
+            targets = preset.peft_targets if isinstance(preset.peft_targets, dict) else {}
+            self._set_stage_indices(self.dora_stage_checks, list(targets.get("feature_stages", [])))
+            self.peft_layer_keys_edit.setText(",".join(str(value) for value in targets.get("layer_keys", [])))
+            self.dora_classifier_checkbox.setChecked(bool(targets.get("classifier", False)))
+            params = preset.peft_params if isinstance(preset.peft_params, dict) else {}
+            self.dora_rank_spin.setValue(int(params.get("rank", 8)))
+            self.dora_alpha_spin.setValue(float(params.get("alpha", 16.0)))
+            self.gradcam_hint_edit.setText(",".join(preset.gradcam_target_hint))
+
+            is_efficientnet = base_model == "efficientnet_v2_s"
+            is_dora = is_efficientnet and method == "dora"
+            show_unfreeze_profile = is_efficientnet and method in {"bn_last1", "bn_last2"}
+            self.unfreeze_profile_combo.setEnabled(show_unfreeze_profile)
+            self.unfreeze_stages_widget.setEnabled(show_unfreeze_profile or (is_efficientnet and method in {"bn_tuning", "manual"}))
+
+            self.dora_stages_widget.setEnabled(is_dora)
+            self.dora_classifier_checkbox.setEnabled(is_dora)
+            self.dora_rank_spin.setEnabled(is_dora)
+            self.dora_alpha_spin.setEnabled(is_dora)
+            self.peft_layer_keys_edit.setEnabled(method in {"lora", "tsa"} and not is_efficientnet)
+        finally:
+            self._updating_form = False
+
+    def _collect_gradcam_hints(self) -> list[str]:
+        return [part.strip() for part in self.gradcam_hint_edit.text().split(",") if part.strip()]
+
+    def _collect_layer_keys(self) -> list[str]:
+        return [part.strip() for part in self.peft_layer_keys_edit.text().split(",") if part.strip()]
+
+    def _collect_spec_from_form(self) -> custom_model_generator.CustomModelSpec:
+        base_model = self.base_model_combo.currentText().strip().lower()
+        method = self.method_combo.currentText().strip().lower()
+        peft_method = self.peft_method_combo.currentText().strip().lower()
+        payload = {
+            "model_name": self.model_name_edit.text().strip(),
+            "base_model": base_model,
+            "task_type": "classification",
+            "method_type": method,
+            "freeze_strategy": self.freeze_strategy_combo.currentText().strip().lower(),
+            "train_bn": self.train_bn_checkbox.isChecked(),
+            "unfreeze_stages": self._selected_stage_indices(self.unfreeze_stage_checks),
+            "peft_method": None if peft_method == "none" else peft_method,
+            "peft_targets": {
+                "feature_stages": self._selected_stage_indices(self.dora_stage_checks),
+                "layer_keys": self._collect_layer_keys(),
+                "classifier": self.dora_classifier_checkbox.isChecked(),
+            },
+            "peft_params": {},
+            "gradcam_target_hint": self._collect_gradcam_hints(),
+            "metadata_version": custom_model_generator.SPEC_VERSION,
+            "generator_version": custom_model_generator.GENERATOR_VERSION,
+        }
+        if method in {"lora", "dora"}:
+            payload["peft_params"] = {
+                "rank": int(self.dora_rank_spin.value()),
+                "alpha": float(self.dora_alpha_spin.value()),
+            }
+        return custom_model_generator.spec_from_dict(payload)
+
+    def _apply_spec_to_form(self, spec: custom_model_generator.CustomModelSpec) -> None:
+        self._updating_form = True
+        try:
+            self.model_name_edit.setText(spec.model_name)
+            self.base_model_combo.setCurrentText(spec.base_model)
+            methods = custom_model_generator.supported_methods_for_base(spec.base_model)
+            self._set_combo_items(self.method_combo, methods, spec.method_type)
+            self.freeze_strategy_combo.setCurrentText(spec.freeze_strategy)
+            self.train_bn_checkbox.setChecked(bool(spec.train_bn))
+            self._set_stage_indices(self.unfreeze_stage_checks, list(spec.unfreeze_stages))
+            if spec.unfreeze_stages == [7]:
+                self.unfreeze_profile_combo.setCurrentText("last1")
+            elif spec.unfreeze_stages == [6, 7]:
+                self.unfreeze_profile_combo.setCurrentText("last2")
+            elif not spec.unfreeze_stages:
+                self.unfreeze_profile_combo.setCurrentText("none")
+            else:
+                self.unfreeze_profile_combo.setCurrentText("custom")
+
+            peft_method = spec.peft_method or "none"
+            self._set_combo_items(self.peft_method_combo, [peft_method], peft_method)
+            targets = spec.peft_targets if isinstance(spec.peft_targets, dict) else {}
+            self._set_stage_indices(self.dora_stage_checks, list(targets.get("feature_stages", [])))
+            self.peft_layer_keys_edit.setText(",".join(str(value) for value in targets.get("layer_keys", [])))
+            self.dora_classifier_checkbox.setChecked(bool(targets.get("classifier", False)))
+            params = spec.peft_params if isinstance(spec.peft_params, dict) else {}
+            self.dora_rank_spin.setValue(int(params.get("rank", 8)))
+            self.dora_alpha_spin.setValue(float(params.get("alpha", 16.0)))
+            self.gradcam_hint_edit.setText(",".join(spec.gradcam_target_hint))
+            self._refresh_model_output_label()
+        finally:
+            self._updating_form = False
+        self._on_method_changed(self.method_combo.currentText())
+
+    def new_spec(self) -> None:
+        spec = custom_model_generator.build_preset_spec(
+            model_name="efficientnet_custom_baseline",
+            base_model="efficientnet_v2_s",
+            method_type="baseline",
+        )
+        self._spec_path = None
+        self._apply_spec_to_form(spec)
+        self.spec_path_label.setText("Spec File: (new unsaved spec)")
+        self.status_label.setText("New spec initialized.")
+
+    def load_spec(self) -> None:
+        start_dir = custom_model_generator.SPEC_DIR
+        selected_path, _ = QFileDialog.getOpenFileName(self, "Load Custom Model Spec", str(start_dir), "Spec JSON (*.json)")
+        if not selected_path:
+            return
+        try:
+            spec = custom_model_generator.load_spec_file(Path(selected_path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Load Spec Failed", str(exc))
+            return
+        self._spec_path = Path(selected_path).expanduser().resolve()
+        self._apply_spec_to_form(spec)
+        self.spec_path_label.setText(f"Spec File: {self._spec_path}")
+        self.status_label.setText("Spec loaded.")
+
+    def save_spec(self) -> None:
+        try:
+            spec = self._collect_spec_from_form()
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid Spec", str(exc))
+            return
+        path = self._spec_path
+        if path is None:
+            path = custom_model_generator.default_spec_path_for_model_name(spec.model_name)
+        try:
+            saved_path = custom_model_generator.save_spec_file(spec, path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Save Spec Failed", str(exc))
+            return
+        self._spec_path = saved_path
+        self.spec_path_label.setText(f"Spec File: {saved_path}")
+        self.status_label.setText("Spec saved.")
+
+    def save_spec_as(self) -> None:
+        try:
+            spec = self._collect_spec_from_form()
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid Spec", str(exc))
+            return
+        default_path = custom_model_generator.default_spec_path_for_model_name(spec.model_name)
+        selected_path, _ = QFileDialog.getSaveFileName(self, "Save Spec As", str(default_path), "Spec JSON (*.json)")
+        if not selected_path:
+            return
+        try:
+            saved_path = custom_model_generator.save_spec_file(spec, Path(selected_path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Save Spec Failed", str(exc))
+            return
+        self._spec_path = saved_path
+        self.spec_path_label.setText(f"Spec File: {saved_path}")
+        self.status_label.setText("Spec saved as new file.")
+
+    def generate_model(self) -> None:
+        try:
+            spec = self._collect_spec_from_form()
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid Spec", str(exc))
+            return
+
+        model_path = custom_model_generator.MODEL_DIR / f"{spec.model_name}.py"
+        overwrite = False
+        if model_path.exists():
+            answer = QMessageBox.question(
+                self,
+                "Regenerate Existing Model",
+                f"Model file already exists:\n{model_path}\n\nRegenerate and overwrite it?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            overwrite = True
+
+        try:
+            artifacts = custom_model_generator.generate_custom_model(spec, overwrite=overwrite)
+            saved_path = custom_model_generator.save_spec_file(spec, self._spec_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Generate Model Failed", str(exc))
+            return
+
+        self._spec_path = saved_path
+        self.spec_path_label.setText(f"Spec File: {saved_path}")
+        self.status_label.setText("Model generated successfully.")
+
+        parent = self.parent()
+        if isinstance(parent, TrainingLauncher):
+            parent.refresh_available_models(preferred_model=artifacts.model_name)
+            parent.refresh_checkpoint_output_options(preserve_text=artifacts.model_name)
+        QMessageBox.information(
+            self,
+            "Model Generated",
+            f"Model file: {artifacts.model_file_path}\nSpec file: {artifacts.spec_file_path}",
+        )
 
 
 class LogPlotWidget(QWidget):
@@ -2050,12 +2451,14 @@ class TrainingLauncher(QMainWindow):
         logs_splitter.setStretchFactor(1, 1)
         logs_splitter.setSizes([320, 980])
         logs_layout.addWidget(logs_splitter, stretch=1)
+        custom_models_tab = CustomModelCanvasWidget(on_model_generated=self.on_custom_model_generated, parent=self)
 
         self.tabs.addTab(training_tab, "Training")
         self.tabs.addTab(predict_tab, "Predicting")
         self.tabs.addTab(test_split_tab, "Test Splits")
         self.tabs.addTab(data_tab, "Data")
         self.tabs.addTab(logs_tab, "Logs")
+        self.tabs.addTab(custom_models_tab, "Custom Models")
         self.tabs.setCurrentIndex(0)
         corner_widget = QWidget()
         corner_layout = QHBoxLayout(corner_widget)
@@ -3412,6 +3815,42 @@ class TrainingLauncher(QMainWindow):
             if str(item.get("display_label", "")) == model_name:
                 return Path(str(item.get("checkpoint_path", ""))).expanduser()
         return DEFAULT_CHECKPOINT_DIR / model_name / "best.pth"
+
+    def refresh_available_models(self, *, preferred_model: str | None = None) -> None:
+        refreshed = discover_model_names()
+        if not refreshed:
+            return
+        self.available_models = refreshed
+        current_training = self.model_combo.currentText().strip()
+        current_predict = self.predict_model_combo.currentText().strip()
+
+        training_target = preferred_model or (current_training if current_training in refreshed else refreshed[0])
+        predict_target = (
+            preferred_model
+            if preferred_model in refreshed
+            else (current_predict if current_predict in refreshed else refreshed[0])
+        )
+
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        self.model_combo.addItems(refreshed)
+        self.model_combo.setCurrentText(training_target)
+        self.model_combo.blockSignals(False)
+
+        self.predict_model_combo.blockSignals(True)
+        self.predict_model_combo.clear()
+        self.predict_model_combo.addItems(refreshed)
+        self.predict_model_combo.setCurrentText(predict_target)
+        self.predict_model_combo.blockSignals(False)
+
+        self.on_training_model_changed(self.model_combo.currentText())
+        self._last_predict_model_name = self.predict_model_combo.currentText()
+        self.update_predict_detected_model()
+        self.update_test_split_detected_model()
+
+    def on_custom_model_generated(self, model_name: str) -> None:
+        self.refresh_available_models(preferred_model=model_name)
+        self.refresh_checkpoint_output_options(preserve_text=model_name)
 
     def checkpoint_output_name(self) -> str:
         text = self.checkpoint_output_combo.currentText().strip()

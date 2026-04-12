@@ -1,0 +1,26 @@
+{
+  "base_model": "efficientnet_v2_s",
+  "freeze_strategy": "frozen_backbone_peft",
+  "generator_version": "phase3_v1",
+  "gradcam_target_hint": [
+    "features.7"
+  ],
+  "metadata_version": "1.1",
+  "method_type": "tsa",
+  "model_name": "efficientnet_tsa_gen",
+  "peft_method": "tsa",
+  "peft_params": {},
+  "peft_targets": {
+    "classifier": true,
+    "feature_stages": [
+      5,
+      6,
+      7
+    ],
+    "layer_keys": []
+  },
+  "pretrained": true,
+  "task_type": "classification",
+  "train_bn": false,
+  "unfreeze_stages": []
+}

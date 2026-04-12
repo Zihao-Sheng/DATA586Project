@@ -20,20 +20,22 @@ def _resolved_device(device: str | torch.device) -> str | torch.device:
     return device
 
 
-def load_resnet18_classifier(num_classes: int) -> nn.Module:
+def load_resnet18_classifier(num_classes: int, pretrained: bool = True) -> nn.Module:
     try:
-        model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+        weights = models.ResNet18_Weights.DEFAULT if pretrained else None
+        model = models.resnet18(weights=weights)
     except TypeError:
-        model = models.resnet18(pretrained=True)
+        model = models.resnet18(pretrained=pretrained)
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
 
 
-def load_efficientnet_v2_s_classifier(num_classes: int) -> nn.Module:
+def load_efficientnet_v2_s_classifier(num_classes: int, pretrained: bool = True) -> nn.Module:
     try:
-        model = models.efficientnet_v2_s(weights=models.EfficientNet_V2_S_Weights.DEFAULT)
+        weights = models.EfficientNet_V2_S_Weights.DEFAULT if pretrained else None
+        model = models.efficientnet_v2_s(weights=weights)
     except TypeError:
-        model = models.efficientnet_v2_s(pretrained=True)
+        model = models.efficientnet_v2_s(pretrained=pretrained)
     model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
     return model
 
@@ -229,23 +231,23 @@ def _finalize_model(model: nn.Module, device: str | torch.device) -> nn.Module:
     return model
 
 
-def build_resnet18_linear_probe(num_classes: int, device: str | torch.device) -> nn.Module:
-    model = load_resnet18_classifier(num_classes)
+def build_resnet18_linear_probe(num_classes: int, device: str | torch.device, pretrained: bool = True) -> nn.Module:
+    model = load_resnet18_classifier(num_classes, pretrained=pretrained)
     freeze_all(model)
     unfreeze_module(model.fc)
     return _finalize_model(model, device)
 
 
-def build_resnet18_lora(num_classes: int, device: str | torch.device) -> nn.Module:
-    model = load_resnet18_classifier(num_classes)
+def build_resnet18_lora(num_classes: int, device: str | torch.device, pretrained: bool = True) -> nn.Module:
+    model = load_resnet18_classifier(num_classes, pretrained=pretrained)
     freeze_all(model)
     apply_lora_recursively(model.layer4)
     model.fc = LoRALinear(model.fc, rank=8, alpha=16.0)
     return _finalize_model(model, device)
 
 
-def build_resnet18_adapters(num_classes: int, device: str | torch.device) -> nn.Module:
-    model = load_resnet18_classifier(num_classes)
+def build_resnet18_adapters(num_classes: int, device: str | torch.device, pretrained: bool = True) -> nn.Module:
+    model = load_resnet18_classifier(num_classes, pretrained=pretrained)
     freeze_all(model)
     wrap_module_with_adapter(model.layer3, "0", channels=256)
     wrap_module_with_adapter(model.layer3, "1", channels=256)
@@ -255,27 +257,27 @@ def build_resnet18_adapters(num_classes: int, device: str | torch.device) -> nn.
     return _finalize_model(model, device)
 
 
-def build_resnet18_bn_tuning(num_classes: int, device: str | torch.device) -> nn.Module:
-    model = load_resnet18_classifier(num_classes)
+def build_resnet18_bn_tuning(num_classes: int, device: str | torch.device, pretrained: bool = True) -> nn.Module:
+    model = load_resnet18_classifier(num_classes, pretrained=pretrained)
     enable_bn_tuning(model, [model.fc])
     return _finalize_model(model, device)
 
 
-def build_resnet18_full_finetune(num_classes: int, device: str | torch.device) -> nn.Module:
-    model = load_resnet18_classifier(num_classes)
+def build_resnet18_full_finetune(num_classes: int, device: str | torch.device, pretrained: bool = True) -> nn.Module:
+    model = load_resnet18_classifier(num_classes, pretrained=pretrained)
     unfreeze_all(model)
     return _finalize_model(model, device)
 
 
-def build_efficientnet_linear_probe(num_classes: int, device: str | torch.device) -> nn.Module:
-    model = load_efficientnet_v2_s_classifier(num_classes)
+def build_efficientnet_linear_probe(num_classes: int, device: str | torch.device, pretrained: bool = True) -> nn.Module:
+    model = load_efficientnet_v2_s_classifier(num_classes, pretrained=pretrained)
     freeze_all(model)
     unfreeze_module(model.classifier[1])
     return _finalize_model(model, device)
 
 
-def build_efficientnet_lora(num_classes: int, device: str | torch.device) -> nn.Module:
-    model = load_efficientnet_v2_s_classifier(num_classes)
+def build_efficientnet_lora(num_classes: int, device: str | torch.device, pretrained: bool = True) -> nn.Module:
+    model = load_efficientnet_v2_s_classifier(num_classes, pretrained=pretrained)
     freeze_all(model)
     apply_lora_recursively(model.features[6])
     apply_lora_recursively(model.features[7])
@@ -283,8 +285,8 @@ def build_efficientnet_lora(num_classes: int, device: str | torch.device) -> nn.
     return _finalize_model(model, device)
 
 
-def build_efficientnet_dora(num_classes: int, device: str | torch.device) -> nn.Module:
-    model = load_efficientnet_v2_s_classifier(num_classes)
+def build_efficientnet_dora(num_classes: int, device: str | torch.device, pretrained: bool = True) -> nn.Module:
+    model = load_efficientnet_v2_s_classifier(num_classes, pretrained=pretrained)
     freeze_all(model)
     apply_dora_recursively(model.features[6])
     apply_dora_recursively(model.features[7])
@@ -292,8 +294,8 @@ def build_efficientnet_dora(num_classes: int, device: str | torch.device) -> nn.
     return _finalize_model(model, device)
 
 
-def build_efficientnet_adapters(num_classes: int, device: str | torch.device) -> nn.Module:
-    model = load_efficientnet_v2_s_classifier(num_classes)
+def build_efficientnet_adapters(num_classes: int, device: str | torch.device, pretrained: bool = True) -> nn.Module:
+    model = load_efficientnet_v2_s_classifier(num_classes, pretrained=pretrained)
     freeze_all(model)
     wrap_module_with_adapter(model.features, "5", channels=160)
     wrap_module_with_adapter(model.features, "6", channels=256)
@@ -302,14 +304,14 @@ def build_efficientnet_adapters(num_classes: int, device: str | torch.device) ->
     return _finalize_model(model, device)
 
 
-def build_efficientnet_bn_tuning(num_classes: int, device: str | torch.device) -> nn.Module:
-    model = load_efficientnet_v2_s_classifier(num_classes)
+def build_efficientnet_bn_tuning(num_classes: int, device: str | torch.device, pretrained: bool = True) -> nn.Module:
+    model = load_efficientnet_v2_s_classifier(num_classes, pretrained=pretrained)
     enable_bn_tuning(model, [model.classifier[1]])
     return _finalize_model(model, device)
 
 
-def build_efficientnet_bn_last1(num_classes: int, device: str | torch.device) -> nn.Module:
-    model = load_efficientnet_v2_s_classifier(num_classes)
+def build_efficientnet_bn_last1(num_classes: int, device: str | torch.device, pretrained: bool = True) -> nn.Module:
+    model = load_efficientnet_v2_s_classifier(num_classes, pretrained=pretrained)
     enable_bn_tuning_with_last_feature_stages(
         model,
         model.features,
@@ -319,8 +321,8 @@ def build_efficientnet_bn_last1(num_classes: int, device: str | torch.device) ->
     return _finalize_model(model, device)
 
 
-def build_efficientnet_bn_last2(num_classes: int, device: str | torch.device) -> nn.Module:
-    model = load_efficientnet_v2_s_classifier(num_classes)
+def build_efficientnet_bn_last2(num_classes: int, device: str | torch.device, pretrained: bool = True) -> nn.Module:
+    model = load_efficientnet_v2_s_classifier(num_classes, pretrained=pretrained)
     enable_bn_tuning_with_last_feature_stages(
         model,
         model.features,
@@ -330,14 +332,14 @@ def build_efficientnet_bn_last2(num_classes: int, device: str | torch.device) ->
     return _finalize_model(model, device)
 
 
-def build_efficientnet_full_finetune(num_classes: int, device: str | torch.device) -> nn.Module:
-    model = load_efficientnet_v2_s_classifier(num_classes)
+def build_efficientnet_full_finetune(num_classes: int, device: str | torch.device, pretrained: bool = True) -> nn.Module:
+    model = load_efficientnet_v2_s_classifier(num_classes, pretrained=pretrained)
     unfreeze_all(model)
     return _finalize_model(model, device)
 
 
-def strategy_builder(backbone: str, strategy: str) -> Callable[[int, str | torch.device], nn.Module]:
-    registry: dict[tuple[str, str], Callable[[int, str | torch.device], nn.Module]] = {
+def strategy_builder(backbone: str, strategy: str) -> Callable[[int, str | torch.device, bool], nn.Module]:
+    registry: dict[tuple[str, str], Callable[[int, str | torch.device, bool], nn.Module]] = {
         ("resnet18", "linear_probe"): build_resnet18_linear_probe,
         ("resnet18", "lora"): build_resnet18_lora,
         ("resnet18", "tsa"): build_resnet18_adapters,

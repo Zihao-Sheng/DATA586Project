@@ -1,0 +1,22 @@
+{
+  "base_model": "efficientnet_v2_s",
+  "freeze_strategy": "linear_probe",
+  "generator_version": "phase3_v1",
+  "gradcam_target_hint": [
+    "features.7"
+  ],
+  "metadata_version": "1.1",
+  "method_type": "baseline",
+  "model_name": "efficientnet_baseline_gen",
+  "peft_method": null,
+  "peft_params": {},
+  "peft_targets": {
+    "classifier": false,
+    "feature_stages": [],
+    "layer_keys": []
+  },
+  "pretrained": true,
+  "task_type": "classification",
+  "train_bn": false,
+  "unfreeze_stages": []
+}
