@@ -9,9 +9,78 @@ from torch import nn
 from torchvision import models
 
 
-def build_optimizer(model: nn.Module, lr: float = 1e-3) -> torch.optim.Optimizer:
+def _normalize_stage_lr_overrides(raw: dict[str, object] | None) -> dict[str, float]:
+    if not isinstance(raw, dict):
+        return {}
+    overrides: dict[str, float] = {}
+    for key, value in raw.items():
+        stage = str(key).strip()
+        if not stage:
+            continue
+        try:
+            lr_value = float(value)
+        except Exception:
+            continue
+        if lr_value > 0:
+            overrides[stage] = lr_value
+    return overrides
+
+
+def _normalize_backbone_name(base_model: str | None) -> str | None:
+    normalized = str(base_model or "").strip().lower()
+    aliases = {
+        "efficientnet": "efficientnet_v2_s",
+        "resnet": "resnet18",
+    }
+    canonical = aliases.get(normalized, normalized)
+    if canonical in {"resnet18", "resnet50", "efficientnet_v2_s", "convnext_tiny", "mobilenet_v3_large", "densenet121"}:
+        return canonical
+    return None
+
+
+def build_optimizer(
+    model: nn.Module,
+    lr: float = 1e-3,
+    *,
+    optimizer_name: str = "adam",
+    base_model: str | None = None,
+    stage_lr_overrides: dict[str, object] | None = None,
+) -> torch.optim.Optimizer:
     trainable_params = [param for param in model.parameters() if param.requires_grad]
-    return torch.optim.Adam(trainable_params, lr=lr)
+    param_groups: list[dict[str, object]] = [{"params": trainable_params, "lr": float(lr)}]
+
+    normalized_overrides = _normalize_stage_lr_overrides(stage_lr_overrides)
+    normalized_backbone = _normalize_backbone_name(base_model)
+    if normalized_overrides and normalized_backbone is not None:
+        try:
+            stage_map = _stage_map_for_backbone(model, normalized_backbone)
+        except Exception:
+            stage_map = {}
+        if stage_map:
+            assigned_ids: set[int] = set()
+            grouped: list[dict[str, object]] = []
+            for stage_key, stage_lr in normalized_overrides.items():
+                module = stage_map.get(stage_key)
+                if module is None:
+                    continue
+                params = [param for param in module.parameters() if param.requires_grad and id(param) not in assigned_ids]
+                if not params:
+                    continue
+                for param in params:
+                    assigned_ids.add(id(param))
+                grouped.append({"params": params, "lr": float(stage_lr), "stage": stage_key})
+            default_params = [param for param in trainable_params if id(param) not in assigned_ids]
+            if default_params:
+                grouped.append({"params": default_params, "lr": float(lr), "stage": "default"})
+            if grouped:
+                param_groups = grouped
+
+    normalized_optimizer = str(optimizer_name).strip().lower()
+    if normalized_optimizer == "sgd":
+        return torch.optim.SGD(param_groups, momentum=0.9)
+    if normalized_optimizer == "adamw":
+        return torch.optim.AdamW(param_groups, weight_decay=1e-2)
+    return torch.optim.Adam(param_groups)
 
 
 def _resolved_device(device: str | torch.device) -> str | torch.device:

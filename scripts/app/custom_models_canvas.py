@@ -193,6 +193,60 @@ class CustomModelCanvasWidget(QWidget):
             ("output", "Output"),
         ],
     }
+    STAGE_STATIC_INFO: dict[str, dict[str, dict[str, str]]] = {
+        "efficientnet_v2_s": {
+            "stem": {"module": "Conv+BN+SiLU", "repeat": "1", "kernel": "3", "stride": "2", "channels": "3 -> 24"},
+            "features.0": {"module": "FusedMBConv", "repeat": "2", "kernel": "3", "stride": "1", "channels": "24 -> 24"},
+            "features.1": {"module": "FusedMBConv", "repeat": "4", "kernel": "3", "stride": "2/1", "channels": "24 -> 48"},
+            "features.2": {"module": "FusedMBConv", "repeat": "4", "kernel": "3", "stride": "2/1", "channels": "48 -> 64"},
+            "features.3": {"module": "MBConv", "repeat": "6", "kernel": "3", "stride": "2/1", "channels": "64 -> 128"},
+            "features.4": {"module": "MBConv", "repeat": "9", "kernel": "3", "stride": "1", "channels": "128 -> 160"},
+            "features.5": {"module": "MBConv", "repeat": "15", "kernel": "3", "stride": "2/1", "channels": "160 -> 256"},
+            "features.6": {"module": "Head Conv+BN+SiLU", "repeat": "1", "kernel": "1", "stride": "1", "channels": "256 -> 1280"},
+            "features.7": {"module": "AvgPool", "repeat": "1", "kernel": "-", "stride": "-", "channels": "1280 -> 1280"},
+            "classifier": {"module": "Dropout + Linear", "repeat": "1", "kernel": "-", "stride": "-", "channels": "1280 -> num_classes"},
+        },
+        "resnet18": {
+            "stem": {"module": "Conv7x7+BN+ReLU+MaxPool", "repeat": "1", "kernel": "7", "stride": "2", "channels": "3 -> 64"},
+            "layer1": {"module": "BasicBlock", "repeat": "2", "kernel": "3", "stride": "1", "channels": "64 -> 64"},
+            "layer2": {"module": "BasicBlock", "repeat": "2", "kernel": "3", "stride": "2", "channels": "64 -> 128"},
+            "layer3": {"module": "BasicBlock", "repeat": "2", "kernel": "3", "stride": "2", "channels": "128 -> 256"},
+            "layer4": {"module": "BasicBlock", "repeat": "2", "kernel": "3", "stride": "2", "channels": "256 -> 512"},
+            "classifier": {"module": "GlobalAvgPool + Linear", "repeat": "1", "kernel": "-", "stride": "-", "channels": "512 -> num_classes"},
+        },
+        "resnet50": {
+            "stem": {"module": "Conv7x7+BN+ReLU+MaxPool", "repeat": "1", "kernel": "7", "stride": "2", "channels": "3 -> 64"},
+            "layer1": {"module": "Bottleneck", "repeat": "3", "kernel": "1/3/1", "stride": "1", "channels": "64 -> 256"},
+            "layer2": {"module": "Bottleneck", "repeat": "4", "kernel": "1/3/1", "stride": "2", "channels": "256 -> 512"},
+            "layer3": {"module": "Bottleneck", "repeat": "6", "kernel": "1/3/1", "stride": "2", "channels": "512 -> 1024"},
+            "layer4": {"module": "Bottleneck", "repeat": "3", "kernel": "1/3/1", "stride": "2", "channels": "1024 -> 2048"},
+            "classifier": {"module": "GlobalAvgPool + Linear", "repeat": "1", "kernel": "-", "stride": "-", "channels": "2048 -> num_classes"},
+        },
+        "convnext_tiny": {
+            "stem": {"module": "Conv4x4 stem", "repeat": "1", "kernel": "4", "stride": "4", "channels": "3 -> 96"},
+            "stage1": {"module": "ConvNeXt Block", "repeat": "3", "kernel": "7(dw)", "stride": "1", "channels": "96 -> 96"},
+            "stage2": {"module": "ConvNeXt Block", "repeat": "3", "kernel": "7(dw)", "stride": "2/1", "channels": "96 -> 192"},
+            "stage3": {"module": "ConvNeXt Block", "repeat": "9", "kernel": "7(dw)", "stride": "2/1", "channels": "192 -> 384"},
+            "stage4": {"module": "ConvNeXt Block", "repeat": "3", "kernel": "7(dw)", "stride": "2/1", "channels": "384 -> 768"},
+            "classifier": {"module": "LayerNorm + Linear", "repeat": "1", "kernel": "-", "stride": "-", "channels": "768 -> num_classes"},
+        },
+        "mobilenet_v3_large": {
+            "stem": {"module": "Conv+BN+HSwish", "repeat": "1", "kernel": "3", "stride": "2", "channels": "3 -> 16"},
+            "stage1": {"module": "InvertedResidual", "repeat": "3", "kernel": "3/5", "stride": "1/2", "channels": "16 -> 40"},
+            "stage2": {"module": "InvertedResidual", "repeat": "4", "kernel": "3", "stride": "1/2", "channels": "40 -> 80"},
+            "stage3": {"module": "InvertedResidual", "repeat": "3", "kernel": "3", "stride": "1", "channels": "80 -> 112"},
+            "stage4": {"module": "InvertedResidual", "repeat": "5", "kernel": "5", "stride": "1/2", "channels": "112 -> 160"},
+            "classifier": {"module": "Pool + Linear", "repeat": "1", "kernel": "-", "stride": "-", "channels": "960 -> num_classes"},
+        },
+        "densenet121": {
+            "stem": {"module": "Conv7x7+BN+ReLU+MaxPool", "repeat": "1", "kernel": "7", "stride": "2", "channels": "3 -> 64"},
+            "denseblock1": {"module": "Dense Layer", "repeat": "6", "kernel": "3", "stride": "1", "channels": "64 -> 256"},
+            "denseblock2": {"module": "Dense Layer", "repeat": "12", "kernel": "3", "stride": "1", "channels": "128 -> 512"},
+            "denseblock3": {"module": "Dense Layer", "repeat": "24", "kernel": "3", "stride": "1", "channels": "256 -> 1024"},
+            "denseblock4": {"module": "Dense Layer", "repeat": "16", "kernel": "3", "stride": "1", "channels": "512 -> 1024"},
+            "classifier": {"module": "GlobalAvgPool + Linear", "repeat": "1", "kernel": "-", "stride": "-", "channels": "1024 -> num_classes"},
+        },
+    }
 
     def __init__(self, on_model_generated: Callable[[str], None] | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -241,6 +295,22 @@ class CustomModelCanvasWidget(QWidget):
         self.stage_ssf_shift.setRange(-16.0, 16.0)
         self.stage_ssf_shift.setDecimals(3)
         self.stage_ssf_shift.setValue(0.0)
+        self.stage_rank_label = QLabel("LoRA/DoRA Rank")
+        self.stage_alpha_label = QLabel("LoRA/DoRA Alpha")
+        self.stage_adapter_dim_label = QLabel("Adapter Dim")
+        self.stage_bitfit_scope_label = QLabel("BitFit Scope")
+        self.stage_ssf_scale_label = QLabel("SSF Init Scale")
+        self.stage_ssf_shift_label = QLabel("SSF Init Shift")
+        self.stage_static_info_label = QLabel("Layer Static Info")
+        self.stage_static_info_value = QLabel("-")
+        self.stage_static_info_value.setWordWrap(True)
+        self.stage_static_info_value.setProperty("muted", True)
+        self.stage_use_custom_lr = QCheckBox("Use custom LR")
+        self.stage_custom_lr = QDoubleSpinBox()
+        self.stage_custom_lr.setRange(1e-7, 10.0)
+        self.stage_custom_lr.setDecimals(7)
+        self.stage_custom_lr.setSingleStep(1e-4)
+        self.stage_custom_lr.setValue(1e-3)
         self.method_preview = QLabel("Method: baseline")
         self.method_preview.setProperty("muted", True)
         self.spec_path_label = QLabel("Spec File: (new unsaved spec)")
@@ -264,6 +334,8 @@ class CustomModelCanvasWidget(QWidget):
         self.stage_bitfit_scope.currentTextChanged.connect(self._on_detail_changed)
         self.stage_ssf_scale.valueChanged.connect(self._on_detail_changed)
         self.stage_ssf_shift.valueChanged.connect(self._on_detail_changed)
+        self.stage_use_custom_lr.toggled.connect(self._on_detail_changed)
+        self.stage_custom_lr.valueChanged.connect(self._on_detail_changed)
         self.model_name_edit.textChanged.connect(self._on_state_changed)
         self.gradcam_edit.textChanged.connect(self._on_state_changed)
         self.pretrained_checkbox.toggled.connect(self._on_state_changed)
@@ -321,12 +393,15 @@ class CustomModelCanvasWidget(QWidget):
         detail_form.addRow("", self.stage_train_bn)
         detail_form.addRow("", self.stage_train_norm)
         detail_form.addRow("Stage Method", self.stage_method)
-        detail_form.addRow("LoRA/DoRA Rank", self.stage_rank)
-        detail_form.addRow("LoRA/DoRA Alpha", self.stage_alpha)
-        detail_form.addRow("Adapter Dim", self.stage_adapter_dim)
-        detail_form.addRow("BitFit Scope", self.stage_bitfit_scope)
-        detail_form.addRow("SSF Init Scale", self.stage_ssf_scale)
-        detail_form.addRow("SSF Init Shift", self.stage_ssf_shift)
+        detail_form.addRow(self.stage_rank_label, self.stage_rank)
+        detail_form.addRow(self.stage_alpha_label, self.stage_alpha)
+        detail_form.addRow(self.stage_adapter_dim_label, self.stage_adapter_dim)
+        detail_form.addRow(self.stage_bitfit_scope_label, self.stage_bitfit_scope)
+        detail_form.addRow(self.stage_ssf_scale_label, self.stage_ssf_scale)
+        detail_form.addRow(self.stage_ssf_shift_label, self.stage_ssf_shift)
+        detail_form.addRow("", self.stage_use_custom_lr)
+        detail_form.addRow("Custom LR", self.stage_custom_lr)
+        detail_form.addRow(self.stage_static_info_label, self.stage_static_info_value)
         detail_form.addRow("Grad-CAM", self.gradcam_edit)
         detail_form.addRow("Method", self.method_preview)
 
@@ -426,6 +501,8 @@ class CustomModelCanvasWidget(QWidget):
         self.stage_bitfit_scope.setEnabled(enabled)
         self.stage_ssf_scale.setEnabled(enabled)
         self.stage_ssf_shift.setEnabled(enabled)
+        self.stage_use_custom_lr.setEnabled(enabled)
+        self.stage_custom_lr.setEnabled(enabled and self.stage_use_custom_lr.isChecked())
         self.model_name_edit.setEnabled(enabled)
         self.base_model_combo.setEnabled(enabled)
         self.pretrained_checkbox.setEnabled(enabled)
@@ -608,6 +685,8 @@ class CustomModelCanvasWidget(QWidget):
                     "bitfit_scope": "all_bias",
                     "ssf_scale": 1.0,
                     "ssf_shift": 0.0,
+                    "lr_override_enabled": False,
+                    "lr_override": 1e-3,
                 }
         for stage in list(self.state.keys()):
             if stage not in {key for key, _ in self._flow_nodes}:
@@ -646,6 +725,7 @@ class CustomModelCanvasWidget(QWidget):
         self._updating = True
         try:
             self.stage_title.setText(stage_key)
+            self._refresh_stage_static_info(stage_key)
             editable = stage_key in self.editable_stages and not self._read_only_introspection
             allowed_labels = sorted(self._allowed_strategies_for_stage(stage_key))
             self.stage_ops_label.setText(", ".join(allowed_labels) if allowed_labels else "None")
@@ -667,6 +747,7 @@ class CustomModelCanvasWidget(QWidget):
             self.stage_bitfit_scope.setEnabled(editable)
             self.stage_ssf_scale.setEnabled(editable)
             self.stage_ssf_shift.setEnabled(editable)
+            self.stage_use_custom_lr.setEnabled(editable)
             self.stage_frozen.setChecked(bool(state.get("frozen", True)))
             self.stage_train_bn.setChecked(bool(state.get("train_bn", False)))
             self.stage_train_norm.setChecked(bool(state.get("train_norm", False)))
@@ -678,6 +759,9 @@ class CustomModelCanvasWidget(QWidget):
             self.stage_bitfit_scope.setCurrentText(str(state.get("bitfit_scope", "all_bias")))
             self.stage_ssf_scale.setValue(float(state.get("ssf_scale", 1.0)))
             self.stage_ssf_shift.setValue(float(state.get("ssf_shift", 0.0)))
+            self.stage_use_custom_lr.setChecked(bool(state.get("lr_override_enabled", False)))
+            self.stage_custom_lr.setValue(float(state.get("lr_override", 1e-3)))
+            self.stage_custom_lr.setEnabled(editable and bool(state.get("lr_override_enabled", False)))
             self._refresh_method_parameter_visibility(stage_method)
         finally:
             self._updating = False
@@ -688,12 +772,37 @@ class CustomModelCanvasWidget(QWidget):
         show_adapter = method == "adapter"
         show_bitfit = method == "bitfit"
         show_ssf = method == "ssf"
+        self.stage_rank_label.setVisible(show_rank_alpha)
+        self.stage_alpha_label.setVisible(show_rank_alpha)
+        self.stage_adapter_dim_label.setVisible(show_adapter)
+        self.stage_bitfit_scope_label.setVisible(show_bitfit)
+        self.stage_ssf_scale_label.setVisible(show_ssf)
+        self.stage_ssf_shift_label.setVisible(show_ssf)
         self.stage_rank.setVisible(show_rank_alpha)
         self.stage_alpha.setVisible(show_rank_alpha)
         self.stage_adapter_dim.setVisible(show_adapter)
         self.stage_bitfit_scope.setVisible(show_bitfit)
         self.stage_ssf_scale.setVisible(show_ssf)
         self.stage_ssf_shift.setVisible(show_ssf)
+        self.stage_custom_lr.setEnabled(self.stage_use_custom_lr.isChecked() and self.stage_use_custom_lr.isEnabled())
+
+    def _refresh_stage_static_info(self, stage_key: str) -> None:
+        base = str(self._base_model).strip().lower()
+        stage_info = self.STAGE_STATIC_INFO.get(base, {}).get(stage_key, {})
+        if isinstance(stage_info, dict) and stage_info:
+            self.stage_static_info_value.setText(
+                " | ".join(
+                    [
+                        f"Module: {stage_info.get('module', '-')}",
+                        f"Repeat: {stage_info.get('repeat', '-')}",
+                        f"Kernel: {stage_info.get('kernel', '-')}",
+                        f"Stride: {stage_info.get('stride', '-')}",
+                        f"Channels: {stage_info.get('channels', '-')}",
+                    ]
+                )
+            )
+            return
+        self.stage_static_info_value.setText("No static profile available for this stage.")
 
     def _on_global_mode_changed(self, value: str) -> None:
         if self._updating or self._read_only_introspection:
@@ -708,12 +817,14 @@ class CustomModelCanvasWidget(QWidget):
                 self.state[key]["train_bn"] = False
                 self.state[key]["train_norm"] = False
                 self.state[key]["stage_method"] = "none"
+                self.state[key]["lr_override_enabled"] = False
         elif self._global_mode == "Full Finetune":
             for key in self.editable_stages:
                 self.state[key]["frozen"] = False
                 self.state[key]["train_bn"] = False
                 self.state[key]["train_norm"] = False
                 self.state[key]["stage_method"] = "none"
+                self.state[key]["lr_override_enabled"] = False
         self._select_stage(self._selected_stage if self._selected_stage in self.editable_stages else "classifier")
         self._on_state_changed()
 
@@ -769,6 +880,8 @@ class CustomModelCanvasWidget(QWidget):
                 "bitfit_scope": self.stage_bitfit_scope.currentText().strip().lower(),
                 "ssf_scale": float(self.stage_ssf_scale.value()),
                 "ssf_shift": float(self.stage_ssf_shift.value()),
+                "lr_override_enabled": bool(self.stage_use_custom_lr.isChecked()),
+                "lr_override": float(self.stage_custom_lr.value()),
             }
         )
         self._refresh_method_parameter_visibility(stage_method)
@@ -821,6 +934,11 @@ class CustomModelCanvasWidget(QWidget):
         payload = custom_model_generator.spec_to_dict(spec)
         payload["pretrained"] = bool(self.pretrained_checkbox.isChecked())
         payload["train_norm"] = any(bool(self.state[key].get("train_norm", False)) for key in self.editable_stages)
+        payload["stage_lr_overrides"] = {
+            key: float(self.state[key].get("lr_override", 0.0))
+            for key in sorted(self.editable_stages)
+            if bool(self.state[key].get("lr_override_enabled", False)) and float(self.state[key].get("lr_override", 0.0)) > 0.0
+        }
 
         peft_stages = [key for key in self.editable_stages if self.state[key]["stage_method"] != "none"]
         if method in {"lora", "dora", "tsa", "adapter", "bitfit", "ssf"}:
@@ -886,30 +1004,48 @@ class CustomModelCanvasWidget(QWidget):
                     "bitfit_scope": "all_bias",
                     "ssf_scale": 1.0,
                     "ssf_shift": 0.0,
+                    "lr_override_enabled": False,
+                    "lr_override": 1e-3,
                 }
             self.state["classifier"]["frozen"] = False
+            stage_lr_overrides = getattr(spec, "stage_lr_overrides", {})
+            if not isinstance(stage_lr_overrides, dict):
+                stage_lr_overrides = {}
+            for key, value in stage_lr_overrides.items():
+                if key not in self.state:
+                    continue
+                try:
+                    lr_value = float(value)
+                except Exception:
+                    continue
+                if lr_value <= 0:
+                    continue
+                self.state[key]["lr_override_enabled"] = True
+                self.state[key]["lr_override"] = lr_value
 
             method = spec.method_type
+            train_bn_enabled = bool(getattr(spec, "train_bn", False))
+            train_norm_enabled = bool(getattr(spec, "train_norm", False))
             if method == "baseline":
                 self._global_mode = "Linear Probe"
                 self.global_mode_combo.setCurrentText("Linear Probe")
             elif method == "bn_tuning":
                 for key in self.editable_stages:
-                    self.state[key]["train_bn"] = True
-                    self.state[key]["train_norm"] = True
+                    self.state[key]["train_bn"] = train_bn_enabled
+                    self.state[key]["train_norm"] = train_norm_enabled
             elif method == "norm_tuning":
                 for key in self.editable_stages:
                     self.state[key]["train_norm"] = True
             elif method == "bn_last1":
                 for key in self.editable_stages:
-                    self.state[key]["train_bn"] = True
-                    self.state[key]["train_norm"] = True
+                    self.state[key]["train_bn"] = train_bn_enabled
+                    self.state[key]["train_norm"] = train_norm_enabled
                 if "features.7" in self.state:
                     self.state["features.7"]["frozen"] = False
             elif method == "bn_last2":
                 for key in self.editable_stages:
-                    self.state[key]["train_bn"] = True
-                    self.state[key]["train_norm"] = True
+                    self.state[key]["train_bn"] = train_bn_enabled
+                    self.state[key]["train_norm"] = train_norm_enabled
                 if "features.6" in self.state:
                     self.state["features.6"]["frozen"] = False
                 if "features.7" in self.state:
@@ -1065,6 +1201,8 @@ class CustomModelCanvasWidget(QWidget):
                         "bitfit_scope": "all_bias",
                         "ssf_scale": 1.0,
                         "ssf_shift": 0.0,
+                        "lr_override_enabled": False,
+                        "lr_override": 1e-3,
                     },
                 )
                 self.state[stage_key]["frozen"] = stage_type not in {"head", "classifier"}

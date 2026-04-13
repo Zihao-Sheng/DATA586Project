@@ -353,6 +353,55 @@ def model_display_label(model_name: str | None, *, include_name: bool = True) ->
     return f"{name} [{details}]" if include_name else details
 
 
+def model_detailed_tooltip(model_name: str | None, *, include_name: bool = True) -> str:
+    info = model_catalog_entry(model_name)
+    if not bool(info.get("exists")):
+        return str(model_name or "").strip() or "(unknown)"
+
+    name = str(info.get("model_name", "")).strip()
+    header = model_display_label(name, include_name=include_name)
+    metadata = info.get("metadata") if isinstance(info.get("metadata"), dict) else {}
+    spec_payload = _spec_payload(name)
+    payload: dict[str, Any] = metadata if metadata else spec_payload
+
+    def _fmt(value: Any) -> str:
+        if isinstance(value, (list, dict)):
+            return json.dumps(value, ensure_ascii=False)
+        if value is None:
+            return "-"
+        return str(value)
+
+    lines = [header]
+    for key, label in (
+        ("freeze_strategy", "Freeze Strategy"),
+        ("train_bn", "Train BN"),
+        ("train_norm", "Train Norm"),
+        ("unfreeze_stages", "Unfreeze Stages"),
+        ("peft_method", "PEFT Method"),
+        ("peft_targets", "PEFT Targets"),
+        ("peft_params", "PEFT Params"),
+        ("gradcam_target_hint", "Grad-CAM Targets"),
+    ):
+        if key in payload:
+            lines.append(f"{label}: {_fmt(payload.get(key))}")
+
+    spec_file = payload.get("source_spec_file") or payload.get("spec_file")
+    if isinstance(spec_file, str) and spec_file.strip():
+        lines.append(f"Spec: {spec_file.strip()}")
+    elif (MODEL_SPECS_DIR / f"{name}.json").is_file():
+        lines.append(f"Spec: model_specs/{name}.json")
+
+    source = str(info.get("source", "unknown"))
+    preferred = info.get("preferred_model_name")
+    if source == "legacy" and isinstance(preferred, str) and preferred.strip():
+        lines.append(f"Preferred Equivalent: {preferred.strip()}")
+    legacy_equivalent = info.get("legacy_equivalent")
+    if source == "generated" and isinstance(legacy_equivalent, str) and legacy_equivalent.strip():
+        lines.append(f"Legacy Equivalent: {legacy_equivalent.strip()}")
+
+    return "\n".join(lines)
+
+
 def sort_model_names_for_ui(model_names: list[str]) -> list[str]:
     source_order = {"generated": 0, "handwritten": 1, "legacy": 2, "unknown": 3}
     method_order = {

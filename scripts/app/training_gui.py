@@ -65,6 +65,7 @@ from app.custom_models_canvas import CustomModelCanvasWidget
 from core.model_registry import (
     discover_model_names_generated_first,
     model_catalog_entry,
+    model_detailed_tooltip,
     model_display_label,
     resolve_preferred_model_name,
     sort_model_names_for_ui,
@@ -3352,7 +3353,7 @@ class TrainingLauncher(QMainWindow):
         for model_name in sort_model_names_for_ui(model_names):
             self.model_combo.addItem(self.training_model_display_name(model_name), model_name)
             row = self.model_combo.count() - 1
-            self.model_combo.setItemData(row, model_display_label(model_name, include_name=True), Qt.ToolTipRole)
+            self.model_combo.setItemData(row, model_detailed_tooltip(model_name, include_name=True), Qt.ToolTipRole)
         if target_model:
             index = self.model_combo.findData(target_model)
             if index >= 0:
@@ -3375,6 +3376,7 @@ class TrainingLauncher(QMainWindow):
         self.training_model_variant_label.setText(
             f"{selected_text}. Generated-first ordering active ({preferred_count} preferred, {legacy_count} legacy fallback)."
         )
+        self.training_model_variant_label.setToolTip(model_detailed_tooltip(selected, include_name=True))
 
     def ensure_predict_model_detected(self) -> str | None:
         current_model = self.current_predict_model_name()

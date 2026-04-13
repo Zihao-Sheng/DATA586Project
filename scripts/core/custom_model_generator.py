@@ -103,6 +103,7 @@ class CustomModelSpec:
     peft_method: str | None
     peft_targets: dict[str, Any]
     peft_params: dict[str, Any]
+    stage_lr_overrides: dict[str, float]
     gradcam_target_hint: list[str]
     pretrained: bool = True
     metadata_version: str = SPEC_VERSION
@@ -279,6 +280,7 @@ def build_preset_spec(*, model_name: str, base_model: str, method_type: str) -> 
         "peft_method": None,
         "peft_targets": {"feature_stages": [], "layer_keys": [], "classifier": False},
         "peft_params": {},
+        "stage_lr_overrides": {},
         "gradcam_target_hint": _default_gradcam_targets(normalized_base, normalized_method),
         "pretrained": True,
         "metadata_version": SPEC_VERSION,
@@ -408,7 +410,13 @@ def spec_from_dict(payload: dict[str, Any]) -> CustomModelSpec:
         raise ValueError("Current generator supports task_type='classification' only.")
 
     train_bn = bool(payload.get("train_bn", False))
-    train_norm = bool(payload.get("train_norm", train_bn))
+    train_norm_raw = payload.get("train_norm")
+    if isinstance(train_norm_raw, bool):
+        train_norm = train_norm_raw
+    elif method_type == "norm_tuning":
+        train_norm = True
+    else:
+        train_norm = False
     unfreeze_stages = _parse_int_stage_list(payload.get("unfreeze_stages", []), field_name="unfreeze_stages")
 
     raw_peft_method = payload.get("peft_method")
@@ -470,6 +478,23 @@ def spec_from_dict(payload: dict[str, Any]) -> CustomModelSpec:
         init_shift = float(input_params.get("init_shift", 0.0))
         peft_params = {"init_scale": init_scale, "init_shift": init_shift}
 
+    raw_stage_lr_overrides = payload.get("stage_lr_overrides", {})
+    stage_lr_overrides: dict[str, float] = {}
+    if isinstance(raw_stage_lr_overrides, dict):
+        for raw_key, raw_value in raw_stage_lr_overrides.items():
+            key = str(raw_key).strip()
+            if not key:
+                continue
+            try:
+                value = float(raw_value)
+            except Exception as exc:
+                raise ValueError(f"Invalid stage_lr_overrides value for '{key}': expected float.") from exc
+            if value <= 0:
+                raise ValueError(f"stage_lr_overrides['{key}'] must be > 0.")
+            stage_lr_overrides[key] = value
+    elif raw_stage_lr_overrides not in (None, ""):
+        raise ValueError("stage_lr_overrides must be a dict mapping stage key to learning-rate float.")
+
     if method_type == "dora":
         if base_model != "efficientnet_v2_s":
             raise ValueError("DoRA stage targets are only available for EfficientNet.")
@@ -499,6 +524,7 @@ def spec_from_dict(payload: dict[str, Any]) -> CustomModelSpec:
         peft_method=peft_method,
         peft_targets=peft_targets,
         peft_params=peft_params,
+        stage_lr_overrides=stage_lr_overrides,
         gradcam_target_hint=gradcam_target_hint,
         pretrained=pretrained,
         metadata_version=metadata_version,
@@ -592,7 +618,12 @@ def build_model(num_classes: int, freeze_backbone: bool = True, device: str | to
 
 
 def build_optimizer(model: nn.Module, lr: float = 1e-3) -> torch.optim.Optimizer:
-    return _build_optimizer(model, lr=lr)
+    return _build_optimizer(
+        model,
+        lr=lr,
+        base_model=str(GENERATED_SPEC.get("base_model", "")),
+        stage_lr_overrides=GENERATED_SPEC.get("stage_lr_overrides", {{}}),
+    )
 
 
 def get_model_metadata() -> dict[str, object]:

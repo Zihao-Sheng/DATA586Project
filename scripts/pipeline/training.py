@@ -254,19 +254,139 @@ def build_custom_augmentation_config(args: argparse.Namespace) -> dict[str, dict
     }
 
 
+def _normalized_stage_lr_overrides(raw: object) -> dict[str, float]:
+    if not isinstance(raw, dict):
+        return {}
+    overrides: dict[str, float] = {}
+    for key, value in raw.items():
+        stage = str(key).strip()
+        if not stage:
+            continue
+        try:
+            lr = float(value)
+        except Exception:
+            continue
+        if lr > 0:
+            overrides[stage] = lr
+    return overrides
+
+
+def _stage_prefixes_for_base_model(base_model: str | None) -> dict[str, tuple[str, ...]]:
+    normalized = str(base_model or "").strip().lower()
+    if normalized in {"efficientnet", "efficientnet_v2_s"}:
+        mapping: dict[str, tuple[str, ...]] = {
+            "stem": ("features.0.",),
+            "classifier": ("classifier.",),
+        }
+        for idx in range(8):
+            mapping[f"features.{idx}"] = (f"features.{idx}.",)
+        return mapping
+    if normalized in {"resnet18", "resnet50", "resnet"}:
+        return {
+            "stem": ("conv1.", "bn1."),
+            "layer1": ("layer1.",),
+            "layer2": ("layer2.",),
+            "layer3": ("layer3.",),
+            "layer4": ("layer4.",),
+            "classifier": ("fc.",),
+        }
+    if normalized == "convnext_tiny":
+        return {
+            "stem": ("features.0.",),
+            "stage1": ("features.1.",),
+            "stage2": ("features.3.",),
+            "stage3": ("features.5.",),
+            "stage4": ("features.7.",),
+            "classifier": ("classifier.",),
+        }
+    if normalized == "mobilenet_v3_large":
+        return {
+            "stem": ("features.0.",),
+            "stage1": ("features.3.",),
+            "stage2": ("features.6.",),
+            "stage3": ("features.12.",),
+            "stage4": ("features.16.",),
+            "classifier": ("classifier.",),
+        }
+    if normalized == "densenet121":
+        return {
+            "stem": ("features.conv0.", "features.norm0."),
+            "denseblock1": ("features.denseblock1.",),
+            "denseblock2": ("features.denseblock2.",),
+            "denseblock3": ("features.denseblock3.",),
+            "denseblock4": ("features.denseblock4.",),
+            "classifier": ("classifier.",),
+        }
+    return {}
+
+
+def _build_optimizer_param_groups(
+    model: nn.Module,
+    *,
+    base_model: str | None,
+    global_lr: float,
+    stage_lr_overrides: dict[str, float],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    trainable_named = [(name, param) for name, param in model.named_parameters() if param.requires_grad]
+    if not trainable_named:
+        return [], []
+    if not stage_lr_overrides:
+        params = [param for _, param in trainable_named]
+        return [{"params": params, "lr": float(global_lr), "stage": "default"}], [{"stage": "default", "lr": float(global_lr), "param_count": len(params)}]
+
+    prefix_map = _stage_prefixes_for_base_model(base_model)
+    assigned_ids: set[int] = set()
+    param_groups: list[dict[str, object]] = []
+    summary: list[dict[str, object]] = []
+
+    for stage, stage_lr in stage_lr_overrides.items():
+        prefixes = prefix_map.get(stage)
+        if not prefixes:
+            continue
+        params: list[nn.Parameter] = []
+        for name, param in trainable_named:
+            if id(param) in assigned_ids:
+                continue
+            if any(name.startswith(prefix) for prefix in prefixes):
+                params.append(param)
+                assigned_ids.add(id(param))
+        if not params:
+            continue
+        param_groups.append({"params": params, "lr": float(stage_lr), "stage": stage})
+        summary.append({"stage": stage, "lr": float(stage_lr), "param_count": len(params)})
+
+    default_params = [param for _, param in trainable_named if id(param) not in assigned_ids]
+    if default_params:
+        param_groups.append({"params": default_params, "lr": float(global_lr), "stage": "default"})
+        summary.append({"stage": "default", "lr": float(global_lr), "param_count": len(default_params)})
+
+    if not param_groups:
+        params = [param for _, param in trainable_named]
+        return [{"params": params, "lr": float(global_lr), "stage": "default"}], [{"stage": "default", "lr": float(global_lr), "param_count": len(params)}]
+    return param_groups, summary
+
+
 def build_optimizer(
     model: nn.Module,
     *,
     optimizer_name: str,
     lr: float,
-) -> tuple[torch.optim.Optimizer, float]:
-    trainable_params = [param for param in model.parameters() if param.requires_grad]
+    base_model: str | None = None,
+    stage_lr_overrides: dict[str, float] | None = None,
+) -> tuple[torch.optim.Optimizer, float, list[dict[str, object]]]:
+    normalized_overrides = _normalized_stage_lr_overrides(stage_lr_overrides)
+    param_groups, param_group_summary = _build_optimizer_param_groups(
+        model,
+        base_model=base_model,
+        global_lr=float(lr),
+        stage_lr_overrides=normalized_overrides,
+    )
     if optimizer_name == "sgd":
-        return torch.optim.SGD(trainable_params, lr=lr, momentum=0.9), 0.0
+        return torch.optim.SGD(param_groups, momentum=0.9), 0.0, param_group_summary
     if optimizer_name == "adamw":
         weight_decay = 1e-2
-        return torch.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay), weight_decay
-    return torch.optim.Adam(trainable_params, lr=lr), 0.0
+        return torch.optim.AdamW(param_groups, weight_decay=weight_decay), weight_decay, param_group_summary
+    return torch.optim.Adam(param_groups), 0.0, param_group_summary
 
 
 def build_scheduler(
@@ -371,6 +491,8 @@ class TrainingRunLogger:
         scheduler_name: str,
         scheduler_config: dict[str, int | float | str | None],
         weight_decay: float,
+        stage_lr_overrides: dict[str, float],
+        optimizer_param_groups: list[dict[str, object]],
     ) -> None:
         augmentation_config = build_custom_augmentation_config(args) if str(args.train_transforms_preset) == "custom" else {}
         run_logs_dir = checkpoint_dir / RUN_LOG_DIRNAME
@@ -407,6 +529,7 @@ class TrainingRunLogger:
                 "amp": bool(args.amp),
                 "seed": int(args.seed),
                 "weight_decay": float(weight_decay),
+                "stage_lr_overrides": dict(stage_lr_overrides),
                 "scheduler_t_max": scheduler_config.get("t_max"),
                 "scheduler_step_size": scheduler_config.get("step_size"),
                 "scheduler_gamma": scheduler_config.get("gamma"),
@@ -441,6 +564,7 @@ class TrainingRunLogger:
                 "best_checkpoint_path": str(best_checkpoint_path),
                 "last_checkpoint_path": str(last_checkpoint_path),
                 "amp_enabled": bool(amp_enabled),
+                "optimizer_param_groups": list(optimizer_param_groups),
             },
             "expected": {
                 "train_batches_per_epoch": int(train_batches),
@@ -630,12 +754,23 @@ def main() -> None:
     class_names = [name for name, _ in sorted(class_to_idx.items(), key=lambda item: item[1])]
 
     model_module = load_model_module(args.model)
+    model_metadata = model_module.get_model_metadata() if hasattr(model_module, "get_model_metadata") else {}
+    if not isinstance(model_metadata, dict):
+        model_metadata = {}
+    base_model = str(model_metadata.get("base_model", "")).strip().lower() or None
+    stage_lr_overrides = _normalized_stage_lr_overrides(model_metadata.get("stage_lr_overrides"))
     model = model_module.build_model(
         num_classes=num_classes,
         freeze_backbone=args.freeze_backbone,
         device=device,
     )
-    optimizer, weight_decay = build_optimizer(model, optimizer_name=args.optimizer, lr=args.lr)
+    optimizer, weight_decay, optimizer_param_groups = build_optimizer(
+        model,
+        optimizer_name=args.optimizer,
+        lr=args.lr,
+        base_model=base_model,
+        stage_lr_overrides=stage_lr_overrides,
+    )
     total_params, trainable_params = count_parameters(model)
     train_examples = len(train_loader.dataset)
     eval_examples = len(eval_loader.dataset)
@@ -672,6 +807,8 @@ def main() -> None:
         f"optimizer: {args.optimizer}, scheduler: {args.scheduler}, "
         f"amp_requested: {args.amp}, amp_enabled: {amp_enabled}, seed: {args.seed}, weight_decay: {weight_decay}"
     )
+    print(f"stage_lr_overrides: {json.dumps(stage_lr_overrides, sort_keys=True)}")
+    print(f"optimizer_param_groups: {json.dumps(optimizer_param_groups, sort_keys=False)}")
     print(f"freeze_backbone: {args.freeze_backbone}")
     print(
         f"use_validation_split: {args.use_validation_split}, "
@@ -736,6 +873,8 @@ def main() -> None:
         scheduler_name=args.scheduler,
         scheduler_config=scheduler_config,
         weight_decay=weight_decay,
+        stage_lr_overrides=stage_lr_overrides,
+        optimizer_param_groups=optimizer_param_groups,
     )
 
     final_test_loss: float | None = None
@@ -806,7 +945,12 @@ def main() -> None:
                     best_checkpoint_path,
                 )
                 run_logger.mark_best_checkpoint(epoch=epoch + 1, best_acc=best_acc, path=best_checkpoint_path)
-            current_lr = float(optimizer.param_groups[0]["lr"]) if optimizer.param_groups else float(args.lr)
+            if optimizer.param_groups:
+                default_group = next((group for group in optimizer.param_groups if str(group.get("stage", "")) == "default"), None)
+                reference_group = default_group if default_group is not None else optimizer.param_groups[0]
+                current_lr = float(reference_group.get("lr", args.lr))
+            else:
+                current_lr = float(args.lr)
             run_logger.append_epoch(
                 epoch=epoch + 1,
                 train_loss=train_loss,
