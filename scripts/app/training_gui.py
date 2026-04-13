@@ -61,7 +61,13 @@ if str(SCRIPTS_ROOT) not in sys.path:
 from core import custom_model_generator, run_log_compat
 from app import app_themes, global_job_queue
 from app.custom_models_canvas import CustomModelCanvasWidget
-from core.model_registry import discover_model_names
+from core.model_registry import (
+    discover_model_names_generated_first,
+    model_catalog_entry,
+    model_display_label,
+    resolve_preferred_model_name,
+    sort_model_names_for_ui,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -88,6 +94,8 @@ PREDICT_THUMBNAIL_CACHE_LIMIT = 192
 PREDICT_DISPLAY_CACHE_LIMIT = 48
 PREDICT_GRADCAM_CACHE_LIMIT = 24
 PREDICT_COMPARE_DISPLAY_CACHE_LIMIT = 12
+CHECKPOINT_SELECTOR_MODEL_TEXT_MAX_CHARS = 56
+CHECKPOINT_SELECTOR_MODEL_COLUMN_MAX_WIDTH = 420
 
 
 def set_windows_app_id() -> None:
@@ -1208,7 +1216,9 @@ class TrainingLauncher(QMainWindow):
         self.test_split_worker: TestSplitEvaluationWorker | None = None
         self.test_split_detected_model_name: str | None = None
         self._last_export_notebook_path: Path | None = None
-        self.available_models = discover_model_names()
+        self.available_models = sort_model_names_for_ui(
+            discover_model_names_generated_first(include_legacy_fallback=True)
+        )
         self._checkpoint_name_locked_to_model = True
         self._last_training_model_name = self.available_models[0] if self.available_models else ""
         self._last_predict_model_name = self.available_models[0] if self.available_models else ""
@@ -1250,9 +1260,12 @@ class TrainingLauncher(QMainWindow):
 
     def _init_training_controls(self) -> None:
         self.model_combo = QComboBox()
-        self.model_combo.addItems(self.available_models)
+        self._set_training_model_combo_items(self.available_models)
         self.model_combo.setToolTip("Choose which model architecture to train.")
         self.model_combo.setMinimumHeight(34)
+        self.training_model_variant_label = QLabel("Generated models are preferred. Legacy models remain available as fallback.")
+        self.training_model_variant_label.setWordWrap(True)
+        self.training_model_variant_label.setProperty("muted", True)
 
         self.device_combo = QComboBox()
         self.device_combo.addItems(["auto", "cpu", "cuda"])
@@ -1560,7 +1573,7 @@ class TrainingLauncher(QMainWindow):
         checkpoint_dir = self.selected_checkpoint_dir()
         return {
             "job_id": uuid.uuid4().hex[:8],
-            "model": self.model_combo.currentText(),
+            "model": self.current_training_model_name(),
             "data_root": str(DEFAULT_DATA_ROOT),
             "checkpoint_name": self.checkpoint_output_name(),
             "checkpoint_dir": str(checkpoint_dir),
@@ -1687,6 +1700,7 @@ class TrainingLauncher(QMainWindow):
         self.predict_checkpoint_tree.setRootIsDecorated(False)
         self.predict_checkpoint_tree.setAlternatingRowColors(True)
         self.predict_checkpoint_tree.setIndentation(0)
+        self.predict_checkpoint_tree.setTextElideMode(Qt.ElideRight)
         self.predict_checkpoint_tree.setMinimumHeight(176)
         self.predict_checkpoint_tree.setMaximumHeight(210)
         self.predict_checkpoint_tree.itemChanged.connect(self.on_predict_checkpoint_tree_item_changed)
@@ -1992,7 +2006,7 @@ class TrainingLauncher(QMainWindow):
         self.training_log_stage_combo.addItems(["Summary", "Train", "Val", "Test"])
         self.training_log_stage_combo.currentIndexChanged.connect(self.refresh_training_log_view)
 
-        self.training_log_refresh_button = QPushButton("Refresh Logs")
+        self.training_log_refresh_button = QPushButton("Refresh")
         self.training_log_refresh_button.clicked.connect(self.refresh_training_log_runs)
         self.training_log_refresh_button.setFixedWidth(84)
 
@@ -2105,6 +2119,7 @@ class TrainingLauncher(QMainWindow):
         prominent_form = QFormLayout()
         prominent_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
         prominent_form.addRow(self._make_training_row_label("Model", prominent=True), self.model_combo)
+        prominent_form.addRow(self._make_training_row_label("Model Source"), self.training_model_variant_label)
         core_layout.addLayout(prominent_form)
         compact_grid = QGridLayout()
         compact_grid.setContentsMargins(0, 0, 0, 0)
@@ -2221,7 +2236,6 @@ class TrainingLauncher(QMainWindow):
 
         predict_selector_group = QGroupBox("Checkpoint Selector")
         predict_selector_group.setMinimumWidth(0)
-        predict_selector_group.setMaximumWidth(16777215)
         predict_selector_layout = QVBoxLayout(predict_selector_group)
         predict_selector_layout.setContentsMargins(8, 8, 8, 8)
         predict_selector_layout.setSpacing(5)
@@ -2263,8 +2277,7 @@ class TrainingLauncher(QMainWindow):
         predict_left_layout.setSpacing(8)
         predict_left_layout.addWidget(predict_selector_group, stretch=0)
         predict_left_layout.addWidget(predict_browser_group, stretch=1)
-        predict_left_panel.setMinimumWidth(320)
-        predict_left_panel.setMaximumWidth(420)
+        predict_left_panel.setMinimumWidth(280)
 
         predict_config_group = QGroupBox("Predict Config")
         predict_config_group.setMinimumWidth(460)
@@ -2291,6 +2304,7 @@ class TrainingLauncher(QMainWindow):
         predict_config_layout.addLayout(predict_info_grid)
 
         self.predict_compare_models_label.setProperty("muted", False)
+        predict_config_layout.addWidget(self.predict_detected_model_label)
         predict_config_layout.addWidget(self.predict_compare_models_label)
 
         predict_action_row = QHBoxLayout()
@@ -2332,12 +2346,15 @@ class TrainingLauncher(QMainWindow):
         predict_right_layout.addWidget(predict_config_group, stretch=0)
         predict_right_layout.addWidget(predict_preview_group, stretch=1)
 
-        predict_columns_layout = QHBoxLayout()
-        predict_columns_layout.setContentsMargins(0, 0, 0, 0)
-        predict_columns_layout.setSpacing(10)
-        predict_columns_layout.addWidget(predict_left_panel, stretch=3)
-        predict_columns_layout.addWidget(predict_right_panel, stretch=7)
-        predict_layout.addLayout(predict_columns_layout, stretch=1)
+        self.predict_splitter = QSplitter(Qt.Horizontal)
+        self.predict_splitter.addWidget(predict_left_panel)
+        self.predict_splitter.addWidget(predict_right_panel)
+        self.predict_splitter.setCollapsible(0, False)
+        self.predict_splitter.setCollapsible(1, False)
+        self.predict_splitter.setStretchFactor(0, 0)
+        self.predict_splitter.setStretchFactor(1, 1)
+        self.predict_splitter.setSizes([420, 980])
+        predict_layout.addWidget(self.predict_splitter, stretch=1)
 
         test_split_tab = QWidget()
         test_split_layout = QVBoxLayout(test_split_tab)
@@ -2520,7 +2537,7 @@ class TrainingLauncher(QMainWindow):
         self.on_command_preview_toggled(self.command_preview_toggle.isChecked())
         self.refresh_global_queue_view()
         self.on_train_transforms_preset_changed(self.train_transforms_preset_combo.currentText())
-        self.on_training_model_changed(self.model_combo.currentText())
+        self.on_training_model_changed(self.current_training_model_name())
 
     def apply_visual_design(self) -> None:
         stylesheet = app_themes.build_stylesheet(self.current_theme_key)
@@ -2545,11 +2562,11 @@ class TrainingLauncher(QMainWindow):
         if layout is None:
             return
         if isinstance(layout, QFormLayout):
-            layout.setHorizontalSpacing(16)
-            layout.setVerticalSpacing(12)
+            layout.setHorizontalSpacing(14)
+            layout.setVerticalSpacing(10)
         else:
-            layout.setSpacing(12)
-        layout.setContentsMargins(14, 14, 14, 14)
+            layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
         for index in range(layout.count()):
             item = layout.itemAt(index)
             child_layout = item.layout()
@@ -2568,7 +2585,7 @@ class TrainingLauncher(QMainWindow):
             "-u",
             str(TRAINING_SCRIPT),
             "--model",
-            str(config.get("model", self.model_combo.currentText())),
+            str(config.get("model", self.current_training_model_name())),
             "--data-root",
             str(config.get("data_root", DEFAULT_DATA_ROOT)),
             "--checkpoint-dir",
@@ -2721,7 +2738,7 @@ class TrainingLauncher(QMainWindow):
             "    sys.executable,",
             "    '-u',",
             "    str(TRAINING_SCRIPT),",
-            f"    '--model', {self.model_combo.currentText()!r},",
+            f"    '--model', {self.current_training_model_name()!r},",
             "    '--data-root', str(DATA_ROOT),",
             "    '--checkpoint-dir', str(CHECKPOINT_DIR),",
             f"    '--epochs', {str(self.epochs_spin.value())!r},",
@@ -3253,7 +3270,7 @@ class TrainingLauncher(QMainWindow):
                 detected_model = None
         self.test_split_detected_model_name = detected_model
         if detected_model is not None:
-            self.test_split_detected_model_label.setText(detected_model)
+            self.test_split_detected_model_label.setText(self.model_source_text(detected_model))
             self.test_split_detected_model_label.setProperty("muted", False)
         elif checkpoint_text:
             self.test_split_detected_model_label.setText("Could not auto-detect model type from this checkpoint.")
@@ -3270,7 +3287,78 @@ class TrainingLauncher(QMainWindow):
     def discover_predict_checkpoint_models(self) -> list[str]:
         from pipeline.predicting import discover_checkpoint_model_names
 
-        return discover_checkpoint_model_names(DEFAULT_CHECKPOINT_DIR)
+        discovered = discover_checkpoint_model_names(DEFAULT_CHECKPOINT_DIR)
+        ordered = sorted(
+            discovered,
+            key=lambda name: (
+                1 if str(model_catalog_entry(name).get("source")) == "legacy" else 0,
+                str(name).lower(),
+            ),
+        )
+        return ordered
+
+    def model_source_text(self, model_name: str | None) -> str:
+        info = model_catalog_entry(model_name)
+        if not bool(info.get("exists")):
+            text = str(model_name).strip() if isinstance(model_name, str) else "(unknown)"
+            return text
+        canonical = str(info.get("model_name", ""))
+        provider = str(info.get("provider", "torchvision"))
+        family = str(info.get("family", "unknown"))
+        variant = str(info.get("variant", "unknown"))
+        method = str(info.get("method_type", "unknown"))
+        pretrained = info.get("pretrained")
+        pre = "pretrained" if pretrained is True else ("scratch" if pretrained is False else "pretrained=?")
+        source = str(info.get("source", "handwritten"))
+        source_text = "generated" if source == "generated" else ("legacy fallback" if source == "legacy" else "handwritten")
+        return f"{canonical} [{provider}/{family}/{variant} | {method} | {pre} | {source_text}]"
+
+    def truncate_checkpoint_selector_model_text(self, text: str, max_chars: int = CHECKPOINT_SELECTOR_MODEL_TEXT_MAX_CHARS) -> str:
+        normalized = str(text).strip()
+        if len(normalized) <= max_chars:
+            return normalized
+        if max_chars <= 1:
+            return "…"
+        return f"{normalized[: max_chars - 1]}…"
+
+    def training_model_display_name(self, model_name: str) -> str:
+        info = model_catalog_entry(model_name)
+        source = str(info.get("source", "unknown"))
+        variant = str(info.get("variant", "unknown"))
+        method = str(info.get("method_type", "unknown"))
+        pretrained = info.get("pretrained")
+        pre = "pre" if pretrained is True else ("scratch" if pretrained is False else "pre?")
+        src = "gen" if source == "generated" else ("legacy" if source == "legacy" else "manual")
+        return f"{model_name} [{variant}/{method}/{pre}/{src}]"
+
+    def _set_training_model_combo_items(self, model_names: list[str], *, target_model: str | None = None) -> None:
+        self.model_combo.clear()
+        for model_name in sort_model_names_for_ui(model_names):
+            self.model_combo.addItem(self.training_model_display_name(model_name), model_name)
+            row = self.model_combo.count() - 1
+            self.model_combo.setItemData(row, model_display_label(model_name, include_name=True), Qt.ToolTipRole)
+        if target_model:
+            index = self.model_combo.findData(target_model)
+            if index >= 0:
+                self.model_combo.setCurrentIndex(index)
+
+    def current_training_model_name(self) -> str:
+        data = self.model_combo.currentData()
+        if isinstance(data, str) and data.strip():
+            return data.strip()
+        text = self.model_combo.currentText().strip()
+        if text.endswith(" [legacy]"):
+            text = text[:-9]
+        return text
+
+    def update_training_model_source_label(self, model_name: str | None = None) -> None:
+        selected = model_name if isinstance(model_name, str) and model_name.strip() else self.current_training_model_name()
+        selected_text = self.model_source_text(selected)
+        legacy_count = sum(1 for name in self.available_models if str(model_catalog_entry(name).get("source")) == "legacy")
+        preferred_count = len(self.available_models) - legacy_count
+        self.training_model_variant_label.setText(
+            f"{selected_text}. Generated-first ordering active ({preferred_count} preferred, {legacy_count} legacy fallback)."
+        )
 
     def ensure_predict_model_detected(self) -> str | None:
         current_model = self.current_predict_model_name()
@@ -3289,7 +3377,7 @@ class TrainingLauncher(QMainWindow):
             if detected_model is not None:
                 if detected_model in self.available_models:
                     self.predict_model_combo.setCurrentText(detected_model)
-                self.predict_detected_model_label.setText(detected_model)
+                self.predict_detected_model_label.setText(self.model_source_text(detected_model))
                 self.predict_detected_model_label.setProperty("muted", False)
                 self.predict_detected_model_label.style().unpolish(self.predict_detected_model_label)
                 self.predict_detected_model_label.style().polish(self.predict_detected_model_label)
@@ -3312,13 +3400,13 @@ class TrainingLauncher(QMainWindow):
         if detected_model is not None:
             if detected_model in self.available_models:
                 self.predict_model_combo.setCurrentText(detected_model)
-            self.predict_detected_model_label.setText(detected_model)
+            self.predict_detected_model_label.setText(self.model_source_text(detected_model))
             self.predict_detected_model_label.setProperty("muted", False)
         elif checkpoint_text:
             self.predict_detected_model_label.setText("Could not auto-detect model type from this checkpoint.")
             self.predict_detected_model_label.setProperty("muted", False)
         else:
-            self.predict_detected_model_label.setText("Model will be auto-detected from the checkpoint.")
+            self.predict_detected_model_label.setText("Model will be auto-detected from the checkpoint. Generated variants are preferred when available.")
             self.predict_detected_model_label.setProperty("muted", True)
         self.predict_detected_model_label.style().unpolish(self.predict_detected_model_label)
         self.predict_detected_model_label.style().polish(self.predict_detected_model_label)
@@ -3383,10 +3471,11 @@ class TrainingLauncher(QMainWindow):
         resolved_checkpoint = Path(str(metadata["checkpoint_path"])).resolve()
         detected_model_name = str(metadata["resolved_model_name"])
         parent_name = resolved_checkpoint.parent.name
-        display_label = f"{detected_model_name} [{parent_name}/{resolved_checkpoint.name}]"
+        source_label = self.model_source_text(detected_model_name)
+        display_label = f"{source_label} [{parent_name}/{resolved_checkpoint.name}]"
         summary_text = (
-            f"{detected_model_name} | {parent_name}/{resolved_checkpoint.name}"
-            if parent_name else f"{detected_model_name} | {resolved_checkpoint.name}"
+            f"{source_label} | {parent_name}/{resolved_checkpoint.name}"
+            if parent_name else f"{source_label} | {resolved_checkpoint.name}"
         )
         return {
             "item_id": uuid.uuid4().hex,
@@ -3472,12 +3561,16 @@ class TrainingLauncher(QMainWindow):
         selected_any = False
         fallback_best_item: QTreeWidgetItem | None = None
         for model_name in self.discover_predict_checkpoint_models():
-            model_item = QTreeWidgetItem([model_name, "", ""])
+            full_display_model_name = self.model_source_text(model_name)
+            display_model_name = self.truncate_checkpoint_selector_model_text(full_display_model_name)
+            model_item = QTreeWidgetItem([display_model_name, "", ""])
             model_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             self.predict_checkpoint_tree.addTopLevelItem(model_item)
             run_tooltip = self.load_latest_run_log_for_checkpoint_dir(DEFAULT_CHECKPOINT_DIR / model_name)
+            model_tooltip = full_display_model_name
             if run_tooltip is not None:
-                model_item.setToolTip(0, self.make_run_tooltip_text(run_tooltip))
+                model_tooltip = f"{full_display_model_name}\n\n{self.make_run_tooltip_text(run_tooltip)}"
+            model_item.setToolTip(0, model_tooltip)
             for column, checkpoint_kind in ((1, "best"), (2, "last")):
                 checkpoint_path = DEFAULT_CHECKPOINT_DIR / model_name / f"{checkpoint_kind}.pth"
                 resolved_checkpoint_path = str(checkpoint_path.resolve())
@@ -3504,6 +3597,8 @@ class TrainingLauncher(QMainWindow):
         if select_default and not previous_selected_paths and not selected_any and fallback_best_item is not None:
             fallback_best_item.setCheckState(1, Qt.Checked)
         self.predict_checkpoint_tree.resizeColumnToContents(0)
+        current_width = self.predict_checkpoint_tree.columnWidth(0)
+        self.predict_checkpoint_tree.setColumnWidth(0, min(current_width, CHECKPOINT_SELECTOR_MODEL_COLUMN_MAX_WIDTH))
         self.predict_checkpoint_tree.resizeColumnToContents(1)
         self.predict_checkpoint_tree.resizeColumnToContents(2)
         self.predict_checkpoint_tree.blockSignals(False)
@@ -3554,9 +3649,11 @@ class TrainingLauncher(QMainWindow):
             if detected_model is not None and detected_model in self.available_models:
                 self.predict_model_combo.setCurrentText(detected_model)
             if len(ordered_items) == 1 and detected_model is not None:
-                self.predict_detected_model_label.setText(detected_model)
+                self.predict_detected_model_label.setText(self.model_source_text(detected_model))
             elif len(ordered_items) >= 2 and detected_model is not None:
-                self.predict_detected_model_label.setText(f"{detected_model} + {len(ordered_items) - 1} more checkpoint(s)")
+                self.predict_detected_model_label.setText(
+                    f"{self.model_source_text(detected_model)} + {len(ordered_items) - 1} more checkpoint(s)"
+                )
             else:
                 self.predict_detected_model_label.setText(f"{len(ordered_items)} checkpoint(s) selected")
             self.predict_detected_model_label.setProperty("muted", False)
@@ -3611,7 +3708,6 @@ class TrainingLauncher(QMainWindow):
         self.predict_checkpoint_tree.blockSignals(True)
         for tree_item in self.iter_predict_checkpoint_selector_items():
             best_payload = tree_item.data(1, Qt.UserRole)
-            last_payload = tree_item.data(2, Qt.UserRole)
             best_available = isinstance(best_payload, dict) and Path(str(best_payload.get("checkpoint_path", ""))).is_file()
             tree_item.setCheckState(1, Qt.Checked if best_available else Qt.Unchecked)
             tree_item.setCheckState(2, Qt.Unchecked)
@@ -3817,24 +3913,33 @@ class TrainingLauncher(QMainWindow):
         return DEFAULT_CHECKPOINT_DIR / model_name / "best.pth"
 
     def refresh_available_models(self, *, preferred_model: str | None = None) -> None:
-        refreshed = discover_model_names()
+        refreshed = sort_model_names_for_ui(
+            discover_model_names_generated_first(include_legacy_fallback=True)
+        )
         if not refreshed:
             return
         self.available_models = refreshed
-        current_training = self.model_combo.currentText().strip()
+        current_training = self.current_training_model_name()
         current_predict = self.predict_model_combo.currentText().strip()
+        preferred_target = resolve_preferred_model_name(preferred_model) if isinstance(preferred_model, str) else None
+        current_training_preferred = resolve_preferred_model_name(current_training) if current_training else None
+        current_predict_preferred = resolve_preferred_model_name(current_predict) if current_predict else None
 
-        training_target = preferred_model or (current_training if current_training in refreshed else refreshed[0])
+        training_target = preferred_target or (
+            current_training_preferred if isinstance(current_training_preferred, str) and current_training_preferred in refreshed else refreshed[0]
+        )
         predict_target = (
-            preferred_model
-            if preferred_model in refreshed
-            else (current_predict if current_predict in refreshed else refreshed[0])
+            preferred_target
+            if isinstance(preferred_target, str) and preferred_target in refreshed
+            else (
+                current_predict_preferred
+                if isinstance(current_predict_preferred, str) and current_predict_preferred in refreshed
+                else refreshed[0]
+            )
         )
 
         self.model_combo.blockSignals(True)
-        self.model_combo.clear()
-        self.model_combo.addItems(refreshed)
-        self.model_combo.setCurrentText(training_target)
+        self._set_training_model_combo_items(refreshed, target_model=training_target)
         self.model_combo.blockSignals(False)
 
         self.predict_model_combo.blockSignals(True)
@@ -3843,8 +3948,9 @@ class TrainingLauncher(QMainWindow):
         self.predict_model_combo.setCurrentText(predict_target)
         self.predict_model_combo.blockSignals(False)
 
-        self.on_training_model_changed(self.model_combo.currentText())
+        self.on_training_model_changed(self.current_training_model_name())
         self._last_predict_model_name = self.predict_model_combo.currentText()
+        self.update_training_model_source_label(self.current_training_model_name())
         self.update_predict_detected_model()
         self.update_test_split_detected_model()
 
@@ -3857,7 +3963,7 @@ class TrainingLauncher(QMainWindow):
         return "" if text == NEW_CHECKPOINT_NAME_LABEL else text
 
     def selected_checkpoint_dir(self) -> Path:
-        checkpoint_name = self.checkpoint_output_name() or self.model_combo.currentText()
+        checkpoint_name = self.checkpoint_output_name() or self.current_training_model_name()
         return DEFAULT_CHECKPOINT_DIR / checkpoint_name
 
     def stop_request_path_for(self, checkpoint_dir: Path | None = None) -> Path:
@@ -3882,24 +3988,26 @@ class TrainingLauncher(QMainWindow):
         self.checkpoint_output_combo.blockSignals(False)
         if preserve_text and preserve_text != NEW_CHECKPOINT_NAME_LABEL:
             self.checkpoint_output_combo.setEditText(preserve_text)
-        elif self.model_combo.currentText():
-            self.checkpoint_output_combo.setEditText(self.model_combo.currentText())
+        elif self.current_training_model_name():
+            self.checkpoint_output_combo.setEditText(self.current_training_model_name())
 
     def update_checkpoint_dir_label(self) -> None:
         self.checkpoint_dir_label.setText(str(self.selected_checkpoint_dir()))
 
     def on_training_model_changed(self, model_name: str) -> None:
+        resolved_model_name = self.current_training_model_name()
         current_name = self.checkpoint_output_name()
         if self._checkpoint_name_locked_to_model or not current_name or current_name == self._last_training_model_name:
-            self.checkpoint_output_combo.setEditText(model_name)
+            self.checkpoint_output_combo.setEditText(resolved_model_name)
             self._checkpoint_name_locked_to_model = True
-        self._last_training_model_name = model_name
+        self._last_training_model_name = resolved_model_name
+        self.update_training_model_source_label(resolved_model_name)
         self.update_checkpoint_dir_label()
         self.refresh_command_preview()
 
     def on_checkpoint_output_changed(self, text: str) -> None:
         checkpoint_name = text.strip()
-        self._checkpoint_name_locked_to_model = checkpoint_name in {"", self.model_combo.currentText()}
+        self._checkpoint_name_locked_to_model = checkpoint_name in {"", self.current_training_model_name()}
         self.update_checkpoint_dir_label()
         self.refresh_command_preview()
 
@@ -4047,9 +4155,13 @@ class TrainingLauncher(QMainWindow):
         model_name = recovered.get("model")
         if isinstance(model_name, str):
             normalized_model = model_name.strip()
+            preferred_model = resolve_preferred_model_name(normalized_model)
+            target_model = preferred_model if isinstance(preferred_model, str) else normalized_model
             for available_model in self.available_models:
-                if available_model.lower() == normalized_model.lower():
-                    self.model_combo.setCurrentText(available_model)
+                if available_model.lower() == target_model.lower():
+                    index = self.model_combo.findData(available_model)
+                    if index >= 0:
+                        self.model_combo.setCurrentIndex(index)
                     break
 
         checkpoint_name = recovered.get("checkpoint_name")
@@ -6793,18 +6905,9 @@ class TrainingLauncher(QMainWindow):
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(12, 10, 12, 10)
             card_layout.setSpacing(8)
-            card.setStyleSheet(
-                """
-                QFrame#PredictCompareCard {
-                    background-color: rgba(61, 75, 91, 0.36);
-                    border: 1px solid rgba(136, 173, 206, 0.32);
-                    border-radius: 12px;
-                }
-                """
-            )
 
             title_label = QLabel(display_label)
-            title_label.setStyleSheet("font-weight: 600;")
+            title_label.setProperty("sectionTitle", True)
             title_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             card_layout.addWidget(title_label)
 
@@ -6818,24 +6921,16 @@ class TrainingLauncher(QMainWindow):
             divider = QFrame()
             divider.setFrameShape(QFrame.HLine)
             divider.setFrameShadow(QFrame.Plain)
-            divider.setStyleSheet("color: rgba(136, 173, 206, 0.22); background-color: rgba(136, 173, 206, 0.22);")
+            divider.setProperty("divider", True)
             divider.setMaximumHeight(1)
             card_layout.addWidget(divider)
 
             preview_label = QLabel("Preview unavailable.")
+            preview_label.setObjectName("PredictPreviewCard")
             preview_label.setAlignment(Qt.AlignCenter)
             preview_label.setMinimumHeight(170)
             preview_label.setMaximumHeight(210)
             preview_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            preview_label.setStyleSheet(
-                """
-                QLabel {
-                    background-color: rgba(18, 24, 31, 0.62);
-                    border-radius: 10px;
-                    padding: 4px;
-                }
-                """
-            )
             overlay_pixmap = overlay_lookup.get(display_label)
             overlay_is_meaningful = self.is_predict_overlay_meaningful(image_path, overlay_pixmap)
             self.set_predict_preview_pixmap(preview_label, image_path, source_pixmap=overlay_pixmap)
@@ -6875,7 +6970,7 @@ class TrainingLauncher(QMainWindow):
             )
             details_label.setWordWrap(True)
             details_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            details_label.setStyleSheet("padding-top: 2px;")
+            details_label.setProperty("detailText", True)
             card_layout.addWidget(details_label)
 
             row = index // 2

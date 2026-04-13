@@ -21,7 +21,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from model.import_data import data_import
-from core.model_registry import discover_model_names, load_model_module
+from core.model_registry import discover_model_names_generated_first, load_model_module
 
 RUN_LOG_DIRNAME = "_run_logs"
 
@@ -39,7 +39,7 @@ def default_checkpoint_dir_for_model(model_name: str) -> Path:
 
 
 def parse_args() -> argparse.Namespace:
-    available_models = discover_model_names()
+    available_models = discover_model_names_generated_first(include_legacy_fallback=True)
     parser = argparse.ArgumentParser(description="Training entrypoint.")
     parser.add_argument(
         "--model",

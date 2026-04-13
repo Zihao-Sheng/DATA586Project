@@ -199,7 +199,7 @@ QMainWindow, QWidget {{
     background: {window_bg};
     color: {text};
     font-family: "{font_family}";
-    font-size: 10.5pt;
+    font-size: 10.25pt;
 }}
 QToolTip {{
     background: {panel_bg};
@@ -220,7 +220,7 @@ QDockWidget::title {{
 }}
 QTabWidget::pane {{
     border: 1px solid {border};
-    border-radius: 14px;
+    border-radius: 12px;
     background: {base_bg};
     top: -1px;
 }}
@@ -229,10 +229,10 @@ QTabBar::tab {{
     color: {text_muted};
     border: 1px solid {border};
     border-bottom: none;
-    padding: 8px 16px;
-    margin-right: 6px;
-    border-top-left-radius: 10px;
-    border-top-right-radius: 10px;
+    padding: 7px 14px;
+    margin-right: 5px;
+    border-top-left-radius: 9px;
+    border-top-right-radius: 9px;
     min-width: 90px;
 }}
 QTabBar::tab:selected {{
@@ -244,21 +244,25 @@ QTabBar::tab:hover:!selected {{
     color: {text};
 }}
 QGroupBox {{
-    background: {panel_bg};
+    background: {panel_alt_bg};
     border: 1px solid {border};
-    border-radius: 14px;
-    margin-top: 14px;
-    padding: 12px 14px 14px 14px;
+    border-radius: 12px;
+    margin-top: 10px;
+    padding: 10px 12px 12px 12px;
     font-weight: 600;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
-    left: 12px;
+    left: 10px;
     padding: 0 6px;
-    color: {text};
+    color: {text_muted};
 }}
 QLabel {{
+    background: transparent;
     color: {text};
+}}
+QLabel[sectionTitle="true"] {{
+    font-weight: 600;
 }}
 QLabel[muted="true"] {{
     color: {text_muted};
@@ -274,6 +278,9 @@ QLabel[sectionHint="true"] {{
     color: {text_muted};
     font-size: 9.6pt;
     letter-spacing: 0.02em;
+}}
+QLabel[detailText="true"] {{
+    padding-top: 2px;
 }}
 QLabel[codeblock="true"] {{
     background: {code_bg};
@@ -294,7 +301,7 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit, QList
     background: {input_bg};
     color: {text};
     border: 1px solid {border};
-    border-radius: 10px;
+    border-radius: 8px;
     padding: 4px 10px;
     selection-background-color: {selection_bg};
     selection-color: {selection_text};
@@ -318,8 +325,8 @@ QPushButton {{
     background: {accent};
     color: {text_inverse};
     border: none;
-    border-radius: 10px;
-    padding: 8px 14px;
+    border-radius: 8px;
+    padding: 7px 12px;
     min-height: 18px;
     font-weight: 600;
 }}
@@ -337,6 +344,7 @@ QPushButton:disabled {{
     color: {disabled_text};
 }}
 QCheckBox, QRadioButton {{
+    background: transparent;
     spacing: 8px;
 }}
 QCheckBox::indicator, QRadioButton::indicator {{
@@ -352,7 +360,7 @@ QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
 }}
 QProgressBar {{
     border: 1px solid {border};
-    border-radius: 9px;
+    border-radius: 8px;
     background: {input_alt_bg};
     text-align: center;
     min-height: 18px;
@@ -360,7 +368,7 @@ QProgressBar {{
 }}
 QProgressBar::chunk {{
     background: {accent};
-    border-radius: 8px;
+    border-radius: 7px;
 }}
 QScrollArea {{
     border: none;
@@ -400,7 +408,7 @@ QPlainTextEdit, QTextEdit {{
 }}
 QLabel#ImagePreview {{
     border: 1px solid {border};
-    border-radius: 16px;
+    border-radius: 14px;
     background: {image_preview_bg};
     color: {text_muted};
 }}
@@ -417,5 +425,32 @@ QDialogButtonBox QPushButton {{
 }}
 QSplitter::handle {{
     background: {border};
+}}
+QFrame#PredictCompareCard {{
+    background: {panel_bg};
+    border: 1px solid {border};
+    border-radius: 12px;
+}}
+QLabel#PredictPreviewCard {{
+    background: {image_preview_bg};
+    border: 1px solid {border};
+    border-radius: 10px;
+    padding: 4px;
+}}
+QFrame[divider="true"] {{
+    background: {border};
+    color: {border};
+}}
+QFrame#CanvasStageNode {{
+    border: 1px solid {border};
+    border-radius: 10px;
+    background: {panel_bg};
+}}
+QFrame#CanvasStageNode[editable="false"] {{
+    background: {panel_alt_bg};
+}}
+QFrame#CanvasStageNode[selected="true"] {{
+    border: 1px solid {accent};
+    background: {accent_soft};
 }}
     """.format(**theme)

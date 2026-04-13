@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -30,6 +31,14 @@ from PySide6.QtWidgets import (
 )
 
 from core import custom_model_generator
+from core.model_registry import (
+    discover_model_names_generated_first,
+    model_catalog_entry,
+    model_display_label,
+    resolve_model_spec_path,
+    resolve_model_structure_for_canvas,
+    sort_model_names_for_ui,
+)
 
 
 class StrategyPaletteList(QListWidget):
@@ -71,12 +80,15 @@ class CanvasStageNode(QFrame):
         self._selected = False
         self.setAcceptDrops(editable)
         self.setFrameShape(QFrame.StyledPanel)
+        self.setObjectName("CanvasStageNode")
+        self.setProperty("editable", editable)
+        self.setProperty("selected", False)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(4)
         self.title_label = QLabel(title)
-        self.title_label.setStyleSheet("font-weight: 600;")
+        self.title_label.setProperty("sectionTitle", True)
         self.state_label = QLabel("")
         self.state_label.setProperty("muted", True)
         layout.addWidget(self.title_label)
@@ -91,9 +103,12 @@ class CanvasStageNode(QFrame):
         self.state_label.setText(text)
 
     def _refresh_style(self) -> None:
-        border = "#4e8cff" if self._selected else "#314154"
-        bg = "#0f1722" if self.editable else "#0b1119"
-        self.setStyleSheet(f"QFrame{{border:1px solid {border}; border-radius:8px; background:{bg};}}")
+        self.setProperty("selected", self._selected)
+        style = self.style()
+        if style is not None:
+            style.unpolish(self)
+            style.polish(self)
+        self.update()
 
     def mousePressEvent(self, event) -> None:
         self._on_selected(self.stage_key)
@@ -116,7 +131,8 @@ class CanvasStageNode(QFrame):
 
 
 class CustomModelCanvasWidget(QWidget):
-    STRATEGIES = ["Freeze", "Unfreeze", "BN Tuning", "LoRA", "DoRA", "TSA"]
+    STRATEGIES = ["Freeze", "Unfreeze", "BN Tuning", "Norm Tuning", "LoRA", "DoRA", "TSA", "Adapter", "BitFit", "SSF"]
+    GLOBAL_MODES = ["Manual", "Linear Probe", "Full Finetune"]
 
     FLOWS: dict[str, list[tuple[str, str]]] = {
         "efficientnet_v2_s": [
@@ -136,6 +152,46 @@ class CustomModelCanvasWidget(QWidget):
             ("classifier", "FC / Classifier"),
             ("output", "Output"),
         ],
+        "resnet50": [
+            ("input", "Input"),
+            ("stem", "Stem / Conv1"),
+            ("layer1", "Layer1"),
+            ("layer2", "Layer2"),
+            ("layer3", "Layer3"),
+            ("layer4", "Layer4"),
+            ("classifier", "FC / Classifier"),
+            ("output", "Output"),
+        ],
+        "convnext_tiny": [
+            ("input", "Input"),
+            ("stem", "Stem"),
+            ("stage1", "Stage1"),
+            ("stage2", "Stage2"),
+            ("stage3", "Stage3"),
+            ("stage4", "Stage4"),
+            ("classifier", "Classifier"),
+            ("output", "Output"),
+        ],
+        "mobilenet_v3_large": [
+            ("input", "Input"),
+            ("stem", "Stem"),
+            ("stage1", "Feature Stage1"),
+            ("stage2", "Feature Stage2"),
+            ("stage3", "Feature Stage3"),
+            ("stage4", "Feature Stage4"),
+            ("classifier", "Classifier"),
+            ("output", "Output"),
+        ],
+        "densenet121": [
+            ("input", "Input"),
+            ("stem", "Stem"),
+            ("denseblock1", "DenseBlock1"),
+            ("denseblock2", "DenseBlock2"),
+            ("denseblock3", "DenseBlock3"),
+            ("denseblock4", "DenseBlock4"),
+            ("classifier", "Classifier"),
+            ("output", "Output"),
+        ],
     }
 
     def __init__(self, on_model_generated: Callable[[str], None] | None = None, parent: QWidget | None = None) -> None:
@@ -143,8 +199,15 @@ class CustomModelCanvasWidget(QWidget):
         self._spec_path: Path | None = None
         self._updating = False
         self._on_model_generated = on_model_generated
+        self._structure_source = "explicit"
+        self._structure_confidence = "high"
+        self._read_only_introspection = False
         self._selected_stage = "classifier"
         self._base_model = "efficientnet_v2_s"
+        self._flow_nodes: list[tuple[str, str]] = []
+        self._stage_strategy_overrides: dict[str, set[str]] = {}
+        self._introspection_payload: dict[str, object] | None = None
+        self._global_mode = "Manual"
 
         self.model_name_edit = QLineEdit("custom_canvas_model")
         self.base_model_combo = QComboBox()
@@ -155,8 +218,9 @@ class CustomModelCanvasWidget(QWidget):
 
         self.stage_frozen = QCheckBox("Frozen")
         self.stage_train_bn = QCheckBox("Train BN")
-        self.stage_peft = QComboBox()
-        self.stage_peft.addItems(["none", "lora", "dora", "tsa"])
+        self.stage_train_norm = QCheckBox("Norm Tuning")
+        self.stage_method = QComboBox()
+        self.stage_method.addItems(["none", "lora", "dora", "tsa", "adapter", "bitfit", "ssf"])
         self.stage_rank = QSpinBox()
         self.stage_rank.setRange(1, 128)
         self.stage_rank.setValue(8)
@@ -164,9 +228,26 @@ class CustomModelCanvasWidget(QWidget):
         self.stage_alpha.setRange(0.1, 512.0)
         self.stage_alpha.setDecimals(2)
         self.stage_alpha.setValue(16.0)
+        self.stage_adapter_dim = QSpinBox()
+        self.stage_adapter_dim.setRange(1, 1024)
+        self.stage_adapter_dim.setValue(32)
+        self.stage_bitfit_scope = QComboBox()
+        self.stage_bitfit_scope.addItems(["all_bias", "norm_and_classifier_bias"])
+        self.stage_ssf_scale = QDoubleSpinBox()
+        self.stage_ssf_scale.setRange(-16.0, 16.0)
+        self.stage_ssf_scale.setDecimals(3)
+        self.stage_ssf_scale.setValue(1.0)
+        self.stage_ssf_shift = QDoubleSpinBox()
+        self.stage_ssf_shift.setRange(-16.0, 16.0)
+        self.stage_ssf_shift.setDecimals(3)
+        self.stage_ssf_shift.setValue(0.0)
         self.method_preview = QLabel("Method: baseline")
         self.method_preview.setProperty("muted", True)
         self.spec_path_label = QLabel("Spec File: (new unsaved spec)")
+        self.structure_origin_label = QLabel("Structure Source: explicit (high confidence)")
+        self.structure_origin_label.setProperty("muted", True)
+        self.model_info_label = QLabel("Model Info: torchvision/efficientnet/efficientnet_v2_s | baseline | pretrained | generated")
+        self.model_info_label.setProperty("muted", True)
         self.status_label = QLabel("Canvas edits structured spec only.")
         self.status_label.setProperty("muted", True)
         self.spec_summary = QPlainTextEdit()
@@ -175,24 +256,36 @@ class CustomModelCanvasWidget(QWidget):
 
         self.stage_frozen.toggled.connect(self._on_detail_changed)
         self.stage_train_bn.toggled.connect(self._on_detail_changed)
-        self.stage_peft.currentTextChanged.connect(self._on_detail_changed)
+        self.stage_train_norm.toggled.connect(self._on_detail_changed)
+        self.stage_method.currentTextChanged.connect(self._on_detail_changed)
         self.stage_rank.valueChanged.connect(self._on_detail_changed)
         self.stage_alpha.valueChanged.connect(self._on_detail_changed)
+        self.stage_adapter_dim.valueChanged.connect(self._on_detail_changed)
+        self.stage_bitfit_scope.currentTextChanged.connect(self._on_detail_changed)
+        self.stage_ssf_scale.valueChanged.connect(self._on_detail_changed)
+        self.stage_ssf_shift.valueChanged.connect(self._on_detail_changed)
         self.model_name_edit.textChanged.connect(self._on_state_changed)
         self.gradcam_edit.textChanged.connect(self._on_state_changed)
         self.pretrained_checkbox.toggled.connect(self._on_state_changed)
         self.base_model_combo.currentTextChanged.connect(self._on_base_model_changed)
 
-        self.new_button = QPushButton("New")
-        self.load_button = QPushButton("Load")
+        self.new_button = QPushButton("New Blank")
+        self.open_model_button = QPushButton("Open Existing Model")
+        self.show_legacy_checkbox = QCheckBox("Show Legacy Fallback")
+        self.show_legacy_checkbox.setChecked(False)
+        self.global_mode_combo = QComboBox()
+        self.global_mode_combo.addItems(self.GLOBAL_MODES)
+        self.load_button = QPushButton("Load Spec")
         self.save_button = QPushButton("Save")
         self.save_as_button = QPushButton("Save As")
         self.generate_button = QPushButton("Generate Model")
         self.new_button.clicked.connect(self.new_spec)
+        self.open_model_button.clicked.connect(self.open_existing_model)
         self.load_button.clicked.connect(self.load_spec)
         self.save_button.clicked.connect(self.save_spec)
         self.save_as_button.clicked.connect(self.save_spec_as)
         self.generate_button.clicked.connect(self.generate_model)
+        self.global_mode_combo.currentTextChanged.connect(self._on_global_mode_changed)
 
         self.palette = StrategyPaletteList()
         self.palette.addItems(self.STRATEGIES)
@@ -220,12 +313,20 @@ class CustomModelCanvasWidget(QWidget):
         detail_group = QGroupBox("Stage Details")
         detail_form = QFormLayout(detail_group)
         self.stage_title = QLabel("-")
+        self.stage_ops_label = QLabel("-")
+        self.stage_ops_label.setProperty("muted", True)
         detail_form.addRow("Selected Stage", self.stage_title)
+        detail_form.addRow("Allowed Ops", self.stage_ops_label)
         detail_form.addRow("", self.stage_frozen)
         detail_form.addRow("", self.stage_train_bn)
-        detail_form.addRow("PEFT", self.stage_peft)
-        detail_form.addRow("Rank", self.stage_rank)
-        detail_form.addRow("Alpha", self.stage_alpha)
+        detail_form.addRow("", self.stage_train_norm)
+        detail_form.addRow("Stage Method", self.stage_method)
+        detail_form.addRow("LoRA/DoRA Rank", self.stage_rank)
+        detail_form.addRow("LoRA/DoRA Alpha", self.stage_alpha)
+        detail_form.addRow("Adapter Dim", self.stage_adapter_dim)
+        detail_form.addRow("BitFit Scope", self.stage_bitfit_scope)
+        detail_form.addRow("SSF Init Scale", self.stage_ssf_scale)
+        detail_form.addRow("SSF Init Shift", self.stage_ssf_shift)
         detail_form.addRow("Grad-CAM", self.gradcam_edit)
         detail_form.addRow("Method", self.method_preview)
 
@@ -234,26 +335,70 @@ class CustomModelCanvasWidget(QWidget):
         splitter.addWidget(detail_group)
         splitter.setSizes([760, 330])
 
-        toolbar = QHBoxLayout()
-        toolbar.addWidget(QLabel("Model Name"))
-        toolbar.addWidget(self.model_name_edit, stretch=1)
-        toolbar.addWidget(QLabel("Base"))
-        toolbar.addWidget(self.base_model_combo)
-        toolbar.addWidget(self.pretrained_checkbox)
-        toolbar.addWidget(self.new_button)
-        toolbar.addWidget(self.load_button)
-        toolbar.addWidget(self.save_button)
-        toolbar.addWidget(self.save_as_button)
-        toolbar.addWidget(self.generate_button)
+        workflow_row = QHBoxLayout()
+        workflow_row.setContentsMargins(0, 0, 0, 0)
+        workflow_row.setSpacing(8)
+        workflow_row.addWidget(self.new_button)
+        workflow_row.addWidget(self.load_button)
+        workflow_row.addWidget(self.open_model_button)
+        workflow_row.addWidget(self.show_legacy_checkbox)
+        workflow_row.addStretch(1)
+
+        settings_row = QHBoxLayout()
+        settings_row.setContentsMargins(0, 0, 0, 0)
+        settings_row.setSpacing(8)
+        settings_row.addWidget(QLabel("Model Name"))
+        settings_row.addWidget(self.model_name_edit, stretch=1)
+        settings_row.addWidget(QLabel("Base"))
+        settings_row.addWidget(self.base_model_combo)
+        settings_row.addWidget(self.pretrained_checkbox)
+        settings_row.addWidget(QLabel("Global Mode"))
+        settings_row.addWidget(self.global_mode_combo)
+
+        top_controls = QVBoxLayout()
+        top_controls.setContentsMargins(0, 0, 0, 0)
+        top_controls.setSpacing(8)
+        top_controls.addLayout(workflow_row)
+        top_controls.addLayout(settings_row)
+
+        actions_row = QHBoxLayout()
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setSpacing(8)
+        actions_row.addWidget(self.save_button)
+        actions_row.addWidget(self.save_as_button)
+        actions_row.addWidget(self.generate_button)
+
+        meta_left_column = QVBoxLayout()
+        meta_left_column.setContentsMargins(0, 0, 0, 0)
+        meta_left_column.setSpacing(4)
+        meta_left_column.addWidget(self.spec_path_label)
+        meta_left_column.addWidget(self.structure_origin_label)
+        meta_left_column.addWidget(self.model_info_label)
+
+        meta_row = QHBoxLayout()
+        meta_row.setContentsMargins(0, 0, 0, 0)
+        meta_row.setSpacing(12)
+        meta_row.addLayout(meta_left_column, stretch=1)
+        meta_row.addLayout(actions_row, stretch=0)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(toolbar)
+        layout.addLayout(top_controls)
         layout.addWidget(splitter, stretch=1)
-        layout.addWidget(self.spec_path_label)
+        layout.addLayout(meta_row)
         layout.addWidget(self.spec_summary)
         layout.addWidget(self.status_label)
 
         self.new_spec()
+
+    def _existing_model_choices(self) -> tuple[list[str], dict[str, str]]:
+        models = sort_model_names_for_ui(
+            discover_model_names_generated_first(include_legacy_fallback=self.show_legacy_checkbox.isChecked())
+        )
+        display_to_model: dict[str, str] = {}
+        for model_name in models:
+            display = model_display_label(model_name, include_name=True)
+            display_to_model[display] = model_name
+        return list(display_to_model.keys()), display_to_model
 
     def _stage_to_feature_index(self, stage_key: str) -> int | None:
         if stage_key.startswith("features."):
@@ -263,18 +408,180 @@ class CustomModelCanvasWidget(QWidget):
                 return None
         return None
 
+    def _set_structure_origin(self, source: str, confidence: str) -> None:
+        self._structure_source = source
+        self._structure_confidence = confidence
+        self.structure_origin_label.setText(f"Structure Source: {source} ({confidence} confidence)")
+
+    def _set_editing_enabled(self, enabled: bool) -> None:
+        self._read_only_introspection = not enabled
+        self.palette.setEnabled(enabled)
+        self.stage_frozen.setEnabled(enabled)
+        self.stage_train_bn.setEnabled(enabled)
+        self.stage_train_norm.setEnabled(enabled)
+        self.stage_method.setEnabled(enabled)
+        self.stage_rank.setEnabled(enabled)
+        self.stage_alpha.setEnabled(enabled)
+        self.stage_adapter_dim.setEnabled(enabled)
+        self.stage_bitfit_scope.setEnabled(enabled)
+        self.stage_ssf_scale.setEnabled(enabled)
+        self.stage_ssf_shift.setEnabled(enabled)
+        self.model_name_edit.setEnabled(enabled)
+        self.base_model_combo.setEnabled(enabled)
+        self.pretrained_checkbox.setEnabled(enabled)
+        self.global_mode_combo.setEnabled(enabled)
+        self.gradcam_edit.setEnabled(enabled)
+        self.save_button.setEnabled(enabled)
+        self.save_as_button.setEnabled(enabled)
+        self.generate_button.setEnabled(enabled)
+
+    def _refresh_model_info_label(self, *, model_name_hint: str | None = None, method_hint: str | None = None) -> None:
+        provider = "torchvision"
+        if self._base_model.startswith("resnet"):
+            family = "resnet"
+        elif self._base_model.startswith("efficientnet"):
+            family = "efficientnet"
+        elif self._base_model.startswith("convnext"):
+            family = "convnext"
+        elif self._base_model.startswith("mobilenet"):
+            family = "mobilenet_v3"
+        elif self._base_model.startswith("densenet"):
+            family = "densenet"
+        else:
+            family = self._base_model
+        variant = self._base_model
+        method = method_hint or "baseline"
+        pretrained = "pretrained" if self.pretrained_checkbox.isChecked() else "scratch"
+        source = self._structure_source
+        if isinstance(model_name_hint, str) and model_name_hint.strip():
+            info = model_catalog_entry(model_name_hint.strip())
+            provider = str(info.get("provider", provider))
+            family = str(info.get("family", family))
+            variant = str(info.get("variant", variant))
+            method = str(info.get("method_type", method))
+            pre = info.get("pretrained")
+            pretrained = "pretrained" if pre is True else ("scratch" if pre is False else pretrained)
+            source = str(info.get("source", source))
+        self.model_info_label.setText(
+            f"Model Info: {provider}/{family}/{variant} | {method} | {pretrained} | source={source}"
+        )
+
+    def _supported_methods(self) -> set[str]:
+        try:
+            return set(custom_model_generator.supported_methods_for_base(self._base_model))
+        except Exception:
+            return {"baseline"}
+
+    def _strategy_label_from_safe_op(self, op: str) -> str | None:
+        normalized = str(op).strip().lower()
+        mapping = {
+            "freeze": "Freeze",
+            "unfreeze": "Unfreeze",
+            "bn_tuning": "BN Tuning",
+            "norm_tuning": "Norm Tuning",
+            "lora": "LoRA",
+            "dora": "DoRA",
+            "tsa": "TSA",
+            "adapter": "Adapter",
+            "bitfit": "BitFit",
+            "ssf": "SSF",
+        }
+        return mapping.get(normalized)
+
+    def _method_from_strategy_label(self, label: str) -> str | None:
+        mapping = {
+            "LoRA": "lora",
+            "DoRA": "dora",
+            "TSA": "tsa",
+            "Adapter": "adapter",
+            "BitFit": "bitfit",
+            "SSF": "ssf",
+        }
+        return mapping.get(label)
+
+    def _configure_default_flow_for_base(self, base_model: str) -> None:
+        self._flow_nodes = list(self.FLOWS[base_model])
+        if base_model == "efficientnet_v2_s":
+            self.editable_stages = {"stem", *[f"features.{i}" for i in range(8)], "classifier"}
+        elif base_model in {"resnet18", "resnet50"}:
+            self.editable_stages = {"stem", "layer1", "layer2", "layer3", "layer4", "classifier"}
+        elif base_model in {"convnext_tiny", "mobilenet_v3_large"}:
+            self.editable_stages = {"stem", "stage1", "stage2", "stage3", "stage4", "classifier"}
+        elif base_model == "densenet121":
+            self.editable_stages = {"stem", "denseblock1", "denseblock2", "denseblock3", "denseblock4", "classifier"}
+        else:
+            self.editable_stages = {key for key, _ in self._flow_nodes if key not in {"input", "output"}}
+        self._stage_strategy_overrides = {}
+        self._introspection_payload = None
+
+    def _configure_introspected_flow(self, structure_payload: dict[str, object]) -> None:
+        raw_stages = structure_payload.get("stages")
+        if not isinstance(raw_stages, list):
+            raise ValueError("Invalid introspected structure payload: missing stages list.")
+        flow_nodes: list[tuple[str, str]] = []
+        editable_stages: set[str] = set()
+        strategy_overrides: dict[str, set[str]] = {}
+        for item in raw_stages:
+            if not isinstance(item, dict):
+                continue
+            stage_key = str(item.get("key", "")).strip()
+            title = str(item.get("title", stage_key)).strip() or stage_key
+            if not stage_key:
+                continue
+            flow_nodes.append((stage_key, title))
+            if bool(item.get("editable", False)):
+                editable_stages.add(stage_key)
+            safe_ops_raw = item.get("safe_operations", [])
+            safe_ops = safe_ops_raw if isinstance(safe_ops_raw, list) else []
+            strategy_labels = {label for op in safe_ops if (label := self._strategy_label_from_safe_op(str(op))) is not None}
+            strategy_overrides[stage_key] = strategy_labels
+        if not flow_nodes:
+            raise ValueError("Introspection returned no stage nodes.")
+        self._flow_nodes = flow_nodes
+        self.editable_stages = editable_stages
+        self._stage_strategy_overrides = strategy_overrides
+        self._introspection_payload = structure_payload
+
     def _allowed_strategies_for_stage(self, stage_key: str) -> set[str]:
         if stage_key not in self.editable_stages:
             return set()
-        allowed = set(self.STRATEGIES)
+        override = self._stage_strategy_overrides.get(stage_key)
+        if isinstance(override, set):
+            return set(override)
+        supported_methods = self._supported_methods()
+        allowed = {"Freeze", "Unfreeze"}
+        if "bn_tuning" in supported_methods and stage_key != "classifier":
+            allowed.add("BN Tuning")
+        if "norm_tuning" in supported_methods and stage_key != "classifier":
+            allowed.add("Norm Tuning")
+
+        peft_targetable: set[str]
         if self._base_model == "efficientnet_v2_s":
-            index = self._stage_to_feature_index(stage_key)
-            if stage_key == "stem" or (index is not None and index <= 4):
-                allowed -= {"LoRA", "DoRA", "TSA"}
+            peft_targetable = {"features.5", "features.6", "features.7", "classifier"}
+        elif self._base_model in {"resnet18", "resnet50"}:
+            peft_targetable = {"layer3", "layer4", "classifier"}
+        elif self._base_model in {"convnext_tiny", "mobilenet_v3_large"}:
+            peft_targetable = {"stage3", "stage4", "classifier"}
+        elif self._base_model == "densenet121":
+            peft_targetable = {"denseblock3", "denseblock4", "classifier"}
         else:
-            if stage_key not in {"layer1", "layer2", "layer3", "layer4", "classifier"}:
-                allowed -= {"LoRA", "DoRA", "TSA"}
-            allowed.discard("DoRA")
+            peft_targetable = {"classifier"}
+
+        if stage_key in peft_targetable:
+            if "lora" in supported_methods:
+                allowed.add("LoRA")
+            if "tsa" in supported_methods:
+                allowed.add("TSA")
+            if "dora" in supported_methods:
+                allowed.add("DoRA")
+            if "adapter" in supported_methods:
+                allowed.add("Adapter")
+            if "bitfit" in supported_methods:
+                allowed.add("BitFit")
+            if "ssf" in supported_methods:
+                allowed.add("SSF")
+        elif stage_key == "classifier" and "bitfit" in supported_methods:
+            allowed.add("BitFit")
         return allowed
 
     def _build_flow(self) -> None:
@@ -285,22 +592,31 @@ class CustomModelCanvasWidget(QWidget):
                 widget.deleteLater()
         self.nodes.clear()
 
-        if self._base_model == "efficientnet_v2_s":
-            self.editable_stages = {"stem", *[f"features.{i}" for i in range(8)], "classifier"}
-        else:
-            self.editable_stages = {"stem", "layer1", "layer2", "layer3", "layer4", "classifier"}
+        if not self._flow_nodes:
+            self._configure_default_flow_for_base(self._base_model)
 
-        for stage_key, _ in self.FLOWS[self._base_model]:
+        for stage_key, _ in self._flow_nodes:
             if stage_key not in self.state:
-                self.state[stage_key] = {"frozen": True, "train_bn": False, "peft": "none", "rank": 8, "alpha": 16.0}
+                self.state[stage_key] = {
+                    "frozen": True,
+                    "train_bn": False,
+                    "train_norm": False,
+                    "stage_method": "none",
+                    "rank": 8,
+                    "alpha": 16.0,
+                    "adapter_dim": 32,
+                    "bitfit_scope": "all_bias",
+                    "ssf_scale": 1.0,
+                    "ssf_shift": 0.0,
+                }
         for stage in list(self.state.keys()):
-            if stage not in {key for key, _ in self.FLOWS[self._base_model]}:
+            if stage not in {key for key, _ in self._flow_nodes}:
                 self.state.pop(stage, None)
 
         if "classifier" in self.state and self.state["classifier"]["frozen"] is True:
             self.state["classifier"]["frozen"] = False
 
-        flow = self.FLOWS[self._base_model]
+        flow = self._flow_nodes
         for idx, (stage_key, title) in enumerate(flow):
             node = CanvasStageNode(
                 stage_key,
@@ -320,7 +636,7 @@ class CustomModelCanvasWidget(QWidget):
         self.canvas_layout.addStretch(1)
 
         if self._selected_stage not in self.editable_stages:
-            self._selected_stage = "classifier"
+            self._selected_stage = "classifier" if "classifier" in self.editable_stages else next(iter(self.editable_stages), "")
 
     def _select_stage(self, stage_key: str) -> None:
         self._selected_stage = stage_key
@@ -330,24 +646,80 @@ class CustomModelCanvasWidget(QWidget):
         self._updating = True
         try:
             self.stage_title.setText(stage_key)
-            editable = stage_key in self.editable_stages
+            editable = stage_key in self.editable_stages and not self._read_only_introspection
+            allowed_labels = sorted(self._allowed_strategies_for_stage(stage_key))
+            self.stage_ops_label.setText(", ".join(allowed_labels) if allowed_labels else "None")
+            allowed_stage_methods = ["none"] + [
+                method for method in (self._method_from_strategy_label(label) for label in allowed_labels) if method is not None
+            ]
+            existing_method = str(state.get("stage_method", "none")).strip().lower()
+            self.stage_method.blockSignals(True)
+            self.stage_method.clear()
+            self.stage_method.addItems(allowed_stage_methods)
+            self.stage_method.blockSignals(False)
             self.stage_frozen.setEnabled(editable)
             self.stage_train_bn.setEnabled(editable)
-            self.stage_peft.setEnabled(editable)
+            self.stage_train_norm.setEnabled(editable)
+            self.stage_method.setEnabled(editable)
             self.stage_rank.setEnabled(editable)
             self.stage_alpha.setEnabled(editable)
+            self.stage_adapter_dim.setEnabled(editable)
+            self.stage_bitfit_scope.setEnabled(editable)
+            self.stage_ssf_scale.setEnabled(editable)
+            self.stage_ssf_shift.setEnabled(editable)
             self.stage_frozen.setChecked(bool(state.get("frozen", True)))
             self.stage_train_bn.setChecked(bool(state.get("train_bn", False)))
-            peft = str(state.get("peft", "none"))
-            if self._base_model != "efficientnet_v2_s" and peft == "dora":
-                peft = "none"
-            self.stage_peft.setCurrentText(peft)
+            self.stage_train_norm.setChecked(bool(state.get("train_norm", False)))
+            stage_method = existing_method if existing_method in set(allowed_stage_methods) else "none"
+            self.stage_method.setCurrentText(stage_method)
             self.stage_rank.setValue(int(state.get("rank", 8)))
             self.stage_alpha.setValue(float(state.get("alpha", 16.0)))
+            self.stage_adapter_dim.setValue(int(state.get("adapter_dim", 32)))
+            self.stage_bitfit_scope.setCurrentText(str(state.get("bitfit_scope", "all_bias")))
+            self.stage_ssf_scale.setValue(float(state.get("ssf_scale", 1.0)))
+            self.stage_ssf_shift.setValue(float(state.get("ssf_shift", 0.0)))
+            self._refresh_method_parameter_visibility(stage_method)
         finally:
             self._updating = False
 
+    def _refresh_method_parameter_visibility(self, stage_method: str) -> None:
+        method = str(stage_method).strip().lower()
+        show_rank_alpha = method in {"lora", "dora"}
+        show_adapter = method == "adapter"
+        show_bitfit = method == "bitfit"
+        show_ssf = method == "ssf"
+        self.stage_rank.setVisible(show_rank_alpha)
+        self.stage_alpha.setVisible(show_rank_alpha)
+        self.stage_adapter_dim.setVisible(show_adapter)
+        self.stage_bitfit_scope.setVisible(show_bitfit)
+        self.stage_ssf_scale.setVisible(show_ssf)
+        self.stage_ssf_shift.setVisible(show_ssf)
+
+    def _on_global_mode_changed(self, value: str) -> None:
+        if self._updating or self._read_only_introspection:
+            return
+        mode = str(value).strip()
+        self._global_mode = mode if mode in set(self.GLOBAL_MODES) else "Manual"
+        if self._global_mode == "Manual":
+            return
+        if self._global_mode == "Linear Probe":
+            for key in self.editable_stages:
+                self.state[key]["frozen"] = key != "classifier"
+                self.state[key]["train_bn"] = False
+                self.state[key]["train_norm"] = False
+                self.state[key]["stage_method"] = "none"
+        elif self._global_mode == "Full Finetune":
+            for key in self.editable_stages:
+                self.state[key]["frozen"] = False
+                self.state[key]["train_bn"] = False
+                self.state[key]["train_norm"] = False
+                self.state[key]["stage_method"] = "none"
+        self._select_stage(self._selected_stage if self._selected_stage in self.editable_stages else "classifier")
+        self._on_state_changed()
+
     def _apply_strategy(self, stage_key: str, strategy: str) -> None:
+        if self._read_only_introspection:
+            return
         if stage_key not in self.editable_stages:
             return
         strategy = strategy.strip()
@@ -357,63 +729,86 @@ class CustomModelCanvasWidget(QWidget):
             self.state[stage_key]["frozen"] = False
         elif strategy == "BN Tuning":
             self.state[stage_key]["train_bn"] = True
-        elif strategy in {"LoRA", "DoRA", "TSA"}:
+        elif strategy == "Norm Tuning":
+            self.state[stage_key]["train_norm"] = True
+        elif strategy in {"LoRA", "DoRA", "TSA", "Adapter", "BitFit", "SSF"}:
             method = strategy.lower()
-            if self._base_model == "resnet18" and method == "dora":
-                self.status_label.setText("DoRA is not supported for ResNet18 in current generator.")
+            if method not in self._supported_methods():
+                self.status_label.setText(f"{strategy} is not supported for base model '{self._base_model}'.")
                 return
             for key in self.editable_stages:
-                if self.state[key]["peft"] != "none" and self.state[key]["peft"] != method:
-                    self.state[key]["peft"] = "none"
-            self.state[stage_key]["peft"] = method
+                if self.state[key]["stage_method"] != "none" and self.state[key]["stage_method"] != method:
+                    self.state[key]["stage_method"] = "none"
+            self.state[stage_key]["stage_method"] = method
         self._select_stage(stage_key)
+        self._global_mode = "Manual"
+        self.global_mode_combo.setCurrentText("Manual")
         self._on_state_changed()
 
     def _on_detail_changed(self) -> None:
+        if self._read_only_introspection:
+            return
         if self._updating or self._selected_stage not in self.editable_stages:
             return
-        peft = self.stage_peft.currentText().strip().lower()
-        if self._base_model == "resnet18" and peft == "dora":
-            peft = "none"
-        if peft in {"lora", "dora", "tsa"}:
+        stage_method = self.stage_method.currentText().strip().lower()
+        if stage_method not in {"none", *self._supported_methods()}:
+            stage_method = "none"
+        if stage_method in {"lora", "dora", "tsa", "adapter", "bitfit", "ssf"}:
             for key in self.editable_stages:
-                if self.state[key]["peft"] != "none" and self.state[key]["peft"] != peft:
-                    self.state[key]["peft"] = "none"
+                if self.state[key]["stage_method"] != "none" and self.state[key]["stage_method"] != stage_method:
+                    self.state[key]["stage_method"] = "none"
         self.state[self._selected_stage].update(
             {
                 "frozen": self.stage_frozen.isChecked(),
                 "train_bn": self.stage_train_bn.isChecked(),
-                "peft": peft,
+                "train_norm": self.stage_train_norm.isChecked(),
+                "stage_method": stage_method,
                 "rank": int(self.stage_rank.value()),
                 "alpha": float(self.stage_alpha.value()),
+                "adapter_dim": int(self.stage_adapter_dim.value()),
+                "bitfit_scope": self.stage_bitfit_scope.currentText().strip().lower(),
+                "ssf_scale": float(self.stage_ssf_scale.value()),
+                "ssf_shift": float(self.stage_ssf_shift.value()),
             }
         )
+        self._refresh_method_parameter_visibility(stage_method)
+        self._global_mode = "Manual"
+        self.global_mode_combo.setCurrentText("Manual")
         self._on_state_changed()
 
     def _derive_method(self) -> str:
-        peft_stages = [key for key in self.editable_stages if self.state[key]["peft"] != "none"]
-        peft_method = next((self.state[key]["peft"] for key in peft_stages), None)
-        if peft_method:
-            return str(peft_method)
+        supported_methods = self._supported_methods()
+        if self._global_mode == "Linear Probe":
+            return "baseline"
+        if self._global_mode == "Full Finetune" and "full_finetune" in supported_methods:
+            return "full_finetune"
+
+        method_stages = [key for key in self.editable_stages if self.state[key]["stage_method"] != "none"]
+        stage_method = next((self.state[key]["stage_method"] for key in method_stages), None)
+        if stage_method and stage_method in supported_methods:
+            return str(stage_method)
 
         all_unfrozen = all(not bool(self.state[key]["frozen"]) for key in self.editable_stages)
         train_bn_any = any(bool(self.state[key]["train_bn"]) for key in self.editable_stages)
-        if all_unfrozen:
+        train_norm_any = any(bool(self.state[key].get("train_norm", False)) for key in self.editable_stages)
+        if all_unfrozen and "full_finetune" in supported_methods:
             return "full_finetune"
-        if self._base_model == "efficientnet_v2_s" and train_bn_any:
+        if self._base_model == "efficientnet_v2_s" and train_bn_any and "bn_tuning" in supported_methods:
             unfrozen_feature = sorted(
                 idx
                 for stage in self.editable_stages
                 for idx in ([self._stage_to_feature_index(stage)] if self._stage_to_feature_index(stage) is not None else [])
                 if not bool(self.state[stage]["frozen"])
             )
-            if unfrozen_feature == [7]:
+            if unfrozen_feature == [7] and "bn_last1" in supported_methods:
                 return "bn_last1"
-            if unfrozen_feature == [6, 7]:
+            if unfrozen_feature == [6, 7] and "bn_last2" in supported_methods:
                 return "bn_last2"
             return "bn_tuning"
-        if train_bn_any:
+        if train_bn_any and "bn_tuning" in supported_methods:
             return "bn_tuning"
+        if train_norm_any and "norm_tuning" in supported_methods:
+            return "norm_tuning"
         return "baseline"
 
     def _derive_spec(self):
@@ -425,9 +820,10 @@ class CustomModelCanvasWidget(QWidget):
         )
         payload = custom_model_generator.spec_to_dict(spec)
         payload["pretrained"] = bool(self.pretrained_checkbox.isChecked())
+        payload["train_norm"] = any(bool(self.state[key].get("train_norm", False)) for key in self.editable_stages)
 
-        peft_stages = [key for key in self.editable_stages if self.state[key]["peft"] != "none"]
-        if method in {"lora", "dora", "tsa"}:
+        peft_stages = [key for key in self.editable_stages if self.state[key]["stage_method"] != "none"]
+        if method in {"lora", "dora", "tsa", "adapter", "bitfit", "ssf"}:
             if self._base_model == "efficientnet_v2_s":
                 payload["peft_targets"] = {
                     "feature_stages": sorted(
@@ -439,7 +835,7 @@ class CustomModelCanvasWidget(QWidget):
             else:
                 payload["peft_targets"] = {
                     "feature_stages": [],
-                    "layer_keys": sorted(key for key in peft_stages if key.startswith("layer")),
+                    "layer_keys": sorted(key for key in peft_stages if key != "classifier"),
                     "classifier": "classifier" in peft_stages,
                 }
             if method in {"lora", "dora"} and peft_stages:
@@ -447,6 +843,18 @@ class CustomModelCanvasWidget(QWidget):
                 payload["peft_params"] = {"rank": int(ref["rank"]), "alpha": float(ref["alpha"])}
             elif method in {"lora", "dora"}:
                 payload["peft_params"] = {"rank": int(self.stage_rank.value()), "alpha": float(self.stage_alpha.value())}
+            elif method == "adapter":
+                ref = self.state[peft_stages[0]] if peft_stages else self.state.get("classifier", {})
+                payload["peft_params"] = {"bottleneck_dim": int(ref.get("adapter_dim", self.stage_adapter_dim.value()))}
+            elif method == "bitfit":
+                ref = self.state[peft_stages[0]] if peft_stages else self.state.get("classifier", {})
+                payload["peft_params"] = {"scope": str(ref.get("bitfit_scope", self.stage_bitfit_scope.currentText())).strip().lower()}
+            elif method == "ssf":
+                ref = self.state[peft_stages[0]] if peft_stages else self.state.get("classifier", {})
+                payload["peft_params"] = {
+                    "init_scale": float(ref.get("ssf_scale", self.stage_ssf_scale.value())),
+                    "init_shift": float(ref.get("ssf_shift", self.stage_ssf_shift.value())),
+                }
 
         hints = [item.strip() for item in self.gradcam_edit.text().split(",") if item.strip()]
         if hints:
@@ -460,25 +868,48 @@ class CustomModelCanvasWidget(QWidget):
             self.pretrained_checkbox.setChecked(bool(getattr(spec, "pretrained", True)))
             self._base_model = spec.base_model
             self.base_model_combo.setCurrentText(spec.base_model)
+            self._configure_default_flow_for_base(self._base_model)
             self._build_flow()
             self.gradcam_edit.setText(",".join(spec.gradcam_target_hint))
+            self._global_mode = "Manual"
+            self.global_mode_combo.setCurrentText("Manual")
 
             for key in self.editable_stages:
-                self.state[key] = {"frozen": True, "train_bn": False, "peft": "none", "rank": 8, "alpha": 16.0}
+                self.state[key] = {
+                    "frozen": True,
+                    "train_bn": False,
+                    "train_norm": False,
+                    "stage_method": "none",
+                    "rank": 8,
+                    "alpha": 16.0,
+                    "adapter_dim": 32,
+                    "bitfit_scope": "all_bias",
+                    "ssf_scale": 1.0,
+                    "ssf_shift": 0.0,
+                }
             self.state["classifier"]["frozen"] = False
 
             method = spec.method_type
-            if method == "bn_tuning":
+            if method == "baseline":
+                self._global_mode = "Linear Probe"
+                self.global_mode_combo.setCurrentText("Linear Probe")
+            elif method == "bn_tuning":
                 for key in self.editable_stages:
                     self.state[key]["train_bn"] = True
+                    self.state[key]["train_norm"] = True
+            elif method == "norm_tuning":
+                for key in self.editable_stages:
+                    self.state[key]["train_norm"] = True
             elif method == "bn_last1":
                 for key in self.editable_stages:
                     self.state[key]["train_bn"] = True
+                    self.state[key]["train_norm"] = True
                 if "features.7" in self.state:
                     self.state["features.7"]["frozen"] = False
             elif method == "bn_last2":
                 for key in self.editable_stages:
                     self.state[key]["train_bn"] = True
+                    self.state[key]["train_norm"] = True
                 if "features.6" in self.state:
                     self.state["features.6"]["frozen"] = False
                 if "features.7" in self.state:
@@ -486,25 +917,31 @@ class CustomModelCanvasWidget(QWidget):
             elif method == "full_finetune":
                 for key in self.editable_stages:
                     self.state[key]["frozen"] = False
-            elif method in {"lora", "dora", "tsa"}:
+                self._global_mode = "Full Finetune"
+                self.global_mode_combo.setCurrentText("Full Finetune")
+            elif method in {"lora", "dora", "tsa", "adapter", "bitfit", "ssf"}:
                 targets = spec.peft_targets if isinstance(spec.peft_targets, dict) else {}
                 if self._base_model == "efficientnet_v2_s":
                     for idx in targets.get("feature_stages", []):
                         key = f"features.{int(idx)}"
                         if key in self.state:
-                            self.state[key]["peft"] = method
+                            self.state[key]["stage_method"] = method
                 else:
                     for layer_key in targets.get("layer_keys", []):
                         key = str(layer_key)
                         if key in self.state:
-                            self.state[key]["peft"] = method
+                            self.state[key]["stage_method"] = method
                 if bool(targets.get("classifier", False)):
-                    self.state["classifier"]["peft"] = method
+                    self.state["classifier"]["stage_method"] = method
                 params = spec.peft_params if isinstance(spec.peft_params, dict) else {}
                 for key in self.editable_stages:
-                    if self.state[key]["peft"] != "none":
+                    if self.state[key]["stage_method"] != "none":
                         self.state[key]["rank"] = int(params.get("rank", 8))
                         self.state[key]["alpha"] = float(params.get("alpha", 16.0))
+                        self.state[key]["adapter_dim"] = int(params.get("bottleneck_dim", 32))
+                        self.state[key]["bitfit_scope"] = str(params.get("scope", "all_bias")).strip().lower() or "all_bias"
+                        self.state[key]["ssf_scale"] = float(params.get("init_scale", 1.0))
+                        self.state[key]["ssf_shift"] = float(params.get("init_shift", 0.0))
         finally:
             self._updating = False
         self._select_stage(self._selected_stage if self._selected_stage in self.editable_stages else "classifier")
@@ -521,23 +958,38 @@ class CustomModelCanvasWidget(QWidget):
             tags = ["Frozen" if stage["frozen"] else "Unfrozen"]
             if stage["train_bn"]:
                 tags.append("Train BN")
-            if stage["peft"] != "none":
-                tags.append(str(stage["peft"]).upper())
+            if stage.get("train_norm", False):
+                tags.append("Norm")
+            if stage.get("stage_method", "none") != "none":
+                tags.append(str(stage.get("stage_method", "none")).upper())
             node.set_state_text(" | ".join(tags))
+        if self._read_only_introspection:
+            self.method_preview.setText("Method: inspection-only")
+            summary_payload = self._introspection_payload if isinstance(self._introspection_payload, dict) else {}
+            self.spec_summary.setPlainText(json.dumps(summary_payload, indent=2, sort_keys=True))
+            self._refresh_model_info_label(method_hint="inspection")
+            return
         try:
             spec = self._derive_spec()
             self.method_preview.setText(f"Method: {spec.method_type}")
             self.spec_summary.setPlainText(json.dumps(custom_model_generator.spec_to_dict(spec), indent=2, sort_keys=True))
+            self._refresh_model_info_label(method_hint=spec.method_type)
         except Exception as exc:
             self.method_preview.setText("Method: invalid")
             self.spec_summary.setPlainText(f"Invalid spec: {exc}")
+            self._refresh_model_info_label(method_hint="invalid")
 
     def _on_base_model_changed(self, value: str) -> None:
         if self._updating:
             return
+        if self._read_only_introspection:
+            return
         self._base_model = value
+        self._configure_default_flow_for_base(self._base_model)
         self._build_flow()
         self._select_stage("classifier")
+        self._global_mode = "Manual"
+        self.global_mode_combo.setCurrentText("Manual")
         self._on_state_changed()
 
     def new_spec(self) -> None:
@@ -548,6 +1000,8 @@ class CustomModelCanvasWidget(QWidget):
         )
         self._spec_path = None
         self.spec_path_label.setText("Spec File: (new unsaved spec)")
+        self._set_structure_origin("explicit", "high")
+        self._set_editing_enabled(True)
         self.status_label.setText("New canvas spec initialized.")
         self._apply_spec(spec)
 
@@ -562,8 +1016,124 @@ class CustomModelCanvasWidget(QWidget):
             return
         self._spec_path = Path(selected_path).expanduser().resolve()
         self.spec_path_label.setText(f"Spec File: {self._spec_path}")
+        self._set_structure_origin("explicit", "high")
+        self._set_editing_enabled(True)
         self.status_label.setText("Spec loaded.")
         self._apply_spec(spec)
+
+    def _open_introspected_model(self, model_name: str, structure_payload: dict[str, object]) -> None:
+        base_family = str(structure_payload.get("base_family", "unknown")).strip().lower()
+        source = str(structure_payload.get("structure_source", "fallback")).strip().lower()
+        confidence = str(structure_payload.get("confidence", "low")).strip().lower()
+
+        self._set_structure_origin(source, confidence)
+        self._configure_introspected_flow(structure_payload)
+        self._spec_path = None
+        self.spec_path_label.setText("Spec File: (none - introspected structure)")
+
+        supported_base = base_family in set(custom_model_generator.list_supported_base_models())
+        if supported_base:
+            self._set_editing_enabled(True)
+            self._base_model = base_family
+            self._updating = True
+            try:
+                self.base_model_combo.setCurrentText(base_family)
+                self.model_name_edit.setText(f"{model_name}_custom")
+                self.pretrained_checkbox.setChecked(True)
+            finally:
+                self._updating = False
+            self._build_flow()
+            for stage_key in self.editable_stages:
+                stage_type = next(
+                    (
+                        str(item.get("stage_type", ""))
+                        for item in structure_payload.get("stages", [])
+                        if isinstance(item, dict) and str(item.get("key", "")).strip() == stage_key
+                    ),
+                    "",
+                )
+                self.state.setdefault(
+                    stage_key,
+                    {
+                        "frozen": True,
+                        "train_bn": False,
+                        "train_norm": False,
+                        "stage_method": "none",
+                        "rank": 8,
+                        "alpha": 16.0,
+                        "adapter_dim": 32,
+                        "bitfit_scope": "all_bias",
+                        "ssf_scale": 1.0,
+                        "ssf_shift": 0.0,
+                    },
+                )
+                self.state[stage_key]["frozen"] = stage_type not in {"head", "classifier"}
+                self.state[stage_key]["train_bn"] = False
+                self.state[stage_key]["train_norm"] = False
+                self.state[stage_key]["stage_method"] = "none"
+            first_stage = next(iter(self.editable_stages), "classifier")
+            self._selected_stage = first_stage if first_stage in self.nodes else "classifier"
+            self.status_label.setText(f"Loaded '{model_name}' using {source} structure parsing. Editing is enabled with conservative stage constraints.")
+        else:
+            self._set_editing_enabled(False)
+            self._updating = True
+            try:
+                self.model_name_edit.setText(model_name)
+            finally:
+                self._updating = False
+            self._build_flow()
+            self.status_label.setText(
+                f"Loaded '{model_name}' using {source} structure parsing. Family is unsupported for generator edits, so canvas is inspection-only."
+            )
+
+        self._select_stage(self._selected_stage if self._selected_stage in self.nodes else next(iter(self.nodes), ""))
+        self._on_state_changed()
+        self._refresh_model_info_label(model_name_hint=model_name)
+
+    def open_existing_model(self) -> None:
+        display_items, display_to_model = self._existing_model_choices()
+        if not display_items:
+            QMessageBox.information(
+                self,
+                "No Models Available",
+                "No models are available under the current filter.",
+            )
+            return
+        selected_display, accepted = QInputDialog.getItem(
+            self,
+            "Open Existing Model",
+            "Select a model to reopen from spec:",
+            display_items,
+            0,
+            False,
+        )
+        if not accepted or not selected_display:
+            return
+        model_name = display_to_model.get(str(selected_display).strip())
+        if not model_name:
+            return
+        spec_path = resolve_model_spec_path(model_name, allow_legacy_mapping=True)
+        if spec_path is not None:
+            try:
+                spec = custom_model_generator.load_spec_file(spec_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "Open Model Failed", str(exc))
+                return
+            self._spec_path = spec_path
+            self.spec_path_label.setText(f"Spec File: {self._spec_path}")
+            self._set_structure_origin("explicit", "high")
+            self._set_editing_enabled(True)
+            self.status_label.setText(f"Loaded model '{model_name}' from spec.")
+            self._apply_spec(spec)
+            self._refresh_model_info_label(model_name_hint=model_name)
+            return
+
+        try:
+            structure_payload = resolve_model_structure_for_canvas(model_name)
+        except Exception as exc:
+            QMessageBox.warning(self, "Open Model Failed", f"Could not derive structure for '{model_name}'.\n{exc}")
+            return
+        self._open_introspected_model(model_name, structure_payload)
 
     def save_spec(self) -> None:
         try:
@@ -631,4 +1201,3 @@ class CustomModelCanvasWidget(QWidget):
         if self._on_model_generated is not None:
             self._on_model_generated(artifacts.model_name)
         QMessageBox.information(self, "Model Generated", f"Model file: {artifacts.model_file_path}\nSpec file: {artifacts.spec_file_path}")
-

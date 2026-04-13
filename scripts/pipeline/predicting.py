@@ -12,7 +12,13 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from core.model_registry import discover_model_names, load_model_module
+from core.model_registry import (
+    discover_model_names,
+    discover_model_names_generated_first,
+    equivalent_model_names,
+    load_model_module,
+    resolve_preferred_model_name,
+)
 
 
 def default_checkpoint_path() -> Path:
@@ -31,7 +37,7 @@ def discover_checkpoint_model_names(checkpoint_root: Path | None = None) -> list
 
 
 def parse_args() -> argparse.Namespace:
-    available_models = discover_model_names()
+    available_models = discover_model_names_generated_first(include_legacy_fallback=True)
     parser = argparse.ArgumentParser(description="Predict classes for one or more images.")
     parser.add_argument("image_paths", nargs="*", type=Path, help="Image paths to predict.")
     parser.add_argument(
@@ -93,7 +99,7 @@ def guess_model_name_from_checkpoint_path(checkpoint_path: Path) -> str | None:
     )
     for candidate in discover_checkpoint_model_names():
         if candidate.lower() in path_text:
-            return candidate
+            return resolve_preferred_model_name(candidate) or candidate
     return None
 
 
@@ -104,11 +110,11 @@ def infer_model_name_from_state_dict(state_dict: object) -> str | None:
     if any(key.startswith("features.") for key in keys):
         for candidate in discover_checkpoint_model_names():
             if "efficientnet" in candidate:
-                return candidate
+                return resolve_preferred_model_name(candidate) or candidate
     if any(key.startswith("layer1.") or key.startswith("conv1.") for key in keys):
         for candidate in discover_checkpoint_model_names():
             if "resnet18" in candidate:
-                return candidate
+                return resolve_preferred_model_name(candidate) or candidate
     return None
 
 
@@ -128,14 +134,16 @@ def inspect_prediction_checkpoint(checkpoint_path: Path) -> dict[str, object]:
         raise ValueError(f"Checkpoint payload is not a dictionary: {resolved_path}")
 
     checkpoint_model_name = normalize_model_name(checkpoint.get("model_name"))
+    checkpoint_model_preferred = resolve_preferred_model_name(checkpoint_model_name)
     path_guess_model_name = guess_model_name_from_checkpoint_path(resolved_path)
     state_dict_model_name = infer_model_name_from_state_dict(checkpoint.get("model_state_dict"))
-    inferred_model_name = checkpoint_model_name or state_dict_model_name or path_guess_model_name
+    inferred_model_name = checkpoint_model_preferred or state_dict_model_name or path_guess_model_name
     class_to_idx = checkpoint.get("class_to_idx")
     num_classes = checkpoint.get("num_classes")
     return {
         "checkpoint_path": resolved_path,
         "checkpoint_model_name": checkpoint_model_name,
+        "checkpoint_model_preferred": checkpoint_model_preferred,
         "path_guess_model_name": path_guess_model_name,
         "state_dict_model_name": state_dict_model_name,
         "inferred_model_name": inferred_model_name,
@@ -150,7 +158,11 @@ def validate_prediction_checkpoint(checkpoint_path: Path, requested_model_name: 
     checkpoint_model_name = metadata.get("checkpoint_model_name")
     inferred_model_name = metadata.get("inferred_model_name")
 
-    if isinstance(checkpoint_model_name, str) and isinstance(requested, str) and checkpoint_model_name != requested:
+    if (
+        isinstance(checkpoint_model_name, str)
+        and isinstance(requested, str)
+        and requested not in equivalent_model_names(checkpoint_model_name)
+    ):
         raise ValueError(
             f"Checkpoint model mismatch: checkpoint is '{checkpoint_model_name}', but requested '{requested}'. "
             f"Choose the matching checkpoint for that model."
@@ -160,6 +172,7 @@ def validate_prediction_checkpoint(checkpoint_path: Path, requested_model_name: 
     if resolved_model_name is None:
         resolved_path = metadata.get("checkpoint_path")
         raise ValueError(f"Could not determine model type for checkpoint: {resolved_path}")
+    resolved_model_name = resolve_preferred_model_name(resolved_model_name) or resolved_model_name
 
     return {
         **metadata,
