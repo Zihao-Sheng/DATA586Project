@@ -11,15 +11,16 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
+from core import runtime_paths
 from workflow.test_splits import evaluate_test_splits as workflow_evaluate_test_splits
 
 
 def default_test_splits_root() -> Path:
-    return Path(__file__).resolve().parents[2] / "data" / "test_splits"
+    return runtime_paths.data_dir() / "test_splits"
 
 
 def default_output_dir() -> Path:
-    return Path(__file__).resolve().parents[2] / "logs" / "test_split_evaluations"
+    return runtime_paths.logs_dir() / "test_split_evaluations"
 
 
 def parse_args() -> argparse.Namespace:

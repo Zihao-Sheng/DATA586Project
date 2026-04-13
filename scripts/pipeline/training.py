@@ -21,17 +21,18 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from model.import_data import data_import
+from core import runtime_paths
 from core.model_registry import discover_model_names_generated_first, load_model_module
 
 RUN_LOG_DIRNAME = "_run_logs"
 
 
 def default_data_root() -> Path:
-    return Path(__file__).resolve().parents[2] / "data" / "food-101"
+    return runtime_paths.data_dir() / "food-101"
 
 
 def default_checkpoint_root() -> Path:
-    return Path(__file__).resolve().parents[2] / "checkpoints"
+    return runtime_paths.checkpoints_dir()
 
 
 def default_checkpoint_dir_for_model(model_name: str) -> Path:

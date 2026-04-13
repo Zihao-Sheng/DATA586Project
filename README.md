@@ -160,11 +160,13 @@ Script layout:
 - `scripts/maintenance/`: dependency checks and Windows shortcut launch/repair logic.
 - `scripts/build/`: build scripts for distributable launchers.
 
-To build a Windows `.exe` after installing `PySide6` and `PyInstaller`:
+To build a Windows portable one-folder app (runtime included, no system Python required for end users):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build\build_training_gui.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\build\build_portable_windows.ps1
 ```
+
+See details in [doc/windows_portable_packaging.md](doc/windows_portable_packaging.md).
 
 ## Deliverables
 

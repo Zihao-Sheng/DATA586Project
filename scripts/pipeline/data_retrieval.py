@@ -20,6 +20,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+SCRIPTS_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+from core import runtime_paths
 
 DATASET_NAME = "food-101"
 ARCHIVE_NAME = f"{DATASET_NAME}.tar.gz"
@@ -34,8 +42,7 @@ CHUNK_SIZE = 1024 * 1024  # 1 MB
 
 
 def default_data_dir() -> Path:
-    # Always place the dataset next to the scripts/ directory, regardless of cwd.
-    return Path(__file__).resolve().parents[2] / "data"
+    return runtime_paths.data_dir()
 
 
 @dataclass

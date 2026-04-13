@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
+from core import runtime_paths
 from core.model_registry import (
     discover_model_names,
     discover_model_names_generated_first,
@@ -22,11 +23,11 @@ from core.model_registry import (
 
 
 def default_checkpoint_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "checkpoints" / "resnet18" / "best.pth"
+    return runtime_paths.checkpoints_dir() / "resnet18" / "best.pth"
 
 
 def default_checkpoint_root() -> Path:
-    return Path(__file__).resolve().parents[2] / "checkpoints"
+    return runtime_paths.checkpoints_dir()
 
 
 def discover_checkpoint_model_names(checkpoint_root: Path | None = None) -> list[str]:

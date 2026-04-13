@@ -59,6 +59,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from core import custom_model_generator, run_log_compat
+from core import runtime_paths
 from app import app_themes, global_job_queue
 from app.custom_models_canvas import CustomModelCanvasWidget
 from core.model_registry import (
@@ -69,15 +70,17 @@ from core.model_registry import (
     sort_model_names_for_ui,
 )
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_RETRIEVAL_SCRIPT = PROJECT_ROOT / "scripts" / "entry" / "data_retrieval.py"
-TRAINING_SCRIPT = PROJECT_ROOT / "scripts" / "entry" / "training.py"
+PROJECT_ROOT = runtime_paths.project_root()
+SCRIPTS_ENTRY_ROOT = PROJECT_ROOT / "scripts" / "entry"
+DATA_RETRIEVAL_SCRIPT = SCRIPTS_ENTRY_ROOT / "data_retrieval.py"
+TRAINING_SCRIPT = SCRIPTS_ENTRY_ROOT / "training.py"
 PREDICTING_SCRIPT = PROJECT_ROOT / "scripts" / "pipeline" / "predicting.py"
-DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
-DEFAULT_DATA_ROOT = PROJECT_ROOT / "data" / "food-101"
-DEFAULT_TEST_SPLITS_ROOT = PROJECT_ROOT / "data" / "test_splits"
-DEFAULT_CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
+TRAINING_WORKER_EXE = PROJECT_ROOT / "DATA586TrainingWorker.exe"
+DATA_WORKER_EXE = PROJECT_ROOT / "DATA586DataWorker.exe"
+DEFAULT_DATA_DIR = runtime_paths.data_dir()
+DEFAULT_DATA_ROOT = DEFAULT_DATA_DIR / "food-101"
+DEFAULT_TEST_SPLITS_ROOT = DEFAULT_DATA_DIR / "test_splits"
+DEFAULT_CHECKPOINT_DIR = runtime_paths.checkpoints_dir()
 APP_ICON_PATH = PROJECT_ROOT / "scripts" / "assets" / "training_launcher_icon.ico"
 APP_ID = "MLWorkbench.TrainingLauncher"
 WM_SETICON = 0x0080
@@ -2682,9 +2685,16 @@ class TrainingLauncher(QMainWindow):
             command.extend(["--resume", resume_path])
         return command
 
-    def format_command_for_display(self, command: list[str]) -> str:
+    def build_training_worker_args(self, config: dict[str, object] | None = None) -> list[str]:
+        command = self.build_command(config)
+        if len(command) >= 2 and command[0] == "-u":
+            return command[2:]
+        return command
+
+    def format_command_for_display(self, command: list[str], *, program: str | None = None) -> str:
         parts: list[str] = []
-        for token in [sys.executable, *command]:
+        program_token = program if isinstance(program, str) and program.strip() else sys.executable
+        for token in [program_token, *command]:
             text = str(token)
             parts.append(f"\"{text}\"" if " " in text else text)
         return " ".join(parts)
@@ -3252,6 +3262,12 @@ class TrainingLauncher(QMainWindow):
             command.append("--check-only")
         if force_redownload:
             command.append("--force-redownload")
+        return command
+
+    def build_data_worker_args(self, *, check_only: bool = False, force_redownload: bool = False) -> list[str]:
+        command = self.build_data_command(check_only=check_only, force_redownload=force_redownload)
+        if len(command) >= 2 and command[0] == "-u":
+            return command[2:]
         return command
 
     def default_predict_checkpoint_path(self) -> Path:
@@ -4672,9 +4688,18 @@ class TrainingLauncher(QMainWindow):
     def start_training_with_config(self, config: dict[str, object], *, origin: str, queue_job_id: str | None = None) -> bool:
         if self.is_global_execution_busy():
             return False
-        if not TRAINING_SCRIPT.is_file():
-            QMessageBox.critical(self, "Missing Script", f"Could not find training script:\n{TRAINING_SCRIPT}")
-            return False
+        if runtime_paths.is_frozen_app():
+            if not TRAINING_WORKER_EXE.is_file():
+                QMessageBox.critical(self, "Missing Worker", f"Could not find packaged training worker:\n{TRAINING_WORKER_EXE}")
+                return False
+            launch_program = str(TRAINING_WORKER_EXE)
+            launch_args = self.build_training_worker_args(config)
+        else:
+            if not TRAINING_SCRIPT.is_file():
+                QMessageBox.critical(self, "Missing Script", f"Could not find training script:\n{TRAINING_SCRIPT}")
+                return False
+            launch_program = sys.executable
+            launch_args = self.build_command(config)
         error = self.validate_training_config_snapshot(config)
         if error is not None:
             QMessageBox.warning(self, "Invalid Training Config", error)
@@ -4698,8 +4723,8 @@ class TrainingLauncher(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("%p%")
         self.append_output(f"Project root: {PROJECT_ROOT}\n")
-        self.append_output(f"Launching: {self.format_command_for_display(self.build_command(config))}\n\n")
-        self.process.start(sys.executable, self.build_command(config))
+        self.append_output(f"Launching: {self.format_command_for_display(launch_args, program=launch_program)}\n\n")
+        self.process.start(launch_program, launch_args)
         return True
 
     def start_predictions_with_config(self, config: dict[str, object], *, origin: str, queue_job_id: str | None = None) -> bool:
@@ -5319,9 +5344,18 @@ class TrainingLauncher(QMainWindow):
     def start_data_command(self, command: list[str], status_text: str) -> None:
         if self.data_process.state() != QProcess.NotRunning:
             return
-        if not DATA_RETRIEVAL_SCRIPT.is_file():
-            QMessageBox.critical(self, "Missing Script", f"Could not find data retrieval script:\n{DATA_RETRIEVAL_SCRIPT}")
-            return
+        if runtime_paths.is_frozen_app():
+            if not DATA_WORKER_EXE.is_file():
+                QMessageBox.critical(self, "Missing Worker", f"Could not find packaged data worker:\n{DATA_WORKER_EXE}")
+                return
+            launch_program = str(DATA_WORKER_EXE)
+            launch_args = command[2:] if len(command) >= 2 and command[0] == "-u" else command
+        else:
+            if not DATA_RETRIEVAL_SCRIPT.is_file():
+                QMessageBox.critical(self, "Missing Script", f"Could not find data retrieval script:\n{DATA_RETRIEVAL_SCRIPT}")
+                return
+            launch_program = sys.executable
+            launch_args = command
 
         self.data_output_text.clear()
         self._data_committed_output = ""
@@ -5334,9 +5368,9 @@ class TrainingLauncher(QMainWindow):
         self.data_progress_bar.setRange(0, 0)
         self.append_data_output(f"Project root: {PROJECT_ROOT}\n")
         self.append_data_output(
-            f"Launching: {' '.join(f'\"{part}\"' if ' ' in part else part for part in [sys.executable, *command])}\n\n"
+            f"Launching: {self.format_command_for_display(launch_args, program=launch_program)}\n\n"
         )
-        self.data_process.start(sys.executable, command)
+        self.data_process.start(launch_program, launch_args)
 
     def run_data_check(self) -> None:
         self.start_data_command(self.build_data_command(check_only=True), "Checking dataset integrity...")
@@ -7964,6 +7998,7 @@ class TestSplitEvaluationWorker(QObject):
 
 
 def main() -> None:
+    runtime_paths.ensure_working_folders()
     set_windows_app_id()
     app = QApplication(sys.argv)
     if APP_ICON_PATH.is_file():

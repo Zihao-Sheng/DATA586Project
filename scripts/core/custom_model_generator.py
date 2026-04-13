@@ -6,10 +6,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from core import runtime_paths
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MODEL_DIR = PROJECT_ROOT / "model"
-SPEC_DIR = PROJECT_ROOT / "model_specs"
+PROJECT_ROOT = runtime_paths.project_root()
+MODEL_DIR = runtime_paths.model_dir()
+SPEC_DIR = runtime_paths.model_specs_dir()
 
 BASE_MODEL_ALIASES = {
     "torchvision/resnet18": "resnet18",

@@ -11,6 +11,10 @@ checkpoints/**
 __pycache__/
 *.pyc
 
+# Packaging artifacts
+build/
+dist/
+
 # Windows shortcuts in repo root
 /Check Requirements.lnk
 /Launch Training GUI.lnk

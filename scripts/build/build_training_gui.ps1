@@ -1,14 +1,8 @@
 $ErrorActionPreference = "Stop"
 
-$projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$guiScript = Join-Path $projectRoot "scripts\\app\\training_gui.py"
-$iconPath = Join-Path $projectRoot "scripts\\assets\\training_launcher_icon.ico"
+$portableScript = Join-Path $PSScriptRoot "build_portable_windows.ps1"
+if (!(Test-Path $portableScript)) {
+    throw "Missing portable build script: $portableScript"
+}
 
-pyinstaller `
-  --noconfirm `
-  --onefile `
-  --windowed `
-  --name DATA586TrainingLauncher `
-  --icon $iconPath `
-  --paths $projectRoot `
-  $guiScript
+& $portableScript

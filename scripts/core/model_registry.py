@@ -8,10 +8,11 @@ from types import ModuleType
 from typing import Any
 
 from core.model_structure_introspection import describe_model_structure_for_canvas as _describe_model_structure_for_canvas
+from core import runtime_paths
 
 
-MODEL_DIR = Path(__file__).resolve().parents[2] / "model"
-MODEL_SPECS_DIR = Path(__file__).resolve().parents[2] / "model_specs"
+MODEL_DIR = runtime_paths.model_dir()
+MODEL_SPECS_DIR = runtime_paths.model_specs_dir()
 LEGACY_MIGRATION_MAP_PATH = MODEL_SPECS_DIR / "legacy_migration_map.json"
 IGNORED_MODEL_FILES = {"import_data.py", "__init__.py", "_transfer_strategies.py"}
 
@@ -247,6 +248,20 @@ def model_metadata(model_name: str | None) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _spec_payload(model_name: str | None) -> dict[str, Any]:
+    canonical = _canonical_name(model_name)
+    if canonical is None:
+        return {}
+    spec_path = MODEL_SPECS_DIR / f"{canonical}.json"
+    if not spec_path.is_file():
+        return {}
+    try:
+        payload = json.loads(spec_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _infer_method_type(name: str) -> str:
     lowered = name.lower()
     mapping = (
@@ -292,12 +307,17 @@ def model_catalog_entry(model_name: str | None) -> dict[str, Any]:
     base = describe_model_name(model_name)
     canonical = str(base.get("model_name", "")).strip()
     metadata = model_metadata(canonical)
+    spec_payload = _spec_payload(canonical)
 
-    provider = str(metadata.get("base_provider", "torchvision")).strip().lower() or "torchvision"
-    family = str(metadata.get("base_family", "")).strip().lower()
-    variant = str(metadata.get("variant", "")).strip().lower()
-    method = str(metadata.get("method_type", "")).strip().lower()
+    provider = str(
+        metadata.get("base_provider", spec_payload.get("base_provider", "torchvision"))
+    ).strip().lower() or "torchvision"
+    family = str(metadata.get("base_family", spec_payload.get("base_family", ""))).strip().lower()
+    variant = str(metadata.get("variant", spec_payload.get("variant", ""))).strip().lower()
+    method = str(metadata.get("method_type", spec_payload.get("method_type", ""))).strip().lower()
     pretrained_raw = metadata.get("pretrained")
+    if not isinstance(pretrained_raw, bool):
+        pretrained_raw = spec_payload.get("pretrained")
     pretrained = bool(pretrained_raw) if isinstance(pretrained_raw, bool) else None
 
     if not family or not variant:
