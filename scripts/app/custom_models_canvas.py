@@ -360,6 +360,7 @@ class CustomModelCanvasWidget(QWidget):
         self.global_mode_combo.currentTextChanged.connect(self._on_global_mode_changed)
 
         self.palette = StrategyPaletteList()
+        self.palette.setObjectName("StrategyPaletteList")
         self.palette.addItems(self.STRATEGIES)
         self.palette.setMaximumWidth(150)
 

@@ -2,6 +2,41 @@ from __future__ import annotations
 
 
 THEMES: dict[str, dict[str, str]] = {
+    "graphite_metal": {
+        "display_name": "Graphite Metal",
+        "font_family": "Segoe UI",
+        "mono_font_family": "Cascadia Code",
+        "window_bg": "#171c23",
+        "base_bg": "#1c222b",
+        "panel_bg": "#252d38",
+        "panel_alt_bg": "#222a34",
+        "input_bg": "#2a323d",
+        "input_alt_bg": "#262e39",
+        "code_bg": "#161c24",
+        "scroll_track": "#202732",
+        "scroll_handle": "#505d6f",
+        "border": "#3a4552",
+        "border_strong": "#556376",
+        "text": "#e2e8ef",
+        "text_muted": "#a5b0bf",
+        "text_inverse": "#f6f9fc",
+        "text_dark": "#1f2b39",
+        "accent": "#5f84b4",
+        "accent_hover": "#6f93c1",
+        "accent_pressed": "#4f739f",
+        "accent_soft": "#2a3a4f",
+        "accent_soft_border": "#5879a4",
+        "selection_bg": "#37506f",
+        "selection_text": "#f4f8fd",
+        "disabled_bg": "#2a3038",
+        "disabled_text": "#7d8795",
+        "image_preview_bg": "#171d26",
+        "status_bg": "#24303d",
+        "status_border": "#46566a",
+        "warning": "#d0ab73",
+        "error": "#d2838b",
+        "checkbox_bg": "#252d37",
+    },
     "soft_dark": {
         "display_name": "Soft Dark",
         "font_family": "Segoe UI",
@@ -180,7 +215,7 @@ THEMES: dict[str, dict[str, str]] = {
 }
 
 
-DEFAULT_THEME_KEY = "soft_dark"
+DEFAULT_THEME_KEY = "graphite_metal"
 
 
 def theme_display_names() -> list[tuple[str, str]]:
@@ -195,8 +230,14 @@ def get_theme(theme_key: str | None) -> dict[str, str]:
 def build_stylesheet(theme_key: str | None) -> str:
     theme = get_theme(theme_key)
     return """
-QMainWindow, QWidget {{
-    background: {window_bg};
+QMainWindow {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {panel_alt_bg}, stop:0.2 {window_bg}, stop:1 {window_bg});
+    color: {text};
+    font-family: "{font_family}";
+    font-size: 10.25pt;
+}}
+QWidget {{
+    background: {base_bg};
     color: {text};
     font-family: "{font_family}";
     font-size: 10.25pt;
@@ -205,50 +246,67 @@ QToolTip {{
     background: {panel_bg};
     color: {text};
     border: 1px solid {border_strong};
-    padding: 6px 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+}}
+QMenu {{
+    background: {panel_bg};
+    border: 1px solid {border};
+    border-radius: 8px;
+    padding: 6px;
+}}
+QMenu::item {{
+    padding: 7px 12px;
+    border-radius: 6px;
+}}
+QMenu::item:selected {{
+    background: {accent_soft};
+    color: {selection_text};
 }}
 QDockWidget {{
     background: {base_bg};
     color: {text};
 }}
 QDockWidget::title {{
-    background: {panel_alt_bg};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {panel_bg}, stop:1 {panel_alt_bg});
     color: {text};
-    border-bottom: 1px solid {border};
+    border-bottom: 1px solid {border_strong};
     padding: 8px 10px;
     text-align: left;
 }}
 QTabWidget::pane {{
     border: 1px solid {border};
     border-radius: 12px;
-    background: {base_bg};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {base_bg}, stop:1 {panel_alt_bg});
     top: -1px;
 }}
 QTabBar::tab {{
-    background: {panel_alt_bg};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {panel_bg}, stop:1 {panel_alt_bg});
     color: {text_muted};
     border: 1px solid {border};
     border-bottom: none;
-    padding: 7px 14px;
-    margin-right: 5px;
+    padding: 8px 16px;
+    margin-right: 4px;
     border-top-left-radius: 9px;
     border-top-right-radius: 9px;
     min-width: 90px;
+    font-weight: 500;
 }}
 QTabBar::tab:selected {{
-    background: {accent};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {accent_hover}, stop:1 {accent});
     color: {text_inverse};
+    border-color: {accent};
 }}
 QTabBar::tab:hover:!selected {{
-    background: {panel_bg};
+    background: {panel_alt_bg};
     color: {text};
 }}
 QGroupBox {{
-    background: {panel_alt_bg};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {panel_bg}, stop:1 {panel_alt_bg});
     border: 1px solid {border};
     border-radius: 12px;
     margin-top: 10px;
-    padding: 10px 12px 12px 12px;
+    padding: 11px 12px 12px 12px;
     font-weight: 600;
 }}
 QGroupBox::title {{
@@ -256,13 +314,14 @@ QGroupBox::title {{
     left: 10px;
     padding: 0 6px;
     color: {text_muted};
+    background: transparent;
 }}
 QLabel {{
     background: transparent;
     color: {text};
 }}
 QLabel[sectionTitle="true"] {{
-    font-weight: 600;
+    font-weight: 700;
 }}
 QLabel[muted="true"] {{
     color: {text_muted};
@@ -301,13 +360,13 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit, QList
     background: {input_bg};
     color: {text};
     border: 1px solid {border};
-    border-radius: 8px;
-    padding: 4px 10px;
+    border-radius: 10px;
+    padding: 5px 10px;
     selection-background-color: {selection_bg};
     selection-color: {selection_text};
 }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
-    min-height: 28px;
+    min-height: 30px;
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus, QTextEdit:focus, QListWidget:focus, QTreeWidget:focus, QTableWidget:focus, QTreeView:focus, QListView:focus {{
     border: 1px solid {accent};
@@ -322,26 +381,45 @@ QComboBox::drop-down, QSpinBox::down-button, QSpinBox::up-button, QDoubleSpinBox
     width: 22px;
 }}
 QPushButton {{
-    background: {accent};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {accent_hover}, stop:1 {accent});
     color: {text_inverse};
-    border: none;
-    border-radius: 8px;
-    padding: 7px 12px;
+    border: 1px solid {accent};
+    border-radius: 10px;
+    padding: 7px 13px;
     min-height: 18px;
     font-weight: 600;
 }}
 QPushButton:hover {{
-    background: {accent_hover};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {accent}, stop:1 {accent_hover});
+    border-color: {accent_hover};
 }}
 QPushButton:pressed {{
-    background: {accent_pressed};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {accent_pressed}, stop:1 {accent});
+    border-color: {accent_pressed};
 }}
 QPushButton:checked {{
     background: {accent_pressed};
+    border-color: {accent_pressed};
 }}
 QPushButton:disabled {{
     background: {disabled_bg};
     color: {disabled_text};
+    border-color: {border};
+}}
+QToolButton {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {panel_bg}, stop:1 {panel_alt_bg});
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 9px;
+    padding: 5px 10px;
+}}
+QToolButton:hover {{
+    background: {panel_bg};
+    border-color: {border_strong};
+}}
+QToolButton:checked {{
+    background: {accent_soft};
+    border-color: {accent_soft_border};
 }}
 QCheckBox, QRadioButton {{
     background: transparent;
@@ -388,10 +466,24 @@ QScrollBar::handle:vertical {{
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0px;
 }}
+QScrollBar:horizontal {{
+    background: {scroll_track};
+    height: 12px;
+    margin: 0 8px 0 8px;
+    border-radius: 6px;
+}}
+QScrollBar::handle:horizontal {{
+    background: {scroll_handle};
+    min-width: 28px;
+    border-radius: 6px;
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
+}}
 QListWidget::item, QTreeWidget::item, QTableWidget::item {{
     border-radius: 8px;
-    padding: 6px 8px;
-    margin: 4px 6px;
+    padding: 5px 8px;
+    margin: 2px 4px;
 }}
 QListWidget::item:selected, QTreeWidget::item:selected, QTableWidget::item:selected {{
     background: {accent_soft};
@@ -405,6 +497,18 @@ QPlainTextEdit, QTextEdit {{
     background: {code_bg};
     font-family: "{mono_font_family}";
     font-size: 10pt;
+}}
+QTableCornerButton::section, QHeaderView::section {{
+    background: {panel_alt_bg};
+    color: {text_muted};
+    border: 1px solid {border};
+    border-left: none;
+    border-top: none;
+    padding: 6px 8px;
+    font-weight: 600;
+}}
+QHeaderView::section:first {{
+    border-left: 1px solid {border};
 }}
 QLabel#ImagePreview {{
     border: 1px solid {border};
@@ -425,10 +529,11 @@ QDialogButtonBox QPushButton {{
 }}
 QSplitter::handle {{
     background: {border};
+    margin: 0 1px 0 1px;
 }}
 QFrame#PredictCompareCard {{
-    background: {panel_bg};
-    border: 1px solid {border};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {panel_bg}, stop:1 {panel_alt_bg});
+    border: 1px solid {border_strong};
     border-radius: 12px;
 }}
 QLabel#PredictPreviewCard {{
@@ -442,15 +547,33 @@ QFrame[divider="true"] {{
     color: {border};
 }}
 QFrame#CanvasStageNode {{
-    border: 1px solid {border};
+    border: 1px solid {border_strong};
     border-radius: 10px;
-    background: {panel_bg};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {panel_bg}, stop:1 {panel_alt_bg});
+    padding: 2px;
 }}
 QFrame#CanvasStageNode[editable="false"] {{
     background: {panel_alt_bg};
+    border-color: {border};
 }}
 QFrame#CanvasStageNode[selected="true"] {{
     border: 1px solid {accent};
-    background: {accent_soft};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {accent_soft}, stop:1 {panel_alt_bg});
+}}
+QListWidget#StrategyPaletteList {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {panel_bg}, stop:1 {panel_alt_bg});
+    border: 1px solid {border_strong};
+    border-radius: 10px;
+    padding: 6px;
+}}
+QListWidget#StrategyPaletteList::item {{
+    margin: 3px 2px;
+    padding: 8px 10px;
+    border-radius: 8px;
+}}
+QStatusBar {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {panel_bg}, stop:1 {panel_alt_bg});
+    color: {text_muted};
+    border-top: 1px solid {border_strong};
 }}
     """.format(**theme)

@@ -10,7 +10,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QMimeData, QObject, QPointF, QProcess, QRect, QRectF, QSize, QSettings, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QDrag, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QTextCursor
+from PySide6.QtGui import QBrush, QColor, QDrag, QFontMetrics, QIcon, QLinearGradient, QPainter, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QScrollArea,
+    QSplashScreen,
     QSizePolicy,
     QSplitter,
     QSpinBox,
@@ -109,6 +110,64 @@ def set_windows_app_id() -> None:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     except Exception:
         pass
+
+
+def build_startup_splash(theme_key: str | None) -> QSplashScreen:
+    theme = app_themes.get_theme(theme_key)
+    width, height = 680, 300
+    pixmap = QPixmap(width, height)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    outer = QRectF(0, 0, float(width), float(height))
+    panel_rect = outer.adjusted(10, 10, -10, -10)
+    painter.setPen(QPen(QColor(theme["border_strong"]), 1))
+    shell_gradient = QLinearGradient(panel_rect.topLeft(), panel_rect.bottomLeft())
+    shell_gradient.setColorAt(0.0, QColor(theme["panel_bg"]))
+    shell_gradient.setColorAt(0.55, QColor(theme["panel_alt_bg"]))
+    shell_gradient.setColorAt(1.0, QColor(theme["base_bg"]))
+    painter.setBrush(QBrush(shell_gradient))
+    painter.drawRoundedRect(panel_rect, 16, 16)
+    inner_rect = panel_rect.adjusted(1, 1, -1, -1)
+    painter.setPen(QPen(QColor(theme["border"]), 1))
+    painter.setBrush(Qt.NoBrush)
+    painter.drawRoundedRect(inner_rect, 15, 15)
+    for i in range(12):
+        y = panel_rect.top() + 18 + i * 18
+        painter.setPen(QPen(QColor(255, 255, 255, 7), 1))
+        painter.drawLine(int(panel_rect.left() + 14), int(y), int(panel_rect.right() - 14), int(y))
+    accent_rect = QRectF(panel_rect.left(), panel_rect.top(), panel_rect.width(), 8)
+    painter.setPen(Qt.NoPen)
+    accent_gradient = QLinearGradient(accent_rect.topLeft(), accent_rect.bottomLeft())
+    accent_gradient.setColorAt(0.0, QColor(theme["accent_hover"]))
+    accent_gradient.setColorAt(1.0, QColor(theme["accent"]))
+    painter.setBrush(QBrush(accent_gradient))
+    painter.drawRoundedRect(accent_rect, 16, 16)
+    title_rect = QRectF(panel_rect.left() + 24, panel_rect.top() + 42, panel_rect.width() - 48, 46)
+    subtitle_rect = QRectF(panel_rect.left() + 24, panel_rect.top() + 96, panel_rect.width() - 48, 30)
+    hint_rect = QRectF(panel_rect.left() + 24, panel_rect.bottom() - 52, panel_rect.width() - 48, 24)
+    title_font = painter.font()
+    title_font.setFamily(theme["font_family"])
+    title_font.setPointSize(17)
+    title_font.setBold(True)
+    painter.setFont(title_font)
+    painter.setPen(QColor(theme["text"]))
+    painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, "DATA586 Training Launcher")
+    subtitle_font = painter.font()
+    subtitle_font.setPointSize(10)
+    subtitle_font.setBold(False)
+    painter.setFont(subtitle_font)
+    painter.setPen(QColor(theme["text_muted"]))
+    painter.drawText(subtitle_rect, Qt.AlignLeft | Qt.AlignVCenter, "Unified Workspace: Training, Predicting, Queue, and Custom Models")
+    hint_font = painter.font()
+    hint_font.setPointSize(9)
+    painter.setFont(hint_font)
+    painter.drawText(hint_rect, Qt.AlignLeft | Qt.AlignVCenter, "Initializing application modules...")
+    painter.end()
+    splash = QSplashScreen(pixmap)
+    splash.setWindowFlag(Qt.FramelessWindowHint, True)
+    splash.setEnabled(False)
+    return splash
 
 
 def apply_windows_taskbar_icon(window: QMainWindow) -> None:
@@ -1149,8 +1208,9 @@ class ConfusionMatrixWidget(QWidget):
 
 
 class TrainingLauncher(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, startup_progress_callback=None) -> None:
         super().__init__()
+        self._startup_progress_callback = startup_progress_callback
         self.setWindowTitle("Training Launcher")
         self.resize(1080, 820)
         self.setMinimumSize(920, 680)
@@ -1231,15 +1291,20 @@ class TrainingLauncher(QMainWindow):
         saved_theme = str(self.settings.value("ui/theme", app_themes.DEFAULT_THEME_KEY))
         self.current_theme_key = saved_theme if saved_theme in app_themes.THEMES else app_themes.DEFAULT_THEME_KEY
 
+        self._startup_progress("Preparing controls...")
         self._init_data_controls()
         self._init_training_controls()
+        self._startup_progress("Preparing prediction workspace...")
         self._init_prediction_controls()
         self._init_test_split_controls()
+        self._startup_progress("Preparing logs and queue...")
         self._init_log_controls()
         self._init_global_ui_controls()
+        self._startup_progress("Building interface...")
         self._build_ui()
         self._install_wheel_guards()
         self.apply_visual_design()
+        self._startup_progress("Loading model and checkpoint index...")
         self.refresh_predict_checkpoint_selector(select_default=True)
         self.refresh_training_settings_summary()
         self.refresh_command_preview()
@@ -1249,7 +1314,20 @@ class TrainingLauncher(QMainWindow):
         self.refresh_predict_page()
         self.on_predict_browser_mode_changed()
         self.on_predict_compact_toggled(self.predict_compact_checkbox.isChecked())
+        self._startup_progress("Loading run logs...")
         self.refresh_training_log_runs()
+        self._startup_progress("Ready.")
+
+    def _startup_progress(self, message: str) -> None:
+        callback = self._startup_progress_callback
+        if callback is not None:
+            try:
+                callback(str(message))
+            except Exception:
+                pass
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
 
     def _init_global_ui_controls(self) -> None:
         self.theme_label = QLabel("Theme")
@@ -8005,8 +8083,22 @@ def main() -> None:
     app = QApplication(sys.argv)
     if APP_ICON_PATH.is_file():
         app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
-    window = TrainingLauncher()
+    settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+    saved_theme = str(settings.value("ui/theme", app_themes.DEFAULT_THEME_KEY))
+    current_theme = saved_theme if saved_theme in app_themes.THEMES else app_themes.DEFAULT_THEME_KEY
+    app.setStyleSheet(app_themes.build_stylesheet(current_theme))
+    splash = build_startup_splash(current_theme)
+    splash.show()
+    app.processEvents()
+    splash_color = QColor(app_themes.get_theme(current_theme)["text_muted"])
+
+    def _on_startup_progress(message: str) -> None:
+        splash.showMessage(f"  {message}", Qt.AlignLeft | Qt.AlignBottom, splash_color)
+        app.processEvents()
+
+    window = TrainingLauncher(startup_progress_callback=_on_startup_progress)
     window.showMaximized()
+    splash.finish(window)
     QTimer.singleShot(0, lambda: apply_windows_taskbar_icon(window))
     sys.exit(app.exec())
 
