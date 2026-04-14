@@ -1,0 +1,70 @@
+{
+  "checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficient_net_bn_dora_classifier_last2_defroze\\best.pth",
+  "model_name": "efficient_net_bn_dora_classifier_last2_defroze",
+  "test_splits_root": "C:\\Users\\18447\\DATA586Project\\data\\test_splits",
+  "image_size": 224,
+  "batch_size": 32,
+  "device": "cuda",
+  "amp_requested": true,
+  "amp_enabled": true,
+  "generated_at_utc": "2026-04-14T13:06:52+00:00",
+  "total_seconds": 921.0379723000078,
+  "clean_accuracy": 0.8545346534653465,
+  "robustness_average": 0.750439603960396,
+  "splits": [
+    {
+      "split": "blur_little",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 21176,
+      "accuracy": 0.8386534653465346,
+      "avg_confidence": 0.8959868260751856
+    },
+    {
+      "split": "blur_medium",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 19316,
+      "accuracy": 0.764990099009901,
+      "avg_confidence": 0.8494848487778466
+    },
+    {
+      "split": "clean",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 21577,
+      "accuracy": 0.8545346534653465,
+      "avg_confidence": 0.9095547020034035
+    },
+    {
+      "split": "downsampled",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 12103,
+      "accuracy": 0.4793267326732673,
+      "avg_confidence": 0.6661081071608137
+    },
+    {
+      "split": "masked",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 21273,
+      "accuracy": 0.8424950495049505,
+      "avg_confidence": 0.9014349860767327
+    },
+    {
+      "split": "noise_rotation",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 20875,
+      "accuracy": 0.8267326732673267,
+      "avg_confidence": 0.8923107064124381
+    }
+  ]
+}

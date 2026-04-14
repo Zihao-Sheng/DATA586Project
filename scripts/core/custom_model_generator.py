@@ -51,11 +51,11 @@ SUPPORTED_METHODS_BY_BASE: dict[str, tuple[str, ...]] = {
         "bitfit",
         "ssf",
     ),
-    "resnet18": ("baseline", "bn_tuning", "norm_tuning", "full_finetune", "lora", "tsa", "adapter", "bitfit", "ssf"),
-    "resnet50": ("baseline", "bn_tuning", "norm_tuning", "full_finetune", "lora", "tsa", "adapter", "bitfit", "ssf"),
-    "convnext_tiny": ("baseline", "norm_tuning", "full_finetune", "lora", "tsa", "adapter", "bitfit", "ssf"),
-    "mobilenet_v3_large": ("baseline", "bn_tuning", "norm_tuning", "full_finetune", "lora", "tsa", "adapter", "bitfit", "ssf"),
-    "densenet121": ("baseline", "bn_tuning", "norm_tuning", "full_finetune", "lora", "tsa", "adapter", "bitfit", "ssf"),
+    "resnet18": ("baseline", "bn_tuning", "norm_tuning", "full_finetune", "lora", "dora", "tsa", "adapter", "bitfit", "ssf"),
+    "resnet50": ("baseline", "bn_tuning", "norm_tuning", "full_finetune", "lora", "dora", "tsa", "adapter", "bitfit", "ssf"),
+    "convnext_tiny": ("baseline", "norm_tuning", "full_finetune", "lora", "dora", "tsa", "adapter", "bitfit", "ssf"),
+    "mobilenet_v3_large": ("baseline", "bn_tuning", "norm_tuning", "full_finetune", "lora", "dora", "tsa", "adapter", "bitfit", "ssf"),
+    "densenet121": ("baseline", "bn_tuning", "norm_tuning", "full_finetune", "lora", "dora", "tsa", "adapter", "bitfit", "ssf"),
 }
 SUPPORTED_FREEZE_STRATEGIES = {
     "linear_probe",
@@ -128,6 +128,30 @@ def supported_methods_for_base(base_model: str) -> list[str]:
 
 def default_spec_path_for_model_name(model_name: str) -> Path:
     return SPEC_DIR / f"{_normalize_model_name(model_name)}.json"
+
+
+def normalize_model_name(model_name: str) -> str:
+    return _normalize_model_name(model_name)
+
+
+def spec_path_matches_model_name(path: Path | str | None, model_name: str) -> bool:
+    if path is None:
+        return False
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except Exception:
+        return False
+    return resolved.stem.strip().lower() == _normalize_model_name(model_name)
+
+
+def canonicalize_spec_path_for_model_name(model_name: str, path: Path | str | None = None) -> Path:
+    normalized_name = _normalize_model_name(model_name)
+    if path is None:
+        return default_spec_path_for_model_name(normalized_name).resolve()
+    resolved = Path(path).expanduser().resolve()
+    if resolved.stem.strip().lower() == normalized_name and resolved.suffix.lower() == ".json":
+        return resolved
+    return resolved.parent / f"{normalized_name}.json"
 
 
 def list_saved_spec_files() -> list[Path]:
@@ -327,7 +351,18 @@ def build_preset_spec(*, model_name: str, base_model: str, method_type: str) -> 
     elif normalized_method == "dora":
         payload["freeze_strategy"] = "frozen_backbone_peft"
         payload["peft_method"] = "dora"
-        payload["peft_targets"] = {"feature_stages": [6, 7], "layer_keys": [], "classifier": True}
+        if normalized_base == "efficientnet_v2_s":
+            payload["peft_targets"] = {"feature_stages": [6, 7], "layer_keys": [], "classifier": True}
+        elif normalized_base in {"resnet18", "resnet50"}:
+            payload["peft_targets"] = {"feature_stages": [], "layer_keys": ["layer4"], "classifier": True}
+        elif normalized_base == "convnext_tiny":
+            payload["peft_targets"] = {"feature_stages": [], "layer_keys": ["stage4"], "classifier": True}
+        elif normalized_base == "mobilenet_v3_large":
+            payload["peft_targets"] = {"feature_stages": [], "layer_keys": ["stage4"], "classifier": True}
+        elif normalized_base == "densenet121":
+            payload["peft_targets"] = {"feature_stages": [], "layer_keys": ["denseblock4"], "classifier": True}
+        else:
+            payload["peft_targets"] = {"feature_stages": [], "layer_keys": [], "classifier": True}
         payload["peft_params"] = {"rank": 8, "alpha": 16.0}
     elif normalized_method == "tsa":
         payload["freeze_strategy"] = "frozen_backbone_peft"
@@ -438,9 +473,6 @@ def spec_from_dict(payload: dict[str, Any]) -> CustomModelSpec:
         raise ValueError(f"method_type='{method_type}' does not allow peft_method='{peft_method}'.")
     if expected_peft_method is not None and peft_method != expected_peft_method:
         raise ValueError(f"method_type='{method_type}' requires peft_method='{expected_peft_method}'.")
-    if method_type == "dora" and base_model != "efficientnet_v2_s":
-        raise ValueError("DoRA is currently supported for EfficientNet only.")
-
     raw_targets = payload.get("peft_targets")
     targets = raw_targets if isinstance(raw_targets, dict) else {}
     feature_stages = _parse_int_stage_list(targets.get("feature_stages", []), field_name="peft_targets.feature_stages")
@@ -496,10 +528,11 @@ def spec_from_dict(payload: dict[str, Any]) -> CustomModelSpec:
         raise ValueError("stage_lr_overrides must be a dict mapping stage key to learning-rate float.")
 
     if method_type == "dora":
-        if base_model != "efficientnet_v2_s":
-            raise ValueError("DoRA stage targets are only available for EfficientNet.")
-        if not feature_stages and not classifier_target:
-            raise ValueError("DoRA requires at least one feature stage or classifier target.")
+        if base_model == "efficientnet_v2_s":
+            if not feature_stages and not classifier_target:
+                raise ValueError("DoRA requires at least one feature stage or classifier target.")
+        elif not layer_keys and not classifier_target:
+            raise ValueError("DoRA requires at least one layer key or classifier target.")
 
     gradcam_target_hint = _parse_string_list(payload.get("gradcam_target_hint", []))
     if not gradcam_target_hint:

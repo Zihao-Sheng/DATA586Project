@@ -1,0 +1,70 @@
+{
+  "checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_bn_last3\\best.pth",
+  "model_name": "efficientnet_bn_last3",
+  "test_splits_root": "C:\\Users\\18447\\DATA586Project\\data\\test_splits",
+  "image_size": 224,
+  "batch_size": 32,
+  "device": "cuda",
+  "amp_requested": false,
+  "amp_enabled": false,
+  "generated_at_utc": "2026-04-14T07:18:36+00:00",
+  "total_seconds": 1183.7646483999997,
+  "clean_accuracy": 0.8428118811881188,
+  "robustness_average": 0.7417504950495049,
+  "splits": [
+    {
+      "split": "blur_little",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 20819,
+      "accuracy": 0.8245148514851485,
+      "avg_confidence": 0.8517416250215899
+    },
+    {
+      "split": "blur_medium",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 18985,
+      "accuracy": 0.7518811881188119,
+      "avg_confidence": 0.7922862212489737
+    },
+    {
+      "split": "clean",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 21281,
+      "accuracy": 0.8428118811881188,
+      "avg_confidence": 0.8649946508953477
+    },
+    {
+      "split": "downsampled",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 12150,
+      "accuracy": 0.48118811881188117,
+      "avg_confidence": 0.6167966397876786
+    },
+    {
+      "split": "masked",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 21052,
+      "accuracy": 0.8337425742574257,
+      "avg_confidence": 0.8542219679612334
+    },
+    {
+      "split": "noise_rotation",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 20640,
+      "accuracy": 0.8174257425742574,
+      "avg_confidence": 0.8446702340525566
+    }
+  ]
+}

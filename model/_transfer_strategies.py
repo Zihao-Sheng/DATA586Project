@@ -195,6 +195,31 @@ def enable_norm_tuning(model: nn.Module, classifier_modules: list[nn.Module]) ->
         unfreeze_module(module)
 
 
+def _unfreeze_bn_modules(model: nn.Module) -> None:
+    for module in model.modules():
+        if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.SyncBatchNorm)):
+            unfreeze_module(module)
+
+
+def _unfreeze_norm_parameters(model: nn.Module) -> None:
+    norm_types = (
+        nn.BatchNorm1d,
+        nn.BatchNorm2d,
+        nn.BatchNorm3d,
+        nn.SyncBatchNorm,
+        nn.LayerNorm,
+        nn.GroupNorm,
+        nn.InstanceNorm1d,
+        nn.InstanceNorm2d,
+        nn.InstanceNorm3d,
+    )
+    for module in model.modules():
+        if isinstance(module, norm_types):
+            for name, param in module.named_parameters(recurse=False):
+                if name in {"weight", "bias"}:
+                    param.requires_grad = True
+
+
 def enable_bias_tuning(model: nn.Module, *, scope: str = "all_bias", classifier_modules: list[nn.Module] | None = None) -> None:
     freeze_all(model)
     normalized_scope = str(scope).strip().lower() or "all_bias"
@@ -628,6 +653,25 @@ def _replace_classifier_with_lora(model: nn.Module, backbone: str) -> None:
     raise ValueError(f"Unsupported backbone for LoRA classifier replacement: {backbone}")
 
 
+def _replace_classifier_with_dora(model: nn.Module, backbone: str) -> None:
+    if backbone in {"resnet18", "resnet50"}:
+        model.fc = DoRALinear(model.fc, rank=8, alpha=16.0)
+        return
+    if backbone == "efficientnet_v2_s":
+        model.classifier[1] = DoRALinear(model.classifier[1], rank=8, alpha=16.0)
+        return
+    if backbone == "convnext_tiny":
+        model.classifier[2] = DoRALinear(model.classifier[2], rank=8, alpha=16.0)
+        return
+    if backbone == "mobilenet_v3_large":
+        model.classifier[3] = DoRALinear(model.classifier[3], rank=8, alpha=16.0)
+        return
+    if backbone == "densenet121":
+        model.classifier = DoRALinear(model.classifier, rank=8, alpha=16.0)
+        return
+    raise ValueError(f"Unsupported backbone for DoRA classifier replacement: {backbone}")
+
+
 def _load_backbone_classifier(backbone: str, num_classes: int, pretrained: bool = True) -> nn.Module:
     if backbone == "resnet18":
         return load_resnet18_classifier(num_classes, pretrained=pretrained)
@@ -934,6 +978,52 @@ def _default_target_keys(backbone: str, method_type: str) -> tuple[str, ...]:
     return defaults.get((backbone, method_type), ("classifier",))
 
 
+def _parse_spec_unfreeze_stages(spec: dict[str, object]) -> list[int]:
+    raw = spec.get("unfreeze_stages", [])
+    if not isinstance(raw, list):
+        return []
+    stages: list[int] = []
+    for item in raw:
+        try:
+            stage = int(item)
+        except Exception:
+            continue
+        stages.append(stage)
+    return sorted(set(stages))
+
+
+def _apply_freeze_strategy_from_spec(model: nn.Module, backbone: str, spec: dict[str, object]) -> None:
+    freeze_strategy = str(spec.get("freeze_strategy", "manual")).strip().lower()
+    train_bn = bool(spec.get("train_bn", False))
+    train_norm = bool(spec.get("train_norm", False))
+    classifier_module = _classifier_module_for_backbone(model, backbone)
+
+    if freeze_strategy == "full_finetune":
+        unfreeze_all(model)
+        return
+    if freeze_strategy == "linear_probe":
+        freeze_all(model)
+        unfreeze_module(classifier_module)
+        return
+    if freeze_strategy == "bias_tuning":
+        return
+
+    freeze_all(model)
+    if freeze_strategy == "norm_tuning" or train_norm:
+        _unfreeze_norm_parameters(model)
+        unfreeze_module(classifier_module)
+    if freeze_strategy in {"bn_tuning", "bn_tuning_with_last_stages"} or train_bn:
+        _unfreeze_bn_modules(model)
+        unfreeze_module(classifier_module)
+
+    if backbone == "efficientnet_v2_s":
+        stage_map = _stage_map_for_backbone(model, backbone)
+        for stage_idx in _parse_spec_unfreeze_stages(spec):
+            module = stage_map.get(f"features.{stage_idx}")
+            if module is not None:
+                unfreeze_module(module)
+
+
 def build_model_from_spec(
     spec: dict[str, object],
     *,
@@ -944,6 +1034,7 @@ def build_model_from_spec(
     base_model = str(spec.get("base_model", "efficientnet_v2_s")).strip().lower()
     backbone = "efficientnet_v2_s" if base_model == "efficientnet" else base_model
     method_type = str(spec.get("method_type", "baseline")).strip().lower()
+    peft_method = str(spec.get("peft_method", "")).strip().lower() or None
 
     if method_type == "baseline":
         return strategy_builder(backbone, "linear_probe")(num_classes, device, pretrained)
@@ -957,7 +1048,7 @@ def build_model_from_spec(
         return strategy_builder(backbone, "full_finetune")(num_classes, device, pretrained)
     if method_type == "norm_tuning":
         return strategy_builder(backbone, "norm_tuning")(num_classes, device, pretrained)
-    if method_type == "bitfit":
+    if method_type == "bitfit" or peft_method == "bitfit":
         model = _load_backbone_classifier(backbone, num_classes, pretrained=pretrained)
         scope = "all_bias"
         raw_params = spec.get("peft_params")
@@ -968,25 +1059,31 @@ def build_model_from_spec(
 
     target_keys = _target_keys_from_spec(spec, backbone)
     if not target_keys:
-        target_keys = _default_target_keys(backbone, method_type)
+        target_keys = _default_target_keys(backbone, peft_method or method_type)
     params = spec.get("peft_params")
     peft_params = params if isinstance(params, dict) else {}
 
-    if method_type == "lora":
+    if method_type == "lora" or peft_method == "lora":
         return _build_lora_generic(backbone, num_classes, device, pretrained=pretrained, target_keys=target_keys)
-    if method_type == "dora":
+    if method_type == "dora" or peft_method == "dora":
         model = _load_backbone_classifier(backbone, num_classes, pretrained=pretrained)
-        freeze_all(model)
+        _apply_freeze_strategy_from_spec(model, backbone, spec)
         stage_map = _stage_map_for_backbone(model, backbone)
+        classifier_targeted = "classifier" in target_keys
         for key in target_keys:
+            if key == "classifier":
+                continue
             module = stage_map.get(key)
             if module is not None:
                 apply_dora_recursively(module)
-        unfreeze_module(_classifier_module_for_backbone(model, backbone))
+        if classifier_targeted:
+            _replace_classifier_with_dora(model, backbone)
+        elif str(spec.get("freeze_strategy", "manual")).strip().lower() == "frozen_backbone_peft":
+            unfreeze_module(_classifier_module_for_backbone(model, backbone))
         return _finalize_model(model, device)
-    if method_type == "tsa":
+    if method_type == "tsa" or peft_method == "tsa":
         return _build_tsa_generic(backbone, num_classes, device, pretrained=pretrained, target_keys=target_keys)
-    if method_type == "adapter":
+    if method_type == "adapter" or peft_method == "adapter":
         bottleneck_dim = int(peft_params.get("bottleneck_dim", 32))
         return _build_adapter_generic(
             backbone,
@@ -996,7 +1093,7 @@ def build_model_from_spec(
             target_keys=target_keys,
             bottleneck_dim=bottleneck_dim,
         )
-    if method_type == "ssf":
+    if method_type == "ssf" or peft_method == "ssf":
         init_scale = float(peft_params.get("init_scale", 1.0))
         init_shift = float(peft_params.get("init_shift", 0.0))
         return _build_ssf_generic(

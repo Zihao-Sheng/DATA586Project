@@ -1,25 +1,32 @@
 {
+  "base_family": "efficientnet",
   "base_model": "efficientnet_v2_s",
-  "freeze_strategy": "bn_tuning_with_last_stages",
-  "generator_version": "phase3_v1",
+  "base_provider": "torchvision",
+  "freeze_strategy": "frozen_backbone_peft",
+  "generator_version": "phase_canvas_methods_v1",
   "gradcam_target_hint": [
     "features.7"
   ],
-  "metadata_version": "1.1",
-  "method_type": "bn_last2",
-  "model_name": "efficientnet_bn_last2_gen",
-  "peft_method": null,
-  "peft_params": {},
+  "metadata_version": "1.3",
+  "method_type": "dora",
+  "model_name": "efficientnet_bn_last2_dora",
+  "peft_method": "dora",
+  "peft_params": {
+    "alpha": 16.0,
+    "rank": 8
+  },
   "peft_targets": {
     "classifier": false,
-    "feature_stages": [],
+    "feature_stages": [
+      7
+    ],
     "layer_keys": []
   },
   "pretrained": true,
+  "stage_lr_overrides": {},
   "task_type": "classification",
-  "train_bn": true,
-  "unfreeze_stages": [
-    6,
-    7
-  ]
+  "train_bn": false,
+  "train_norm": false,
+  "unfreeze_stages": [],
+  "variant": "efficientnet_v2_s"
 }

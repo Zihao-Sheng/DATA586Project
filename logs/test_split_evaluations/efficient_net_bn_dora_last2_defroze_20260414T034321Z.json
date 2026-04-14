@@ -1,0 +1,70 @@
+{
+  "checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficient_net_bn_dora_last2_defroze\\best.pth",
+  "model_name": "efficient_net_bn_dora_last2_defroze",
+  "test_splits_root": "C:\\Users\\18447\\DATA586Project\\data\\test_splits",
+  "image_size": 224,
+  "batch_size": 32,
+  "device": "cuda",
+  "amp_requested": true,
+  "amp_enabled": true,
+  "generated_at_utc": "2026-04-14T03:43:21+00:00",
+  "total_seconds": 2202.1768257000076,
+  "clean_accuracy": 0.8578217821782178,
+  "robustness_average": 0.7577663366336633,
+  "splits": [
+    {
+      "split": "blur_little",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 21184,
+      "accuracy": 0.8389702970297029,
+      "avg_confidence": 0.8716184686339727
+    },
+    {
+      "split": "blur_medium",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 19490,
+      "accuracy": 0.7718811881188119,
+      "avg_confidence": 0.8210525023205446
+    },
+    {
+      "split": "clean",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 21660,
+      "accuracy": 0.8578217821782178,
+      "avg_confidence": 0.8873031984839109
+    },
+    {
+      "split": "downsampled",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 12664,
+      "accuracy": 0.5015445544554455,
+      "avg_confidence": 0.6442160922513149
+    },
+    {
+      "split": "masked",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 21402,
+      "accuracy": 0.8476039603960396,
+      "avg_confidence": 0.8782075799620978
+    },
+    {
+      "split": "noise_rotation",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 20928,
+      "accuracy": 0.8288316831683168,
+      "avg_confidence": 0.8701559550974629
+    }
+  ]
+}

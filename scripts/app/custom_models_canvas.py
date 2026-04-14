@@ -805,6 +805,36 @@ class CustomModelCanvasWidget(QWidget):
             return
         self.stage_static_info_value.setText("No static profile available for this stage.")
 
+    def _refresh_gradcam_default_for_base(self) -> None:
+        try:
+            method = self._derive_method()
+        except Exception:
+            method = "baseline"
+        targets = custom_model_generator._default_gradcam_targets(self._base_model, method)
+        self.gradcam_edit.setText(",".join(targets))
+
+    def _resolve_spec_output_path(
+        self,
+        model_name: str,
+        *,
+        selected_path: Path | str | None = None,
+        prefer_current: bool = False,
+    ) -> tuple[Path, str | None]:
+        if selected_path is not None:
+            target = custom_model_generator.canonicalize_spec_path_for_model_name(model_name, selected_path)
+            try:
+                requested = Path(selected_path).expanduser().resolve()
+            except Exception:
+                requested = Path(selected_path)
+            note = None if target == requested else f"Spec filename was aligned to model name '{model_name}'."
+            return target, note
+        if prefer_current and self._spec_path is not None and custom_model_generator.spec_path_matches_model_name(self._spec_path, model_name):
+            return self._spec_path.expanduser().resolve(), None
+        target = custom_model_generator.default_spec_path_for_model_name(model_name).resolve()
+        if prefer_current and self._spec_path is not None:
+            return target, "Model name changed, so the spec was redirected to a matching file."
+        return target, None
+
     def _on_global_mode_changed(self, value: str) -> None:
         if self._updating or self._read_only_introspection:
             return
@@ -934,12 +964,37 @@ class CustomModelCanvasWidget(QWidget):
         )
         payload = custom_model_generator.spec_to_dict(spec)
         payload["pretrained"] = bool(self.pretrained_checkbox.isChecked())
-        payload["train_norm"] = any(bool(self.state[key].get("train_norm", False)) for key in self.editable_stages)
+        train_bn_any = any(bool(self.state[key]["train_bn"]) for key in self.editable_stages)
+        train_norm_any = any(bool(self.state[key].get("train_norm", False)) for key in self.editable_stages)
+        payload["train_bn"] = train_bn_any
+        payload["train_norm"] = train_norm_any
         payload["stage_lr_overrides"] = {
             key: float(self.state[key].get("lr_override", 0.0))
             for key in sorted(self.editable_stages)
             if bool(self.state[key].get("lr_override_enabled", False)) and float(self.state[key].get("lr_override", 0.0)) > 0.0
         }
+        unfrozen_feature_stages = sorted(
+            idx
+            for key in self.editable_stages
+            for idx in ([self._stage_to_feature_index(key)] if self._stage_to_feature_index(key) is not None else [])
+            if not bool(self.state[key]["frozen"])
+        )
+
+        if self._base_model == "efficientnet_v2_s":
+            payload["unfreeze_stages"] = list(unfrozen_feature_stages)
+            if train_bn_any:
+                if unfrozen_feature_stages in ([7], [6, 7]):
+                    payload["freeze_strategy"] = "bn_tuning_with_last_stages"
+                else:
+                    payload["freeze_strategy"] = "bn_tuning"
+            elif train_norm_any:
+                payload["freeze_strategy"] = "norm_tuning"
+            elif method in {"lora", "dora", "tsa", "adapter", "ssf"}:
+                payload["freeze_strategy"] = "frozen_backbone_peft"
+            elif method == "bitfit":
+                payload["freeze_strategy"] = "bias_tuning"
+            elif all(not bool(self.state[key]["frozen"]) for key in self.editable_stages):
+                payload["freeze_strategy"] = "full_finetune"
 
         peft_stages = [key for key in self.editable_stages if self.state[key]["stage_method"] != "none"]
         if method in {"lora", "dora", "tsa", "adapter", "bitfit", "ssf"}:
@@ -1027,36 +1082,26 @@ class CustomModelCanvasWidget(QWidget):
             method = spec.method_type
             train_bn_enabled = bool(getattr(spec, "train_bn", False))
             train_norm_enabled = bool(getattr(spec, "train_norm", False))
-            if method == "baseline":
-                self._global_mode = "Linear Probe"
-                self.global_mode_combo.setCurrentText("Linear Probe")
-            elif method == "bn_tuning":
-                for key in self.editable_stages:
-                    self.state[key]["train_bn"] = train_bn_enabled
-                    self.state[key]["train_norm"] = train_norm_enabled
-            elif method == "norm_tuning":
-                for key in self.editable_stages:
-                    self.state[key]["train_norm"] = True
-            elif method == "bn_last1":
-                for key in self.editable_stages:
-                    self.state[key]["train_bn"] = train_bn_enabled
-                    self.state[key]["train_norm"] = train_norm_enabled
-                if "features.7" in self.state:
-                    self.state["features.7"]["frozen"] = False
-            elif method == "bn_last2":
-                for key in self.editable_stages:
-                    self.state[key]["train_bn"] = train_bn_enabled
-                    self.state[key]["train_norm"] = train_norm_enabled
-                if "features.6" in self.state:
-                    self.state["features.6"]["frozen"] = False
-                if "features.7" in self.state:
-                    self.state["features.7"]["frozen"] = False
-            elif method == "full_finetune":
+            freeze_strategy = str(getattr(spec, "freeze_strategy", "manual")).strip().lower()
+            if freeze_strategy == "full_finetune":
                 for key in self.editable_stages:
                     self.state[key]["frozen"] = False
                 self._global_mode = "Full Finetune"
                 self.global_mode_combo.setCurrentText("Full Finetune")
-            elif method in {"lora", "dora", "tsa", "adapter", "bitfit", "ssf"}:
+            elif freeze_strategy == "linear_probe" and method == "baseline":
+                self._global_mode = "Linear Probe"
+                self.global_mode_combo.setCurrentText("Linear Probe")
+            if train_bn_enabled:
+                for key in self.editable_stages:
+                    self.state[key]["train_bn"] = train_bn_enabled
+            if train_norm_enabled:
+                for key in self.editable_stages:
+                    self.state[key]["train_norm"] = train_norm_enabled
+            for stage_idx in getattr(spec, "unfreeze_stages", []):
+                key = f"features.{int(stage_idx)}"
+                if key in self.state:
+                    self.state[key]["frozen"] = False
+            if method in {"lora", "dora", "tsa", "adapter", "bitfit", "ssf"}:
                 targets = spec.peft_targets if isinstance(spec.peft_targets, dict) else {}
                 if self._base_model == "efficientnet_v2_s":
                     for idx in targets.get("feature_stages", []):
@@ -1123,10 +1168,12 @@ class CustomModelCanvasWidget(QWidget):
             return
         self._base_model = value
         self._configure_default_flow_for_base(self._base_model)
+        self.state = {}
         self._build_flow()
         self._select_stage("classifier")
         self._global_mode = "Manual"
         self.global_mode_combo.setCurrentText("Manual")
+        self._refresh_gradcam_default_for_base()
         self._on_state_changed()
 
     def new_spec(self) -> None:
@@ -1280,7 +1327,7 @@ class CustomModelCanvasWidget(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "Invalid Spec", str(exc))
             return
-        path = self._spec_path if self._spec_path is not None else custom_model_generator.default_spec_path_for_model_name(spec.model_name)
+        path, note = self._resolve_spec_output_path(spec.model_name, prefer_current=True)
         try:
             saved = custom_model_generator.save_spec_file(spec, path)
         except Exception as exc:
@@ -1288,7 +1335,7 @@ class CustomModelCanvasWidget(QWidget):
             return
         self._spec_path = saved
         self.spec_path_label.setText(f"Spec File: {saved}")
-        self.status_label.setText("Spec saved.")
+        self.status_label.setText(note or "Spec saved.")
 
     def save_spec_as(self) -> None:
         try:
@@ -1300,14 +1347,15 @@ class CustomModelCanvasWidget(QWidget):
         selected_path, _ = QFileDialog.getSaveFileName(self, "Save Spec As", str(default_path), "Spec JSON (*.json)")
         if not selected_path:
             return
+        target_path, note = self._resolve_spec_output_path(spec.model_name, selected_path=selected_path)
         try:
-            saved = custom_model_generator.save_spec_file(spec, Path(selected_path))
+            saved = custom_model_generator.save_spec_file(spec, target_path)
         except Exception as exc:
             QMessageBox.warning(self, "Save Spec Failed", str(exc))
             return
         self._spec_path = saved
         self.spec_path_label.setText(f"Spec File: {saved}")
-        self.status_label.setText("Spec saved as new file.")
+        self.status_label.setText(note or "Spec saved as new file.")
 
     def generate_model(self) -> None:
         try:
@@ -1316,12 +1364,20 @@ class CustomModelCanvasWidget(QWidget):
             QMessageBox.warning(self, "Invalid Spec", str(exc))
             return
         model_path = custom_model_generator.MODEL_DIR / f"{spec.model_name}.py"
+        spec_path, path_note = self._resolve_spec_output_path(spec.model_name, prefer_current=True)
         overwrite = False
+        existing_outputs: list[str] = []
         if model_path.exists():
+            existing_outputs.append(str(model_path))
+        if spec_path.exists():
+            existing_outputs.append(str(spec_path))
+        if existing_outputs:
             answer = QMessageBox.question(
                 self,
-                "Regenerate Existing Model",
-                f"Model file already exists:\n{model_path}\n\nRegenerate and overwrite it?",
+                "Regenerate Existing Outputs",
+                "The following output files already exist:\n"
+                + "\n".join(existing_outputs)
+                + "\n\nRegenerate and overwrite them?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -1330,13 +1386,13 @@ class CustomModelCanvasWidget(QWidget):
             overwrite = True
         try:
             artifacts = custom_model_generator.generate_custom_model(spec, overwrite=overwrite)
-            saved = custom_model_generator.save_spec_file(spec, self._spec_path)
+            saved = custom_model_generator.save_spec_file(spec, spec_path)
         except Exception as exc:
             QMessageBox.critical(self, "Generate Model Failed", str(exc))
             return
         self._spec_path = saved
         self.spec_path_label.setText(f"Spec File: {saved}")
-        self.status_label.setText("Model generated from canvas.")
+        self.status_label.setText(path_note or "Model generated from canvas.")
         if self._on_model_generated is not None:
             self._on_model_generated(artifacts.model_name)
         QMessageBox.information(self, "Model Generated", f"Model file: {artifacts.model_file_path}\nSpec file: {artifacts.spec_file_path}")

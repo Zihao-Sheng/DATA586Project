@@ -1,19 +1,19 @@
 {
   "schema_version": 7,
-  "run_id": "20260412T122332Z_992593e7",
+  "run_id": "20260414T082507Z_cc696775",
   "status": "interrupted",
-  "start_time_utc": "2026-04-12T12:23:32+00:00",
-  "end_time_utc": "2026-04-12T12:27:35+00:00",
+  "start_time_utc": "2026-04-14T08:25:07+00:00",
+  "end_time_utc": "2026-04-14T08:25:07+00:00",
   "error_message": "KeyboardInterrupt",
   "status_reason": "graceful_stop_requested",
-  "command": "C:\\Users\\18447\\DATA586Project\\scripts\\pipeline\\training.py --model efficientnet_dora --data-root C:\\Users\\18447\\DATA586Project\\data\\food-101 --checkpoint-dir C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora --epochs 30 --batch-size 32 --num-workers 4 --image-size 224 --train-transforms-preset custom --lr 0.001000 --optimizer adam --scheduler none --seed 42 --custom-downsample --custom-downsample-prob 0.50 --custom-downsample-min-scale 0.22 --custom-downsample-max-scale 0.55 --custom-mild-blur --custom-mild-blur-prob 0.10 --custom-random-erasing --custom-random-erasing-prob 0.08 --custom-color-jitter --custom-horizontal-flip --progress-format gui --stop-file C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora\\.stop_requested --freeze-backbone --use-validation-split --validation-proportion 0.10 --resume C:/Users/18447/DATA586Project/checkpoints/efficientnet_dora/last.pth",
+  "command": "C:\\Users\\18447\\DATA586Project\\scripts\\pipeline\\training.py --model efficient_net_bn_dora_agressive_last2_defroze --data-root C:\\Users\\18447\\DATA586Project\\data\\food-101 --checkpoint-dir C:\\Users\\18447\\DATA586Project\\checkpoints\\efficient_net_bn_dora_agressive_last2_defroze --epochs 20 --batch-size 32 --num-workers 4 --image-size 224 --train-transforms-preset custom --lr 0.001000 --optimizer adam --scheduler none --seed 42 --custom-downsample --custom-downsample-prob 0.50 --custom-downsample-min-scale 0.22 --custom-downsample-max-scale 0.55 --custom-mild-blur --custom-mild-blur-prob 0.10 --custom-random-erasing --custom-random-erasing-prob 0.08 --custom-color-jitter --custom-horizontal-flip --progress-format gui --stop-file C:\\Users\\18447\\DATA586Project\\checkpoints\\efficient_net_bn_dora_agressive_last2_defroze\\.stop_requested --amp --freeze-backbone --use-validation-split --validation-proportion 0.10",
   "args": {
-    "model": "efficientnet_dora",
+    "model": "efficient_net_bn_dora_agressive_last2_defroze",
     "data_root": "C:\\Users\\18447\\DATA586Project\\data\\food-101",
-    "checkpoint_dir": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora",
-    "epochs": 30,
-    "start_epoch": 20,
-    "planned_epochs_this_run": 10,
+    "checkpoint_dir": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficient_net_bn_dora_agressive_last2_defroze",
+    "epochs": 20,
+    "start_epoch": 0,
+    "planned_epochs_this_run": 20,
     "batch_size": 32,
     "num_workers": 4,
     "image_size": 224,
@@ -45,9 +45,10 @@
     "lr": 0.001,
     "optimizer": "adam",
     "scheduler": "none",
-    "amp": false,
+    "amp": true,
     "seed": 42,
     "weight_decay": 0.0,
+    "stage_lr_overrides": {},
     "scheduler_t_max": null,
     "scheduler_step_size": null,
     "scheduler_gamma": null,
@@ -56,7 +57,7 @@
     "freeze_backbone": true,
     "use_validation_split": true,
     "validation_proportion": 0.1,
-    "resume": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora\\last.pth"
+    "resume": null
   },
   "dataset": {
     "num_classes": 101,
@@ -197,14 +198,21 @@
     }
   },
   "model": {
-    "name": "efficientnet_dora",
-    "total_params": 20885254,
-    "trainable_params": 578385,
-    "frozen_params": 20306869,
-    "checkpoint_dir": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora",
-    "best_checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora\\best.pth",
-    "last_checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora\\last.pth",
-    "amp_enabled": false
+    "name": "efficient_net_bn_dora_agressive_last2_defroze",
+    "total_params": 20874105,
+    "trainable_params": 850489,
+    "frozen_params": 20023616,
+    "checkpoint_dir": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficient_net_bn_dora_agressive_last2_defroze",
+    "best_checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficient_net_bn_dora_agressive_last2_defroze\\best.pth",
+    "last_checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficient_net_bn_dora_agressive_last2_defroze\\last.pth",
+    "amp_enabled": true,
+    "optimizer_param_groups": [
+      {
+        "stage": "default",
+        "lr": 0.001,
+        "param_count": 450
+      }
+    ]
   },
   "expected": {
     "train_batches_per_epoch": 2131,
@@ -216,16 +224,16 @@
   "summary": {
     "best_eval_acc": null,
     "best_eval_epoch": null,
-    "last_completed_epoch": 20,
+    "last_completed_epoch": 0,
     "last_eval_acc": null,
     "last_eval_loss": null,
     "final_test_acc": null,
     "final_test_loss": null
   },
   "timing_summary": {
-    "total_wall_time_seconds": 244.0635098000057,
+    "total_wall_time_seconds": 1.04013130000385,
     "total_pure_execution_time_seconds": 0.0,
-    "initialization_and_overhead_time_seconds": 244.0635098000057,
+    "initialization_and_overhead_time_seconds": 1.04013130000385,
     "stage_totals": {
       "train": {
         "total_seconds": 0.0,
@@ -251,22 +259,18 @@
   },
   "artifacts": {
     "best_checkpoint": {
-      "path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora\\best.pth",
+      "path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficient_net_bn_dora_agressive_last2_defroze\\best.pth",
       "initial_signature": {
-        "exists": true,
-        "size": 89262045,
-        "mtime_ns": 1775805115462464700
+        "exists": false
       },
       "final_signature": null,
       "saved_epoch": null,
       "saved_best_acc": null
     },
     "last_checkpoint": {
-      "path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_dora\\last.pth",
+      "path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficient_net_bn_dora_agressive_last2_defroze\\last.pth",
       "initial_signature": {
-        "exists": true,
-        "size": 89262045,
-        "mtime_ns": 1775805177583496800
+        "exists": false
       },
       "final_signature": null
     }

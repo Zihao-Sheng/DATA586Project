@@ -1,0 +1,70 @@
+{
+  "checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficientnet_bn_last3\\best.pth",
+  "model_name": "efficientnet_bn_last3",
+  "test_splits_root": "C:\\Users\\18447\\DATA586Project\\data\\test_splits",
+  "image_size": 224,
+  "batch_size": 32,
+  "device": "cuda",
+  "amp_requested": false,
+  "amp_enabled": false,
+  "generated_at_utc": "2026-04-14T05:16:44+00:00",
+  "total_seconds": 1431.6605352000042,
+  "clean_accuracy": 0.8382574257425742,
+  "robustness_average": 0.7391445544554455,
+  "splits": [
+    {
+      "split": "blur_little",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 20678,
+      "accuracy": 0.8189306930693069,
+      "avg_confidence": 0.8195530612728383
+    },
+    {
+      "split": "blur_medium",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 18816,
+      "accuracy": 0.7451881188118812,
+      "avg_confidence": 0.7522483303836076
+    },
+    {
+      "split": "clean",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 21166,
+      "accuracy": 0.8382574257425742,
+      "avg_confidence": 0.8349962276055081
+    },
+    {
+      "split": "downsampled",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 12357,
+      "accuracy": 0.4893861386138614,
+      "avg_confidence": 0.5722631322197099
+    },
+    {
+      "split": "masked",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 20946,
+      "accuracy": 0.8295445544554455,
+      "avg_confidence": 0.8235279932261104
+    },
+    {
+      "split": "noise_rotation",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 20520,
+      "accuracy": 0.8126732673267326,
+      "avg_confidence": 0.8119132149482128
+    }
+  ]
+}

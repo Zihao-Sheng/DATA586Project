@@ -1,0 +1,70 @@
+{
+  "checkpoint_path": "C:\\Users\\18447\\DATA586Project\\checkpoints\\efficient_net_bn_dora_agressive_last2_defroze\\best.pth",
+  "model_name": "efficient_net_bn_dora_agressive_last2_defroze",
+  "test_splits_root": "C:\\Users\\18447\\DATA586Project\\data\\test_splits",
+  "image_size": 224,
+  "batch_size": 32,
+  "device": "cuda",
+  "amp_requested": true,
+  "amp_enabled": true,
+  "generated_at_utc": "2026-04-14T11:18:43+00:00",
+  "total_seconds": 1018.430529099991,
+  "clean_accuracy": 0.853029702970297,
+  "robustness_average": 0.7489742574257425,
+  "splits": [
+    {
+      "split": "blur_little",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 21085,
+      "accuracy": 0.835049504950495,
+      "avg_confidence": 0.8433552560334159
+    },
+    {
+      "split": "blur_medium",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 19261,
+      "accuracy": 0.7628118811881188,
+      "avg_confidence": 0.7844495740833849
+    },
+    {
+      "split": "clean",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 21539,
+      "accuracy": 0.853029702970297,
+      "avg_confidence": 0.8618387197362314
+    },
+    {
+      "split": "downsampled",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 12187,
+      "accuracy": 0.48265346534653464,
+      "avg_confidence": 0.5711598891456529
+    },
+    {
+      "split": "masked",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 21202,
+      "accuracy": 0.8396831683168317,
+      "avg_confidence": 0.846169568958849
+    },
+    {
+      "split": "noise_rotation",
+      "total_images": 25250,
+      "evaluated_images": 25250,
+      "skipped_images": 0,
+      "correct_images": 20823,
+      "accuracy": 0.8246732673267326,
+      "avg_confidence": 0.8382618964166925
+    }
+  ]
+}

@@ -3,10 +3,12 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import shutil
 import sys
 import time
 import uuid
 from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QMimeData, QObject, QPointF, QProcess, QRect, QRectF, QSize, QSettings, Qt, QThread, QTimer, Signal
@@ -41,6 +43,9 @@ from PySide6.QtWidgets import (
     QSplitter,
     QSpinBox,
     QStackedWidget,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTreeView,
     QToolTip,
     QTabWidget,
@@ -60,6 +65,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from core import custom_model_generator, run_log_compat
+from core import model_registry as model_registry_module
 from core import runtime_paths
 from app import app_themes, global_job_queue
 from app.custom_models_canvas import CustomModelCanvasWidget
@@ -95,12 +101,77 @@ NEW_CHECKPOINT_NAME_LABEL = "New checkpoint name..."
 RUN_LOG_DIRNAME = "_run_logs"
 SETTINGS_ORG = "DATA586Project"
 SETTINGS_APP = "TrainingLauncher"
+TRASH_ROOT = PROJECT_ROOT / ".trash"
+LOG_TRASH_DIR = TRASH_ROOT / "logs"
+MODEL_TRASH_DIR = TRASH_ROOT / "models"
+LOG_TRASH_LIMIT = 10
+MODEL_TRASH_LIMIT = 5
 PREDICT_THUMBNAIL_CACHE_LIMIT = 192
 PREDICT_DISPLAY_CACHE_LIMIT = 48
 PREDICT_GRADCAM_CACHE_LIMIT = 24
 PREDICT_COMPARE_DISPLAY_CACHE_LIMIT = 12
 CHECKPOINT_SELECTOR_MODEL_TEXT_MAX_CHARS = 56
 CHECKPOINT_SELECTOR_MODEL_COLUMN_MAX_WIDTH = 420
+
+
+class ComboDeleteItemDelegate(QStyledItemDelegate):
+    DELETE_WIDTH = 54
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        text_rect = QRect(opt.rect)
+        text_rect.setRight(text_rect.right() - self.DELETE_WIDTH - 10)
+        opt.rect = text_rect
+        opt.text = painter.fontMetrics().elidedText(opt.text, Qt.ElideRight, max(32, text_rect.width() - 8))
+        style = opt.widget.style() if opt.widget is not None else QApplication.style()
+        style.drawControl(QStyle.CE_ItemViewItem, opt, painter, opt.widget)
+
+        delete_rect = self.delete_rect(option.rect)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        border = QColor(180, 74, 74)
+        fill = QColor(90, 28, 28, 38) if option.state & QStyle.State_MouseOver else QColor(90, 28, 28, 20)
+        painter.setPen(border)
+        painter.setBrush(fill)
+        painter.drawRoundedRect(QRectF(delete_rect), 6, 6)
+        painter.setPen(QColor(198, 84, 84))
+        painter.drawText(delete_rect, Qt.AlignCenter, "Delete")
+        painter.restore()
+
+    def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:
+        size = super().sizeHint(option, index)
+        return QSize(max(size.width(), 220), max(size.height(), 28))
+
+    @classmethod
+    def delete_rect(cls, item_rect: QRect) -> QRect:
+        return QRect(item_rect.right() - cls.DELETE_WIDTH - 6, item_rect.top() + 4, cls.DELETE_WIDTH, max(20, item_rect.height() - 8))
+
+
+class DeletableComboBox(QComboBox):
+    deleteRequested = Signal(str)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        list_view = QListView(self)
+        list_view.setMouseTracking(True)
+        list_view.viewport().installEventFilter(self)
+        list_view.setItemDelegate(ComboDeleteItemDelegate(list_view))
+        self.setView(list_view)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        view = self.view()
+        if watched is view.viewport() and event.type() == QEvent.MouseButtonPress:
+            index = view.indexAt(event.pos())
+            if index.isValid():
+                item_rect = view.visualRect(index)
+                if ComboDeleteItemDelegate.delete_rect(item_rect).contains(event.pos()):
+                    model_name = index.data(Qt.UserRole)
+                    if isinstance(model_name, str) and model_name.strip():
+                        self.hidePopup()
+                        self.deleteRequested.emit(model_name.strip())
+                        return True
+        return super().eventFilter(watched, event)
 
 
 def set_windows_app_id() -> None:
@@ -363,6 +434,28 @@ class CustomModelsWorkspaceWidget(QWidget):
     def _refresh_model_output_label(self) -> None:
         self.model_output_label.setText(f"Generated Model Name: {self.model_name_edit.text().strip() or '(pending)'}")
 
+    def _resolve_spec_output_path(
+        self,
+        model_name: str,
+        *,
+        selected_path: Path | str | None = None,
+        prefer_current: bool = False,
+    ) -> tuple[Path, str | None]:
+        if selected_path is not None:
+            target = custom_model_generator.canonicalize_spec_path_for_model_name(model_name, selected_path)
+            try:
+                requested = Path(selected_path).expanduser().resolve()
+            except Exception:
+                requested = Path(selected_path)
+            note = None if target == requested else f"Spec filename was aligned to model name '{model_name}'."
+            return target, note
+        if prefer_current and self._spec_path is not None and custom_model_generator.spec_path_matches_model_name(self._spec_path, model_name):
+            return self._spec_path.expanduser().resolve(), None
+        target = custom_model_generator.default_spec_path_for_model_name(model_name).resolve()
+        if prefer_current and self._spec_path is not None:
+            return target, "Model name changed, so the spec was redirected to a matching file."
+        return target, None
+
     def _on_unfreeze_profile_changed(self, profile: str) -> None:
         if self._updating_form:
             return
@@ -387,6 +480,24 @@ class CustomModelsWorkspaceWidget(QWidget):
         if self._updating_form:
             return
         self._on_method_changed(self.method_combo.currentText())
+
+    def _refresh_method_controls(self, base_model: str, method: str) -> None:
+        is_efficientnet = base_model == "efficientnet_v2_s"
+        is_dora = method == "dora"
+        show_unfreeze_profile = is_efficientnet and method in {"bn_last1", "bn_last2"}
+        allow_unfreeze_stages = is_efficientnet and method in {"bn_tuning", "dora", "manual"}
+
+        self.unfreeze_profile_combo.setEnabled(show_unfreeze_profile)
+        self.unfreeze_stages_widget.setEnabled(show_unfreeze_profile or allow_unfreeze_stages)
+        self.dora_stages_widget.setEnabled(is_dora)
+        self.dora_classifier_checkbox.setEnabled(is_dora)
+        self.dora_rank_spin.setEnabled(is_dora)
+        self.dora_alpha_spin.setEnabled(is_dora)
+        self.peft_layer_keys_edit.setEnabled(method in {"lora", "dora", "tsa"} and not is_efficientnet)
+
+    def _refresh_gradcam_placeholder(self, targets: list[str]) -> None:
+        example = ",".join(targets) if targets else "layer4"
+        self.gradcam_hint_edit.setPlaceholderText(f"Comma-separated layer names, e.g. {example}")
 
     def _on_method_changed(self, _: str) -> None:
         if self._updating_form:
@@ -423,18 +534,8 @@ class CustomModelsWorkspaceWidget(QWidget):
             self.dora_rank_spin.setValue(int(params.get("rank", 8)))
             self.dora_alpha_spin.setValue(float(params.get("alpha", 16.0)))
             self.gradcam_hint_edit.setText(",".join(preset.gradcam_target_hint))
-
-            is_efficientnet = base_model == "efficientnet_v2_s"
-            is_dora = is_efficientnet and method == "dora"
-            show_unfreeze_profile = is_efficientnet and method in {"bn_last1", "bn_last2"}
-            self.unfreeze_profile_combo.setEnabled(show_unfreeze_profile)
-            self.unfreeze_stages_widget.setEnabled(show_unfreeze_profile or (is_efficientnet and method in {"bn_tuning", "manual"}))
-
-            self.dora_stages_widget.setEnabled(is_dora)
-            self.dora_classifier_checkbox.setEnabled(is_dora)
-            self.dora_rank_spin.setEnabled(is_dora)
-            self.dora_alpha_spin.setEnabled(is_dora)
-            self.peft_layer_keys_edit.setEnabled(method in {"lora", "tsa"} and not is_efficientnet)
+            self._refresh_gradcam_placeholder(list(preset.gradcam_target_hint))
+            self._refresh_method_controls(base_model, method)
         finally:
             self._updating_form = False
 
@@ -503,10 +604,11 @@ class CustomModelsWorkspaceWidget(QWidget):
             self.dora_rank_spin.setValue(int(params.get("rank", 8)))
             self.dora_alpha_spin.setValue(float(params.get("alpha", 16.0)))
             self.gradcam_hint_edit.setText(",".join(spec.gradcam_target_hint))
+            self._refresh_gradcam_placeholder(list(spec.gradcam_target_hint))
             self._refresh_model_output_label()
+            self._refresh_method_controls(spec.base_model, spec.method_type)
         finally:
             self._updating_form = False
-        self._on_method_changed(self.method_combo.currentText())
 
     def new_spec(self) -> None:
         spec = custom_model_generator.build_preset_spec(
@@ -540,9 +642,7 @@ class CustomModelsWorkspaceWidget(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "Invalid Spec", str(exc))
             return
-        path = self._spec_path
-        if path is None:
-            path = custom_model_generator.default_spec_path_for_model_name(spec.model_name)
+        path, note = self._resolve_spec_output_path(spec.model_name, prefer_current=True)
         try:
             saved_path = custom_model_generator.save_spec_file(spec, path)
         except Exception as exc:
@@ -550,7 +650,7 @@ class CustomModelsWorkspaceWidget(QWidget):
             return
         self._spec_path = saved_path
         self.spec_path_label.setText(f"Spec File: {saved_path}")
-        self.status_label.setText("Spec saved.")
+        self.status_label.setText(note or "Spec saved.")
 
     def save_spec_as(self) -> None:
         try:
@@ -562,14 +662,15 @@ class CustomModelsWorkspaceWidget(QWidget):
         selected_path, _ = QFileDialog.getSaveFileName(self, "Save Spec As", str(default_path), "Spec JSON (*.json)")
         if not selected_path:
             return
+        target_path, note = self._resolve_spec_output_path(spec.model_name, selected_path=selected_path)
         try:
-            saved_path = custom_model_generator.save_spec_file(spec, Path(selected_path))
+            saved_path = custom_model_generator.save_spec_file(spec, target_path)
         except Exception as exc:
             QMessageBox.warning(self, "Save Spec Failed", str(exc))
             return
         self._spec_path = saved_path
         self.spec_path_label.setText(f"Spec File: {saved_path}")
-        self.status_label.setText("Spec saved as new file.")
+        self.status_label.setText(note or "Spec saved as new file.")
 
     def generate_model(self) -> None:
         try:
@@ -579,12 +680,20 @@ class CustomModelsWorkspaceWidget(QWidget):
             return
 
         model_path = custom_model_generator.MODEL_DIR / f"{spec.model_name}.py"
+        spec_path, path_note = self._resolve_spec_output_path(spec.model_name, prefer_current=True)
         overwrite = False
+        existing_outputs: list[str] = []
         if model_path.exists():
+            existing_outputs.append(str(model_path))
+        if spec_path.exists():
+            existing_outputs.append(str(spec_path))
+        if existing_outputs:
             answer = QMessageBox.question(
                 self,
-                "Regenerate Existing Model",
-                f"Model file already exists:\n{model_path}\n\nRegenerate and overwrite it?",
+                "Regenerate Existing Outputs",
+                "The following output files already exist:\n"
+                + "\n".join(existing_outputs)
+                + "\n\nRegenerate and overwrite them?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -594,14 +703,14 @@ class CustomModelsWorkspaceWidget(QWidget):
 
         try:
             artifacts = custom_model_generator.generate_custom_model(spec, overwrite=overwrite)
-            saved_path = custom_model_generator.save_spec_file(spec, self._spec_path)
+            saved_path = custom_model_generator.save_spec_file(spec, spec_path)
         except Exception as exc:
             QMessageBox.critical(self, "Generate Model Failed", str(exc))
             return
 
         self._spec_path = saved_path
         self.spec_path_label.setText(f"Spec File: {saved_path}")
-        self.status_label.setText("Model generated successfully.")
+        self.status_label.setText(path_note or "Model generated successfully.")
 
         parent = self.parent()
         if isinstance(parent, TrainingLauncher):
@@ -1341,10 +1450,11 @@ class TrainingLauncher(QMainWindow):
         self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
 
     def _init_training_controls(self) -> None:
-        self.model_combo = QComboBox()
+        self.model_combo = DeletableComboBox()
         self._set_training_model_combo_items(self.available_models)
         self.model_combo.setToolTip("Choose which model architecture to train.")
         self.model_combo.setMinimumHeight(34)
+        self.model_combo.deleteRequested.connect(self.delete_training_model)
         self.training_model_variant_label = QLabel("Generated models are preferred. Legacy models remain available as fallback.")
         self.training_model_variant_label.setWordWrap(True)
         self.training_model_variant_label.setProperty("muted", True)
@@ -2092,6 +2202,10 @@ class TrainingLauncher(QMainWindow):
         self.training_log_refresh_button.clicked.connect(self.refresh_training_log_runs)
         self.training_log_refresh_button.setFixedWidth(84)
 
+        self.training_log_delete_button = QPushButton("Delete")
+        self.training_log_delete_button.clicked.connect(self.delete_selected_log)
+        self.training_log_delete_button.setFixedWidth(84)
+
         self.logs_export_include_paths_checkbox = QCheckBox("Include path setup")
         self.logs_export_include_paths_checkbox.setChecked(True)
 
@@ -2494,9 +2608,10 @@ class TrainingLauncher(QMainWindow):
         logs_available_actions.setVerticalSpacing(8)
         logs_available_actions.addWidget(self.training_log_add_button, 0, 0)
         logs_available_actions.addWidget(self.training_log_refresh_button, 0, 1)
-        logs_available_actions.addWidget(self.logs_export_button, 0, 2)
-        logs_available_actions.addWidget(self.logs_export_include_paths_checkbox, 1, 0, 1, 3)
-        logs_available_actions.setColumnStretch(3, 1)
+        logs_available_actions.addWidget(self.training_log_delete_button, 0, 2)
+        logs_available_actions.addWidget(self.logs_export_button, 0, 3)
+        logs_available_actions.addWidget(self.logs_export_include_paths_checkbox, 1, 0, 1, 4)
+        logs_available_actions.setColumnStretch(4, 1)
         logs_available_layout.addLayout(logs_available_actions)
         logs_left_layout.addWidget(logs_available_group, stretch=3)
 
@@ -3445,6 +3560,181 @@ class TrainingLauncher(QMainWindow):
         if text.endswith(" [legacy]"):
             text = text[:-9]
         return text
+
+    @staticmethod
+    def _sanitize_trash_name(value: str) -> str:
+        cleaned = "".join(char if char.isalnum() or char in {"_", "-", "."} else "_" for char in str(value).strip())
+        return cleaned.strip("._") or "item"
+
+    def _trash_bundle_dir(self, category: str, item_name: str) -> Path:
+        root = LOG_TRASH_DIR if category == "logs" else MODEL_TRASH_DIR
+        root.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        return root / f"{stamp}_{uuid.uuid4().hex[:8]}_{self._sanitize_trash_name(item_name)}"
+
+    def _prune_trash(self, category: str, limit: int) -> None:
+        root = LOG_TRASH_DIR if category == "logs" else MODEL_TRASH_DIR
+        if not root.is_dir():
+            return
+        entries = sorted(root.iterdir(), key=lambda path: path.stat().st_mtime if path.exists() else 0.0, reverse=True)
+        for stale in entries[limit:]:
+            try:
+                if stale.is_dir():
+                    shutil.rmtree(stale)
+                elif stale.exists():
+                    stale.unlink()
+            except Exception:
+                continue
+
+    def _move_paths_to_trash(self, *, category: str, item_name: str, paths: list[Path], limit: int) -> Path | None:
+        existing_paths = [path.expanduser().resolve(strict=False) for path in paths if path is not None and path.exists()]
+        if not existing_paths:
+            return None
+        bundle_dir = self._trash_bundle_dir(category, item_name)
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        manifest_items: list[dict[str, str]] = []
+        for source in existing_paths:
+            destination = bundle_dir / source.name
+            if destination.exists():
+                destination = bundle_dir / f"{uuid.uuid4().hex[:6]}_{source.name}"
+            shutil.move(str(source), str(destination))
+            manifest_items.append({"original_path": str(source), "trash_path": str(destination)})
+        manifest_path = bundle_dir / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "category": category,
+                    "item_name": item_name,
+                    "deleted_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "items": manifest_items,
+                },
+                indent=2,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        self._prune_trash(category, limit)
+        return bundle_dir
+
+    def _clear_model_registry_caches(self) -> None:
+        for attr_name in ("model_metadata", "_load_legacy_migration_pairs"):
+            attr = getattr(model_registry_module, attr_name, None)
+            if hasattr(attr, "cache_clear"):
+                try:
+                    attr.cache_clear()
+                except Exception:
+                    pass
+
+    def _model_paths_for_deletion(self, model_name: str) -> list[Path]:
+        metadata = model_registry_module.model_metadata(model_name)
+        candidates: list[Path] = [runtime_paths.model_dir() / f"{model_name}.py", DEFAULT_CHECKPOINT_DIR / model_name]
+        direct_spec = runtime_paths.model_specs_dir() / f"{model_name}.json"
+        candidates.append(direct_spec)
+        raw_spec_file = metadata.get("source_spec_file") or metadata.get("spec_file") if isinstance(metadata, dict) else None
+        if isinstance(raw_spec_file, str) and raw_spec_file.strip():
+            spec_path = Path(raw_spec_file.strip()).expanduser()
+            if not spec_path.is_absolute():
+                spec_path = PROJECT_ROOT / spec_path
+            candidates.append(spec_path.resolve(strict=False))
+        deduped: list[Path] = []
+        seen: set[str] = set()
+        for path in candidates:
+            normalized = str(path.resolve(strict=False)).lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(path)
+        return deduped
+
+    def delete_training_model(self, model_name: str) -> None:
+        normalized_name = str(model_name).strip()
+        if not normalized_name:
+            return
+        if len(self.available_models) <= 1:
+            QMessageBox.warning(self, "Delete Model", "At least one model must remain available.")
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Delete Model",
+            f"Move model '{normalized_name}' to the recycle folder?\n\n"
+            "This will move the model file, matching spec, and checkpoint directory into .trash/models.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        try:
+            bundle = self._move_paths_to_trash(
+                category="models",
+                item_name=normalized_name,
+                paths=self._model_paths_for_deletion(normalized_name),
+                limit=MODEL_TRASH_LIMIT,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Delete Model Failed", str(exc))
+            return
+        if bundle is None:
+            QMessageBox.information(self, "Delete Model", f"No files were found for model '{normalized_name}'.")
+            return
+        self._clear_model_registry_caches()
+        self.refresh_available_models()
+        self.refresh_checkpoint_output_options()
+        self.refresh_predict_checkpoint_selector()
+        self.refresh_training_log_runs()
+        self.training_log_status_label.setText(f"Model '{normalized_name}' moved to {bundle}.")
+
+    def current_log_for_deletion(self) -> dict | None:
+        available_item = self.training_log_available_list.currentItem()
+        selected_item = self.training_log_selected_list.currentItem()
+        available_has_focus = self.training_log_available_list.hasFocus()
+        selected_has_focus = self.training_log_selected_list.hasFocus()
+        if available_has_focus and available_item is not None:
+            return self.current_available_run()
+        if selected_has_focus and selected_item is not None:
+            return self.current_selected_compare_run()
+        if available_item is not None:
+            return self.current_available_run()
+        if selected_item is not None:
+            return self.current_selected_compare_run()
+        return None
+
+    def delete_selected_log(self) -> None:
+        run = self.current_log_for_deletion()
+        if run is None:
+            QMessageBox.information(self, "Delete Log", "Select a run log first.")
+            return
+        log_path_text = str(run.get("_log_path", "")).strip()
+        if not log_path_text:
+            QMessageBox.warning(self, "Delete Log", "This run does not have a source log file path.")
+            return
+        log_path = Path(log_path_text).expanduser()
+        if not log_path.exists():
+            QMessageBox.warning(self, "Delete Log", f"Log file not found:\n{log_path}")
+            return
+        display_name = self.run_display_name(run)
+        confirm = QMessageBox.question(
+            self,
+            "Delete Log",
+            f"Move this log to the recycle folder?\n\n{display_name}\n{log_path}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        try:
+            bundle = self._move_paths_to_trash(
+                category="logs",
+                item_name=display_name,
+                paths=[log_path],
+                limit=LOG_TRASH_LIMIT,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Delete Log Failed", str(exc))
+            return
+        self.refresh_training_log_runs()
+        if bundle is not None:
+            self.training_log_status_label.setText(f"Log moved to {bundle}.")
 
     def update_training_model_source_label(self, model_name: str | None = None) -> None:
         selected = model_name if isinstance(model_name, str) and model_name.strip() else self.current_training_model_name()
