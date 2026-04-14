@@ -91,13 +91,33 @@ def render_gradcam_overlay_image_with_diagnostics(
     import torch
     from PIL import Image
 
+    from core.model_registry import load_model_module
     from pipeline.predicting import build_transform, load_model
 
     resolved_device = device if device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
     model, _ = load_model(checkpoint_path.expanduser().resolve(), model_name, resolved_device)
     model.eval()
     image = Image.open(image_path).convert("RGB")
-    target_candidates = list(iter_gradcam_target_candidates(model, model_name))
+    target_hints: list[str] = []
+    try:
+        model_module = load_model_module(model_name)
+        if hasattr(model_module, "get_default_gradcam_targets"):
+            hinted = model_module.get_default_gradcam_targets()
+            if isinstance(hinted, list):
+                target_hints.extend(str(item).strip() for item in hinted if str(item).strip())
+        if hasattr(model_module, "get_model_metadata"):
+            metadata = model_module.get_model_metadata()
+            if isinstance(metadata, dict):
+                raw_hint = metadata.get("gradcam_target_hint")
+                if isinstance(raw_hint, list):
+                    target_hints.extend(str(item).strip() for item in raw_hint if str(item).strip())
+                elif isinstance(raw_hint, str) and raw_hint.strip():
+                    target_hints.extend(part.strip() for part in raw_hint.split(",") if part.strip())
+    except Exception:
+        # Keep fallback candidate discovery resilient even when metadata loading fails.
+        pass
+
+    target_candidates = list(iter_gradcam_target_candidates(model, model_name, target_hints=target_hints))
     if not target_candidates:
         return image, "No conv layer found"
 
@@ -105,12 +125,13 @@ def render_gradcam_overlay_image_with_diagnostics(
     tensor = transform(image).unsqueeze(0).to(resolved_device)
 
     last_reason = "No gradients captured"
-    for _candidate_name, target_layer in target_candidates:
+    for candidate_name, target_layer in target_candidates:
         overlay_image, diagnostic_reason = try_render_gradcam_for_target_layer(
             model=model,
             tensor=tensor,
             image=image,
             target_layer=target_layer,
+            candidate_name=candidate_name,
         )
         if diagnostic_reason is None:
             return overlay_image, None
@@ -119,34 +140,41 @@ def render_gradcam_overlay_image_with_diagnostics(
     return image, last_reason
 
 
-def try_render_gradcam_for_target_layer(*, model, tensor, image, target_layer):
+def try_render_gradcam_for_target_layer(*, model, tensor, image, target_layer, candidate_name: str = ""):
+    import torch
+
     activations = {}
     gradients = {}
+    tensor_grad_handles = []
 
     def forward_hook(module, inputs, output):
         tensor_value = first_tensor_from_output(output)
-        if tensor_value is not None:
-            activations["value"] = tensor_value.detach()
-
-    def backward_hook(module, grad_input, grad_output):
-        tensor_value = first_tensor_from_output(grad_output)
-        if tensor_value is not None:
-            gradients["value"] = tensor_value.detach()
+        if tensor_value is None or tensor_value.ndim != 4:
+            return
+        activations["value"] = tensor_value
+        if tensor_value.requires_grad:
+            tensor_grad_handles.append(
+                tensor_value.register_hook(lambda grad: gradients.__setitem__("value", grad.detach()))
+            )
 
     forward_handle = target_layer.register_forward_hook(forward_hook)
-    backward_handle = target_layer.register_full_backward_hook(backward_hook)
     try:
-        output = model(tensor)
-        pred_index = int(output.argmax(dim=1).item())
-        model.zero_grad(set_to_none=True)
-        output[:, pred_index].sum().backward()
+        with torch.enable_grad():
+            model.zero_grad(set_to_none=True)
+            input_tensor = tensor.detach().clone().requires_grad_(True)
+            output = model(input_tensor)
+            if not isinstance(output, torch.Tensor) or output.ndim < 2:
+                return image, f"Unsupported model output for Grad-CAM ({candidate_name or 'unknown layer'})"
+            pred_index = int(output.argmax(dim=1).item())
+            output[:, pred_index].sum().backward()
         if "value" not in activations or "value" not in gradients:
-            return image, "No gradients captured"
-        heatmap = build_heatmap(activations["value"], gradients["value"])
+            return image, f"No gradients captured ({candidate_name or 'candidate'})"
+        heatmap = build_heatmap(activations["value"].detach(), gradients["value"])
         return overlay_heatmap_on_image(image, heatmap), None
     finally:
         forward_handle.remove()
-        backward_handle.remove()
+        for handle in tensor_grad_handles:
+            handle.remove()
 
 
 def first_tensor_from_output(output):
@@ -162,7 +190,7 @@ def first_tensor_from_output(output):
     return None
 
 
-def iter_gradcam_target_candidates(model, model_name: str | None = None):
+def iter_gradcam_target_candidates(model, model_name: str | None = None, target_hints: list[str] | None = None):
     import torch.nn as nn
 
     seen: set[int] = set()
@@ -175,6 +203,17 @@ def iter_gradcam_target_candidates(model, model_name: str | None = None):
             return
         seen.add(module_id)
         yield module
+
+    hint_list = target_hints if isinstance(target_hints, list) else []
+    for hint in hint_list:
+        target = module_from_path(model, hint)
+        if target is None:
+            continue
+        conv_target = find_last_conv_layer(target) if not isinstance(target, nn.Conv2d) else target
+        if conv_target is None:
+            continue
+        for module in add_candidate(conv_target):
+            yield (f"hint:{hint}", module)
 
     if hasattr(model, "features") and isinstance(getattr(model, "features"), nn.Module):
         features = getattr(model, "features")
@@ -232,6 +271,37 @@ def find_last_conv_layer(model):
         if isinstance(module, nn.Conv2d):
             return module
     return None
+
+
+def module_from_path(model, path_text: str):
+    import torch.nn as nn
+
+    path = str(path_text or "").strip()
+    if not path:
+        return None
+    named = dict(model.named_modules())
+    if path in named and isinstance(named[path], nn.Module):
+        return named[path]
+
+    current = model
+    for part in path.split("."):
+        token = part.strip()
+        if not token:
+            return None
+        if token.isdigit():
+            index = int(token)
+            if isinstance(current, (nn.Sequential, nn.ModuleList)):
+                if index < 0 or index >= len(current):
+                    return None
+                current = current[index]
+                continue
+            return None
+        if hasattr(current, token):
+            current = getattr(current, token)
+            continue
+        return None
+
+    return current if isinstance(current, nn.Module) else None
 
 
 def build_heatmap(activations, gradients) -> np.ndarray:

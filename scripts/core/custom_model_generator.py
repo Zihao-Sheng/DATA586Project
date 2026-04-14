@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +105,10 @@ class CustomModelSpec:
     peft_params: dict[str, Any]
     stage_lr_overrides: dict[str, float]
     gradcam_target_hint: list[str]
+    node_lr_overrides: dict[str, float] = field(default_factory=dict)
+    hierarchy_mode: str = "stage"
+    node_settings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    node_hierarchy: dict[str, dict[str, Any]] = field(default_factory=dict)
     pretrained: bool = True
     metadata_version: str = SPEC_VERSION
     generator_version: str = GENERATOR_VERSION
@@ -527,6 +531,48 @@ def spec_from_dict(payload: dict[str, Any]) -> CustomModelSpec:
     elif raw_stage_lr_overrides not in (None, ""):
         raise ValueError("stage_lr_overrides must be a dict mapping stage key to learning-rate float.")
 
+    raw_node_lr_overrides = payload.get("node_lr_overrides", {})
+    node_lr_overrides: dict[str, float] = {}
+    if isinstance(raw_node_lr_overrides, dict):
+        for raw_key, raw_value in raw_node_lr_overrides.items():
+            key = str(raw_key).strip()
+            if not key:
+                continue
+            try:
+                value = float(raw_value)
+            except Exception as exc:
+                raise ValueError(f"Invalid node_lr_overrides value for '{key}': expected float.") from exc
+            if value <= 0:
+                raise ValueError(f"node_lr_overrides['{key}'] must be > 0.")
+            node_lr_overrides[key] = value
+    elif raw_node_lr_overrides not in (None, ""):
+        raise ValueError("node_lr_overrides must be a dict mapping node key to learning-rate float.")
+
+    raw_hierarchy_mode = payload.get("hierarchy_mode", "stage")
+    hierarchy_mode = str(raw_hierarchy_mode).strip().lower() or "stage"
+    if hierarchy_mode not in {"stage", "substage", "block"}:
+        hierarchy_mode = "stage"
+    if hierarchy_mode == "block":
+        hierarchy_mode = "substage"
+
+    raw_node_settings = payload.get("node_settings", {})
+    node_settings: dict[str, dict[str, Any]] = {}
+    if isinstance(raw_node_settings, dict):
+        for raw_key, raw_value in raw_node_settings.items():
+            key = str(raw_key).strip()
+            if not key or not isinstance(raw_value, dict):
+                continue
+            node_settings[key] = dict(raw_value)
+
+    raw_node_hierarchy = payload.get("node_hierarchy", {})
+    node_hierarchy: dict[str, dict[str, Any]] = {}
+    if isinstance(raw_node_hierarchy, dict):
+        for raw_key, raw_value in raw_node_hierarchy.items():
+            key = str(raw_key).strip()
+            if not key or not isinstance(raw_value, dict):
+                continue
+            node_hierarchy[key] = dict(raw_value)
+
     if method_type == "dora":
         if base_model == "efficientnet_v2_s":
             if not feature_stages and not classifier_target:
@@ -558,6 +604,10 @@ def spec_from_dict(payload: dict[str, Any]) -> CustomModelSpec:
         peft_targets=peft_targets,
         peft_params=peft_params,
         stage_lr_overrides=stage_lr_overrides,
+        node_lr_overrides=node_lr_overrides,
+        hierarchy_mode=hierarchy_mode,
+        node_settings=node_settings,
+        node_hierarchy=node_hierarchy,
         gradcam_target_hint=gradcam_target_hint,
         pretrained=pretrained,
         metadata_version=metadata_version,
@@ -631,6 +681,10 @@ from torch import nn
 from model._transfer_strategies import (
     build_optimizer as _build_optimizer,
     build_model_from_spec as _build_model_from_spec,
+    get_classifier_info as _get_classifier_info,
+    get_feature_dim as _get_feature_dim,
+    get_head_module_path as _get_head_module_path,
+    replace_classifier_head as _replace_classifier_head,
 )
 
 
@@ -656,7 +710,30 @@ def build_optimizer(model: nn.Module, lr: float = 1e-3) -> torch.optim.Optimizer
         lr=lr,
         base_model=str(GENERATED_SPEC.get("base_model", "")),
         stage_lr_overrides=GENERATED_SPEC.get("stage_lr_overrides", {{}}),
+        node_lr_overrides=GENERATED_SPEC.get("node_lr_overrides", {{}}),
     )
+
+
+def get_head_module_path(model: nn.Module | None = None) -> str:
+    target_model = model if model is not None else build_model(num_classes=101, device="cpu")
+    return _get_head_module_path(target_model, base_model=str(GENERATED_SPEC.get("base_model", "")))
+
+
+def get_feature_dim(model: nn.Module | None = None) -> int:
+    target_model = model if model is not None else build_model(num_classes=101, device="cpu")
+    return int(_get_feature_dim(target_model, base_model=str(GENERATED_SPEC.get("base_model", ""))))
+
+
+def get_classifier_info(model: nn.Module | None = None) -> dict[str, object]:
+    target_model = model if model is not None else build_model(num_classes=101, device="cpu")
+    payload = _get_classifier_info(target_model, base_model=str(GENERATED_SPEC.get("base_model", "")))
+    payload.setdefault("source", "generated_spec")
+    payload.setdefault("model_name", str(GENERATED_SPEC.get("model_name", "")))
+    return payload
+
+
+def replace_classifier_head(model: nn.Module, num_classes: int) -> nn.Module:
+    return _replace_classifier_head(model, num_classes=int(num_classes), base_model=str(GENERATED_SPEC.get("base_model", "")))
 
 
 def get_model_metadata() -> dict[str, object]:
@@ -683,6 +760,7 @@ def get_capabilities() -> dict[str, bool]:
         "supports_ssf": method_type == "ssf",
         "supports_bn_tuning": method_type in {{"bn_tuning", "bn_last1", "bn_last2"}},
         "supports_norm_tuning": method_type == "norm_tuning",
+        "supports_classifier_head_adaptation": True,
     }}
 
 

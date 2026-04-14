@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Callable
 
 from PySide6.QtCore import QMimeData, Qt
@@ -66,9 +67,13 @@ class CanvasStageNode(QFrame):
         title: str,
         *,
         editable: bool,
+        indent_level: int,
+        has_children: bool,
+        expanded: bool,
         allowed_strategies: set[str],
         on_selected: Callable[[str], None],
         on_strategy_applied: Callable[[str, str], None],
+        on_toggle_expand: Callable[[str], None],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -77,7 +82,10 @@ class CanvasStageNode(QFrame):
         self.allowed_strategies = allowed_strategies
         self._on_selected = on_selected
         self._on_strategy_applied = on_strategy_applied
+        self._on_toggle_expand = on_toggle_expand
         self._selected = False
+        self._has_children = bool(has_children)
+        self._expanded = bool(expanded)
         self.setAcceptDrops(editable)
         self.setFrameShape(QFrame.StyledPanel)
         self.setObjectName("CanvasStageNode")
@@ -87,13 +95,25 @@ class CanvasStageNode(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(4)
-        self.title_label = QLabel(title)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(max(0, indent_level * 18), 0, 0, 0)
+        title_row.setSpacing(6)
+        self.title_label = QLabel("")
         self.title_label.setProperty("sectionTitle", True)
+        title_row.addWidget(self.title_label, 1)
         self.state_label = QLabel("")
         self.state_label.setProperty("muted", True)
-        layout.addWidget(self.title_label)
+        layout.addLayout(title_row)
         layout.addWidget(self.state_label)
+        self._set_title_text(title)
         self._refresh_style()
+
+    def _set_title_text(self, title: str) -> None:
+        if self._has_children:
+            prefix = "v" if self._expanded else ">"
+            self.title_label.setText(f"{prefix} {title}")
+        else:
+            self.title_label.setText(title)
 
     def set_selected(self, selected: bool) -> None:
         self._selected = selected
@@ -111,6 +131,9 @@ class CanvasStageNode(QFrame):
         self.update()
 
     def mousePressEvent(self, event) -> None:
+        if self._has_children and event.position().x() <= 28:
+            self._on_toggle_expand(self.stage_key)
+            return
         self._on_selected(self.stage_key)
         super().mousePressEvent(event)
 
@@ -193,6 +216,14 @@ class CustomModelCanvasWidget(QWidget):
             ("output", "Output"),
         ],
     }
+    SUBSTAGE_LAYOUTS: dict[str, dict[str, int]] = {
+        "resnet18": {"layer1": 2, "layer2": 2, "layer3": 2, "layer4": 2},
+        "resnet50": {"layer1": 3, "layer2": 4, "layer3": 6, "layer4": 3},
+        "efficientnet_v2_s": {"features.1": 2, "features.2": 2, "features.3": 3, "features.4": 3, "features.5": 4, "features.6": 2},
+        "convnext_tiny": {"stage1": 2, "stage2": 2, "stage3": 3, "stage4": 2},
+        "mobilenet_v3_large": {"stage1": 2, "stage2": 2, "stage3": 2, "stage4": 3},
+        "densenet121": {"denseblock1": 2, "denseblock2": 3, "denseblock3": 4, "denseblock4": 3},
+    }
     STAGE_STATIC_INFO: dict[str, dict[str, dict[str, str]]] = {
         "efficientnet_v2_s": {
             "stem": {"module": "Conv+BN+SiLU", "repeat": "1", "kernel": "3", "stride": "2", "channels": "3 -> 24"},
@@ -247,6 +278,20 @@ class CustomModelCanvasWidget(QWidget):
             "classifier": {"module": "GlobalAvgPool + Linear", "repeat": "1", "kernel": "-", "stride": "-", "channels": "1024 -> num_classes"},
         },
     }
+    _INHERIT_FIELDS = (
+        "frozen",
+        "train_bn",
+        "train_norm",
+        "stage_method",
+        "rank",
+        "alpha",
+        "adapter_dim",
+        "bitfit_scope",
+        "ssf_scale",
+        "ssf_shift",
+        "lr_override_enabled",
+        "lr_override",
+    )
 
     def __init__(self, on_model_generated: Callable[[str], None] | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -259,6 +304,10 @@ class CustomModelCanvasWidget(QWidget):
         self._selected_stage = "classifier"
         self._base_model = "efficientnet_v2_s"
         self._flow_nodes: list[tuple[str, str]] = []
+        self._node_parent: dict[str, str | None] = {}
+        self._stage_children: dict[str, list[str]] = {}
+        self._node_static_meta: dict[str, dict[str, object]] = {}
+        self._expanded_stages: set[str] = set()
         self._stage_strategy_overrides: dict[str, set[str]] = {}
         self._introspection_payload: dict[str, object] | None = None
         self._global_mode = "Manual"
@@ -301,6 +350,10 @@ class CustomModelCanvasWidget(QWidget):
         self.stage_bitfit_scope_label = QLabel("BitFit Scope")
         self.stage_ssf_scale_label = QLabel("SSF Init Scale")
         self.stage_ssf_shift_label = QLabel("SSF Init Shift")
+        self.stage_hierarchy_info_label = QLabel("Sub-stage Info")
+        self.stage_hierarchy_info_value = QLabel("-")
+        self.stage_hierarchy_info_value.setWordWrap(True)
+        self.stage_hierarchy_info_value.setProperty("muted", True)
         self.stage_static_info_label = QLabel("Layer Static Info")
         self.stage_static_info_value = QLabel("-")
         self.stage_static_info_value.setWordWrap(True)
@@ -385,6 +438,7 @@ class CustomModelCanvasWidget(QWidget):
 
         detail_group = QGroupBox("Stage Details")
         detail_form = QFormLayout(detail_group)
+        detail_form.setVerticalSpacing(8)
         self.stage_title = QLabel("-")
         self.stage_ops_label = QLabel("-")
         self.stage_ops_label.setProperty("muted", True)
@@ -402,14 +456,21 @@ class CustomModelCanvasWidget(QWidget):
         detail_form.addRow(self.stage_ssf_shift_label, self.stage_ssf_shift)
         detail_form.addRow("", self.stage_use_custom_lr)
         detail_form.addRow("Custom LR", self.stage_custom_lr)
+        detail_form.addRow(self.stage_hierarchy_info_label, self.stage_hierarchy_info_value)
         detail_form.addRow(self.stage_static_info_label, self.stage_static_info_value)
         detail_form.addRow("Grad-CAM", self.gradcam_edit)
         detail_form.addRow("Method", self.method_preview)
 
+        detail_scroll = QScrollArea()
+        detail_scroll.setWidgetResizable(True)
+        detail_scroll.setWidget(detail_group)
+        detail_scroll.setFrameShape(QScrollArea.NoFrame)
+        detail_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(left_panel)
-        splitter.addWidget(detail_group)
-        splitter.setSizes([760, 330])
+        splitter.addWidget(detail_scroll)
+        splitter.setSizes([700, 500])
 
         workflow_row = QHBoxLayout()
         workflow_row.setContentsMargins(0, 0, 0, 0)
@@ -577,16 +638,182 @@ class CustomModelCanvasWidget(QWidget):
         }
         return mapping.get(label)
 
+    def _default_stage_state(self, stage_key: str) -> dict[str, object]:
+        return {
+            "frozen": True,
+            "train_bn": False,
+            "train_norm": False,
+            "stage_method": "none",
+            "rank": 8,
+            "alpha": 16.0,
+            "adapter_dim": 32,
+            "bitfit_scope": "all_bias",
+            "ssf_scale": 1.0,
+            "ssf_shift": 0.0,
+            "lr_override_enabled": False,
+            "lr_override": 1e-3,
+            "inherit_from_parent": bool(self._node_parent.get(stage_key)),
+        }
+
+    def _capture_node_payload(self, stage_key: str) -> dict[str, object]:
+        stage_state = self.state.get(stage_key, {})
+        static_meta = self._node_static_meta_for(stage_key)
+        return {
+            "frozen": bool(stage_state.get("frozen", True)),
+            "train_bn": bool(stage_state.get("train_bn", False)),
+            "train_norm": bool(stage_state.get("train_norm", False)),
+            "stage_method": str(stage_state.get("stage_method", "none")).strip().lower() or "none",
+            "rank": int(stage_state.get("rank", 8)),
+            "alpha": float(stage_state.get("alpha", 16.0)),
+            "adapter_dim": int(stage_state.get("adapter_dim", 32)),
+            "bitfit_scope": str(stage_state.get("bitfit_scope", "all_bias")),
+            "ssf_scale": float(stage_state.get("ssf_scale", 1.0)),
+            "ssf_shift": float(stage_state.get("ssf_shift", 0.0)),
+            "lr_override_enabled": bool(stage_state.get("lr_override_enabled", False)),
+            "lr_override": float(stage_state.get("lr_override", 1e-3)),
+            "parent_stage": self._node_parent.get(stage_key),
+            "inherit_from_parent": bool(stage_state.get("inherit_from_parent", False)),
+            "hierarchy_depth": int(static_meta.get("hierarchy_depth", 0)),
+            "node_kind": str(static_meta.get("node_kind", "stage")),
+            "source_module": str(static_meta.get("source_module", stage_key)),
+            "static_group_label": str(static_meta.get("static_group_label", "")),
+            "structure_mapping": str(static_meta.get("structure_mapping", "grouped_abstraction")),
+            "structure_source": str(static_meta.get("structure_source", self._structure_source)),
+            "family": str(static_meta.get("family", self._base_model)),
+            "inherited_from": static_meta.get("inherited_from"),
+        }
+
+    def _node_structure_mapping(self, base_model: str) -> str:
+        if base_model in {"resnet18", "resnet50"}:
+            return "explicit_structural_unit"
+        return "grouped_abstraction"
+
+    def _node_static_meta_for(self, stage_key: str) -> dict[str, object]:
+        base = str(self._base_model).strip().lower()
+        parent_key = self._node_parent.get(stage_key)
+        is_substage = isinstance(parent_key, str) and bool(parent_key)
+        mapping = self._node_structure_mapping(base)
+        meta = self._node_static_meta.get(stage_key)
+        if isinstance(meta, dict):
+            merged = dict(meta)
+            merged.setdefault("node_kind", "substage" if is_substage else "stage")
+            merged.setdefault("parent_key", parent_key if is_substage else None)
+            merged.setdefault("hierarchy_depth", 1 if is_substage else 0)
+            merged.setdefault("family", base)
+            merged.setdefault("source_module", stage_key)
+            merged.setdefault("static_group_label", "sub-stage group" if is_substage else "stage")
+            merged.setdefault("structure_mapping", mapping)
+            merged.setdefault("structure_source", self._structure_source)
+            merged.setdefault("inherited_from", parent_key if is_substage else None)
+            return merged
+        return {
+            "key": stage_key,
+            "title": stage_key,
+            "node_kind": "substage" if is_substage else "stage",
+            "parent_key": parent_key if is_substage else None,
+            "hierarchy_depth": 1 if is_substage else 0,
+            "family": base,
+            "source_module": stage_key,
+            "static_group_label": "sub-stage group" if is_substage else "stage",
+            "structure_mapping": mapping,
+            "structure_source": self._structure_source,
+            "inherited_from": parent_key if is_substage else None,
+        }
+
     def _configure_default_flow_for_base(self, base_model: str) -> None:
         self._flow_nodes = list(self.FLOWS[base_model])
+        self._node_parent = {key: None for key, _ in self._flow_nodes}
+        self._stage_children = {}
+        self._node_static_meta = {}
+        self._expanded_stages = set()
+        base = str(base_model).strip().lower()
+        structure_mapping = self._node_structure_mapping(base)
+
+        for key, title in self._flow_nodes:
+            if key in {"input", "output"}:
+                continue
+            self._node_static_meta[key] = {
+                "key": key,
+                "title": title,
+                "hierarchy_depth": 0,
+                "node_kind": "stage",
+                "parent_key": None,
+                "family": base,
+                "source_module": key,
+                "static_group_label": "stage",
+                "structure_source": "explicit",
+                "structure_mapping": structure_mapping,
+                "inherited_from": None,
+            }
+
+        substage_layout = self.SUBSTAGE_LAYOUTS.get(base_model, {})
+        if substage_layout:
+            expanded_flow: list[tuple[str, str]] = []
+            for key, title in self._flow_nodes:
+                expanded_flow.append((key, title))
+                sub_count = int(substage_layout.get(key, 0))
+                if sub_count <= 0:
+                    continue
+                child_keys: list[str] = []
+                for idx in range(sub_count):
+                    child_key = f"{key}.sub{idx + 1}"
+                    child_title = f"Sub-stage {idx + 1}"
+                    expanded_flow.append((child_key, child_title))
+                    self._node_parent[child_key] = key
+                    child_keys.append(child_key)
+                    self._node_static_meta[child_key] = {
+                        "key": child_key,
+                        "title": child_title,
+                        "hierarchy_depth": 1,
+                        "node_kind": "substage",
+                        "parent_key": key,
+                        "family": base,
+                        "source_module": child_key,
+                        "static_group_label": f"{title} group",
+                        "structure_source": "explicit",
+                        "structure_mapping": structure_mapping,
+                        "inherited_from": key,
+                    }
+                self._stage_children[key] = child_keys
+            self._flow_nodes = expanded_flow
         if base_model == "efficientnet_v2_s":
-            self.editable_stages = {"stem", *[f"features.{i}" for i in range(8)], "classifier"}
+            self.editable_stages = {
+                "stem",
+                *[f"features.{i}" for i in range(8)],
+                "classifier",
+                *[f"{stage}.sub{i}" for stage, cnt in substage_layout.items() for i in range(1, int(cnt) + 1)],
+            }
         elif base_model in {"resnet18", "resnet50"}:
-            self.editable_stages = {"stem", "layer1", "layer2", "layer3", "layer4", "classifier"}
+            self.editable_stages = {
+                "stem",
+                "layer1",
+                "layer2",
+                "layer3",
+                "layer4",
+                "classifier",
+                *[f"{stage}.sub{i}" for stage, cnt in substage_layout.items() for i in range(1, int(cnt) + 1)],
+            }
+            self._expanded_stages = set()
         elif base_model in {"convnext_tiny", "mobilenet_v3_large"}:
-            self.editable_stages = {"stem", "stage1", "stage2", "stage3", "stage4", "classifier"}
+            self.editable_stages = {
+                "stem",
+                "stage1",
+                "stage2",
+                "stage3",
+                "stage4",
+                "classifier",
+                *[f"{stage}.sub{i}" for stage, cnt in substage_layout.items() for i in range(1, int(cnt) + 1)],
+            }
         elif base_model == "densenet121":
-            self.editable_stages = {"stem", "denseblock1", "denseblock2", "denseblock3", "denseblock4", "classifier"}
+            self.editable_stages = {
+                "stem",
+                "denseblock1",
+                "denseblock2",
+                "denseblock3",
+                "denseblock4",
+                "classifier",
+                *[f"{stage}.sub{i}" for stage, cnt in substage_layout.items() for i in range(1, int(cnt) + 1)],
+            }
         else:
             self.editable_stages = {key for key, _ in self._flow_nodes if key not in {"input", "output"}}
         self._stage_strategy_overrides = {}
@@ -616,21 +843,101 @@ class CustomModelCanvasWidget(QWidget):
         if not flow_nodes:
             raise ValueError("Introspection returned no stage nodes.")
         self._flow_nodes = flow_nodes
+        self._node_parent = {key: None for key, _ in flow_nodes}
+        self._stage_children = {}
+        self._node_static_meta = {}
+        self._expanded_stages = set()
+        base = str(structure_payload.get("base_family", self._base_model)).strip().lower()
+        for key, title in flow_nodes:
+            self._node_static_meta[key] = {
+                "key": key,
+                "title": title,
+                "hierarchy_depth": 0,
+                "node_kind": "stage",
+                "parent_key": None,
+                "family": base,
+                "source_module": key,
+                "static_group_label": "introspected stage",
+                "structure_source": str(structure_payload.get("structure_source", "heuristic")).strip().lower() or "heuristic",
+                "structure_mapping": "heuristic_parsed",
+                "inherited_from": None,
+            }
         self.editable_stages = editable_stages
         self._stage_strategy_overrides = strategy_overrides
         self._introspection_payload = structure_payload
 
+    def _canonical_stage_key(self, stage_key: str) -> str:
+        parent = self._node_parent.get(stage_key)
+        return parent if isinstance(parent, str) and parent else stage_key
+
+    def _normalize_node_key_for_current_flow(self, node_key: str) -> str:
+        key = str(node_key).strip()
+        if not key:
+            return key
+        if key in self.state:
+            return key
+        match = re.match(r"^(?P<stage>.+)\.block(?P<idx>\d+)$", key)
+        if match:
+            candidate = f"{match.group('stage')}.sub{match.group('idx')}"
+            if candidate in self.state:
+                return candidate
+        match = re.match(r"^(?P<stage>.+)\.sub(?P<idx>\d+)$", key)
+        if match:
+            candidate = f"{match.group('stage')}.block{match.group('idx')}"
+            if candidate in self.state:
+                return candidate
+        return key
+
+    def _substage_group_range(self, stage_key: str, parent_repeat: int) -> tuple[int, int, int, int] | None:
+        parent_key = self._node_parent.get(stage_key)
+        if not isinstance(parent_key, str) or not parent_key:
+            return None
+        match = re.match(r"^.+\.sub(?P<idx>\d+)$", stage_key)
+        if not match:
+            return None
+        sub_idx = int(match.group("idx"))
+        group_count = len(self._stage_children.get(parent_key, []))
+        if group_count <= 0 or parent_repeat <= 0:
+            return None
+        start = int(((sub_idx - 1) * parent_repeat) // group_count) + 1
+        end = int((sub_idx * parent_repeat) // group_count)
+        end = max(end, start)
+        return sub_idx, group_count, start, end
+
+    def _sync_node_inheritance_flag(self, node_key: str) -> None:
+        parent_key = self._node_parent.get(node_key)
+        if not isinstance(parent_key, str) or not parent_key:
+            self.state[node_key]["inherit_from_parent"] = False
+            return
+        node_state = self.state.get(node_key, {})
+        parent_state = self.state.get(parent_key, {})
+        inherited = all(node_state.get(field) == parent_state.get(field) for field in self._INHERIT_FIELDS)
+        self.state[node_key]["inherit_from_parent"] = bool(inherited)
+
+    def _apply_stage_state_to_inheriting_children(self, stage_key: str) -> None:
+        stage_state = self.state.get(stage_key, {})
+        for child_key in self._stage_children.get(stage_key, []):
+            child_state = self.state.get(child_key)
+            if not isinstance(child_state, dict):
+                continue
+            if not bool(child_state.get("inherit_from_parent", True)):
+                continue
+            for field in self._INHERIT_FIELDS:
+                child_state[field] = stage_state.get(field)
+            child_state["inherit_from_parent"] = True
+
     def _allowed_strategies_for_stage(self, stage_key: str) -> set[str]:
         if stage_key not in self.editable_stages:
             return set()
+        canonical_stage = self._canonical_stage_key(stage_key)
         override = self._stage_strategy_overrides.get(stage_key)
         if isinstance(override, set):
             return set(override)
         supported_methods = self._supported_methods()
         allowed = {"Freeze", "Unfreeze"}
-        if "bn_tuning" in supported_methods and stage_key != "classifier":
+        if "bn_tuning" in supported_methods and canonical_stage != "classifier":
             allowed.add("BN Tuning")
-        if "norm_tuning" in supported_methods and stage_key != "classifier":
+        if "norm_tuning" in supported_methods and canonical_stage != "classifier":
             allowed.add("Norm Tuning")
 
         peft_targetable: set[str]
@@ -645,7 +952,7 @@ class CustomModelCanvasWidget(QWidget):
         else:
             peft_targetable = {"classifier"}
 
-        if stage_key in peft_targetable:
+        if canonical_stage in peft_targetable:
             if "lora" in supported_methods:
                 allowed.add("LoRA")
             if "tsa" in supported_methods:
@@ -658,7 +965,7 @@ class CustomModelCanvasWidget(QWidget):
                 allowed.add("BitFit")
             if "ssf" in supported_methods:
                 allowed.add("SSF")
-        elif stage_key == "classifier" and "bitfit" in supported_methods:
+        elif canonical_stage == "classifier" and "bitfit" in supported_methods:
             allowed.add("BitFit")
         return allowed
 
@@ -675,20 +982,9 @@ class CustomModelCanvasWidget(QWidget):
 
         for stage_key, _ in self._flow_nodes:
             if stage_key not in self.state:
-                self.state[stage_key] = {
-                    "frozen": True,
-                    "train_bn": False,
-                    "train_norm": False,
-                    "stage_method": "none",
-                    "rank": 8,
-                    "alpha": 16.0,
-                    "adapter_dim": 32,
-                    "bitfit_scope": "all_bias",
-                    "ssf_scale": 1.0,
-                    "ssf_shift": 0.0,
-                    "lr_override_enabled": False,
-                    "lr_override": 1e-3,
-                }
+                self.state[stage_key] = self._default_stage_state(stage_key)
+            elif "inherit_from_parent" not in self.state[stage_key]:
+                self.state[stage_key]["inherit_from_parent"] = bool(self._node_parent.get(stage_key))
         for stage in list(self.state.keys()):
             if stage not in {key for key, _ in self._flow_nodes}:
                 self.state.pop(stage, None)
@@ -698,16 +994,32 @@ class CustomModelCanvasWidget(QWidget):
 
         flow = self._flow_nodes
         for idx, (stage_key, title) in enumerate(flow):
+            parent_key = self._node_parent.get(stage_key)
+            if isinstance(parent_key, str) and parent_key and parent_key not in self._expanded_stages:
+                continue
+            has_children = stage_key in self._stage_children and len(self._stage_children[stage_key]) > 0
+            indent_level = 1 if isinstance(parent_key, str) and parent_key else 0
             node = CanvasStageNode(
                 stage_key,
                 title,
                 editable=stage_key in self.editable_stages,
+                indent_level=indent_level,
+                has_children=has_children,
+                expanded=stage_key in self._expanded_stages,
                 allowed_strategies=self._allowed_strategies_for_stage(stage_key),
                 on_selected=self._select_stage,
                 on_strategy_applied=self._apply_strategy,
+                on_toggle_expand=self._toggle_stage_expand,
             )
             self.nodes[stage_key] = node
-            self.canvas_layout.addWidget(node)
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            left_margin = 14 + indent_level * 44
+            right_margin = 8 + indent_level * 32
+            row_layout.setContentsMargins(left_margin, 0, right_margin, 0)
+            row_layout.setSpacing(0)
+            row_layout.addWidget(node)
+            self.canvas_layout.addWidget(row)
             if idx < len(flow) - 1:
                 arrow = QLabel("v")
                 arrow.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
@@ -717,6 +1029,21 @@ class CustomModelCanvasWidget(QWidget):
 
         if self._selected_stage not in self.editable_stages:
             self._selected_stage = "classifier" if "classifier" in self.editable_stages else next(iter(self.editable_stages), "")
+
+    def _toggle_stage_expand(self, stage_key: str) -> None:
+        if stage_key not in self._stage_children:
+            return
+        if stage_key in self._expanded_stages:
+            self._expanded_stages.remove(stage_key)
+            for child_key in self._stage_children.get(stage_key, []):
+                if self._selected_stage == child_key:
+                    self._selected_stage = stage_key
+        else:
+            self._expanded_stages.add(stage_key)
+        self._build_flow()
+        self._on_state_changed()
+        if self._selected_stage in self.nodes:
+            self._select_stage(self._selected_stage)
 
     def _select_stage(self, stage_key: str) -> None:
         self._selected_stage = stage_key
@@ -789,19 +1116,115 @@ class CustomModelCanvasWidget(QWidget):
 
     def _refresh_stage_static_info(self, stage_key: str) -> None:
         base = str(self._base_model).strip().lower()
+        node_meta = self._node_static_meta_for(stage_key)
+        stage_state = self.state.get(stage_key, {})
         stage_info = self.STAGE_STATIC_INFO.get(base, {}).get(stage_key, {})
-        if isinstance(stage_info, dict) and stage_info:
-            self.stage_static_info_value.setText(
-                " | ".join(
+        parent_stage_info: dict[str, str] = {}
+
+        channels_text = str(stage_info.get("channels", "-")).strip()
+        if "->" in channels_text:
+            input_ch, output_ch = [part.strip() for part in channels_text.split("->", 1)]
+        else:
+            input_ch, output_ch = channels_text, "-"
+        stage_repeat_text = str(stage_info.get("repeat", "-")).strip()
+        try:
+            stage_repeat = int(stage_repeat_text)
+        except Exception:
+            stage_repeat = 0
+
+        parent_key = self._node_parent.get(stage_key)
+        is_child = isinstance(parent_key, str) and parent_key in self.state
+        self.stage_hierarchy_info_label.setVisible(is_child)
+        self.stage_hierarchy_info_value.setVisible(is_child)
+        if is_child:
+            parent_stage_info = self.STAGE_STATIC_INFO.get(base, {}).get(parent_key, {})
+            if not stage_info and isinstance(parent_stage_info, dict) and parent_stage_info:
+                stage_info = dict(parent_stage_info)
+        override_state = "Inherited"
+        if is_child:
+            parent_state = self.state[parent_key]
+            differs = any(
+                stage_state.get(field) != parent_state.get(field)
+                for field in (
+                    "frozen",
+                    "train_bn",
+                    "train_norm",
+                    "stage_method",
+                    "rank",
+                    "alpha",
+                    "adapter_dim",
+                    "bitfit_scope",
+                    "ssf_scale",
+                    "ssf_shift",
+                    "lr_override_enabled",
+                    "lr_override",
+                )
+            )
+            override_state = "Override" if differs else "Inherited"
+
+        substage_group_text = None
+        if is_child and stage_repeat > 0:
+            group_meta = self._substage_group_range(stage_key, stage_repeat)
+            if group_meta is not None:
+                sub_idx, group_count, rep_start, rep_end = group_meta
+                substage_group_text = f"Sub-stage Group: {sub_idx}/{group_count} (covers repeats {rep_start}-{rep_end} of {stage_repeat})"
+                if input_ch != output_ch:
+                    if sub_idx == 1:
+                        sub_input, sub_output = input_ch, output_ch
+                    else:
+                        sub_input, sub_output = output_ch, output_ch
+                    input_ch, output_ch = sub_input, sub_output
+
+        action_parts: list[str] = []
+        action_parts.append("Frozen" if bool(stage_state.get("frozen", True)) else "Unfrozen")
+        if bool(stage_state.get("train_bn", False)):
+            action_parts.append("Train BN")
+        if bool(stage_state.get("train_norm", False)):
+            action_parts.append("Norm Tuning")
+        stage_method = str(stage_state.get("stage_method", "none")).strip().lower()
+        if stage_method != "none":
+            action_parts.append(stage_method.upper())
+        if bool(stage_state.get("lr_override_enabled", False)):
+            action_parts.append(f"Custom LR={float(stage_state.get('lr_override', 1e-3)):.6f}")
+        if not action_parts:
+            action_parts.append("No custom operation")
+
+        allowed_ops = ", ".join(sorted(self._allowed_strategies_for_stage(stage_key))) or "None"
+        if is_child:
+            self.stage_hierarchy_info_value.setText(
+                "\n".join(
                     [
-                        f"Module: {stage_info.get('module', '-')}",
-                        f"Repeat: {stage_info.get('repeat', '-')}",
-                        f"Kernel: {stage_info.get('kernel', '-')}",
-                        f"Stride: {stage_info.get('stride', '-')}",
-                        f"Channels: {stage_info.get('channels', '-')}",
+                        f"Type: {node_meta.get('node_kind', 'substage')} ({override_state})",
+                        f"Parent Stage: {node_meta.get('parent_key') or '-'}",
+                        f"Node Path: {stage_key}",
+                        *( [substage_group_text] if substage_group_text else [] ),
+                        f"I/O Channels: {input_ch} -> {output_ch}",
+                        f"Main Unit: {stage_info.get('module', '-')}",
+                        f"Current Ops: {', '.join(action_parts)}",
+                        f"Allowed Ops: {allowed_ops}",
                     ]
                 )
             )
+        else:
+            self.stage_hierarchy_info_value.setText("")
+        if isinstance(stage_info, dict) and stage_info:
+            # Keep this panel as main-stage static profile to avoid repeating sub-stage info.
+            main_info = parent_stage_info if (is_child and parent_stage_info) else stage_info
+            static_parts = [f"Main Stage: {parent_key}" if is_child else f"Main Stage: {stage_key}"]
+            static_parts.append(f"Module: {main_info.get('module', '-')}")
+            static_parts.append(f"Repeat: {main_info.get('repeat', '-')}")
+            static_parts.extend(
+                [
+                    f"Kernel: {main_info.get('kernel', '-')}",
+                    f"Stride: {main_info.get('stride', '-')}",
+                    f"Channels: {main_info.get('channels', '-')}",
+                ]
+            )
+            if substage_group_text:
+                static_parts.append(substage_group_text.replace("Sub-stage Group: ", "Selected Group: "))
+            if is_child:
+                static_parts.append("Note: main-stage profile shown here; detailed sub-stage behavior is in Sub-stage Info.")
+            self.stage_static_info_value.setText(" | ".join(static_parts))
             return
         self.stage_static_info_value.setText("No static profile available for this stage.")
 
@@ -864,15 +1287,20 @@ class CustomModelCanvasWidget(QWidget):
             return
         if stage_key not in self.editable_stages:
             return
+        child_keys = self._stage_children.get(stage_key, [])
         strategy = strategy.strip()
         if strategy == "Freeze":
             self.state[stage_key]["frozen"] = True
+            self._apply_stage_state_to_inheriting_children(stage_key)
         elif strategy == "Unfreeze":
             self.state[stage_key]["frozen"] = False
+            self._apply_stage_state_to_inheriting_children(stage_key)
         elif strategy == "BN Tuning":
             self.state[stage_key]["train_bn"] = True
+            self._apply_stage_state_to_inheriting_children(stage_key)
         elif strategy == "Norm Tuning":
             self.state[stage_key]["train_norm"] = True
+            self._apply_stage_state_to_inheriting_children(stage_key)
         elif strategy in {"LoRA", "DoRA", "TSA", "Adapter", "BitFit", "SSF"}:
             method = strategy.lower()
             if method not in self._supported_methods():
@@ -882,6 +1310,12 @@ class CustomModelCanvasWidget(QWidget):
                 if self.state[key]["stage_method"] != "none" and self.state[key]["stage_method"] != method:
                     self.state[key]["stage_method"] = "none"
             self.state[stage_key]["stage_method"] = method
+            self._apply_stage_state_to_inheriting_children(stage_key)
+        if child_keys:
+            for child in child_keys:
+                self._sync_node_inheritance_flag(child)
+        else:
+            self._sync_node_inheritance_flag(stage_key)
         self._select_stage(stage_key)
         self._global_mode = "Manual"
         self.global_mode_combo.setCurrentText("Manual")
@@ -915,6 +1349,13 @@ class CustomModelCanvasWidget(QWidget):
                 "lr_override": float(self.stage_custom_lr.value()),
             }
         )
+        child_keys = self._stage_children.get(self._selected_stage, [])
+        if child_keys:
+            self._apply_stage_state_to_inheriting_children(self._selected_stage)
+            for child in child_keys:
+                self._sync_node_inheritance_flag(child)
+        else:
+            self._sync_node_inheritance_flag(self._selected_stage)
         self._refresh_method_parameter_visibility(stage_method)
         self._global_mode = "Manual"
         self.global_mode_combo.setCurrentText("Manual")
@@ -964,15 +1405,49 @@ class CustomModelCanvasWidget(QWidget):
         )
         payload = custom_model_generator.spec_to_dict(spec)
         payload["pretrained"] = bool(self.pretrained_checkbox.isChecked())
+        payload["hierarchy_mode"] = "substage" if bool(self.SUBSTAGE_LAYOUTS.get(self._base_model)) else "stage"
         train_bn_any = any(bool(self.state[key]["train_bn"]) for key in self.editable_stages)
         train_norm_any = any(bool(self.state[key].get("train_norm", False)) for key in self.editable_stages)
         payload["train_bn"] = train_bn_any
         payload["train_norm"] = train_norm_any
-        payload["stage_lr_overrides"] = {
+        node_lr_overrides = {
             key: float(self.state[key].get("lr_override", 0.0))
             for key in sorted(self.editable_stages)
             if bool(self.state[key].get("lr_override_enabled", False)) and float(self.state[key].get("lr_override", 0.0)) > 0.0
         }
+        payload["node_lr_overrides"] = node_lr_overrides
+        stage_lr_overrides: dict[str, float] = {}
+        grouped_stage_values: dict[str, list[float]] = {}
+        for key, value in node_lr_overrides.items():
+            canonical = self._canonical_stage_key(key)
+            grouped_stage_values.setdefault(canonical, []).append(float(value))
+        for canonical, values in grouped_stage_values.items():
+            if not values:
+                continue
+            if len(values) == 1 or max(values) - min(values) < 1e-12:
+                stage_lr_overrides[canonical] = float(values[0])
+        payload["stage_lr_overrides"] = stage_lr_overrides
+        node_settings: dict[str, dict[str, object]] = {}
+        for key in sorted(self.editable_stages):
+            parent_key = self._node_parent.get(key)
+            is_substage = isinstance(parent_key, str) and bool(parent_key)
+            if is_substage:
+                self._sync_node_inheritance_flag(key)
+                if bool(self.state[key].get("inherit_from_parent", True)):
+                    continue
+            node_settings[key] = self._capture_node_payload(key)
+        payload["node_settings"] = node_settings
+        node_hierarchy: dict[str, dict[str, object]] = {}
+        for key, title in self._flow_nodes:
+            if key in {"input", "output"}:
+                continue
+            static_meta = dict(self._node_static_meta_for(key))
+            static_meta["key"] = key
+            static_meta["title"] = title
+            static_meta["editable"] = bool(key in self.editable_stages)
+            static_meta["safe_operations"] = sorted(self._allowed_strategies_for_stage(key))
+            node_hierarchy[key] = static_meta
+        payload["node_hierarchy"] = node_hierarchy
         unfrozen_feature_stages = sorted(
             idx
             for key in self.editable_stages
@@ -1007,10 +1482,17 @@ class CustomModelCanvasWidget(QWidget):
                     "classifier": "classifier" in peft_stages,
                 }
             else:
+                canonical_layers = sorted(
+                    {
+                        self._canonical_stage_key(key)
+                        for key in peft_stages
+                        if self._canonical_stage_key(key) != "classifier"
+                    }
+                )
                 payload["peft_targets"] = {
                     "feature_stages": [],
-                    "layer_keys": sorted(key for key in peft_stages if key != "classifier"),
-                    "classifier": "classifier" in peft_stages,
+                    "layer_keys": canonical_layers,
+                    "classifier": any(self._canonical_stage_key(key) == "classifier" for key in peft_stages),
                 }
             if method in {"lora", "dora"} and peft_stages:
                 ref = self.state[peft_stages[0]]
@@ -1049,26 +1531,14 @@ class CustomModelCanvasWidget(QWidget):
             self.global_mode_combo.setCurrentText("Manual")
 
             for key in self.editable_stages:
-                self.state[key] = {
-                    "frozen": True,
-                    "train_bn": False,
-                    "train_norm": False,
-                    "stage_method": "none",
-                    "rank": 8,
-                    "alpha": 16.0,
-                    "adapter_dim": 32,
-                    "bitfit_scope": "all_bias",
-                    "ssf_scale": 1.0,
-                    "ssf_shift": 0.0,
-                    "lr_override_enabled": False,
-                    "lr_override": 1e-3,
-                }
+                self.state[key] = self._default_stage_state(key)
             self.state["classifier"]["frozen"] = False
             stage_lr_overrides = getattr(spec, "stage_lr_overrides", {})
             if not isinstance(stage_lr_overrides, dict):
                 stage_lr_overrides = {}
             for key, value in stage_lr_overrides.items():
-                if key not in self.state:
+                normalized_key = self._normalize_node_key_for_current_flow(key)
+                if normalized_key not in self.state:
                     continue
                 try:
                     lr_value = float(value)
@@ -1076,8 +1546,22 @@ class CustomModelCanvasWidget(QWidget):
                     continue
                 if lr_value <= 0:
                     continue
-                self.state[key]["lr_override_enabled"] = True
-                self.state[key]["lr_override"] = lr_value
+                self.state[normalized_key]["lr_override_enabled"] = True
+                self.state[normalized_key]["lr_override"] = lr_value
+            node_lr_overrides = getattr(spec, "node_lr_overrides", {})
+            if isinstance(node_lr_overrides, dict):
+                for key, value in node_lr_overrides.items():
+                    normalized_key = self._normalize_node_key_for_current_flow(key)
+                    if normalized_key not in self.state:
+                        continue
+                    try:
+                        lr_value = float(value)
+                    except Exception:
+                        continue
+                    if lr_value <= 0:
+                        continue
+                    self.state[normalized_key]["lr_override_enabled"] = True
+                    self.state[normalized_key]["lr_override"] = lr_value
 
             method = spec.method_type
             train_bn_enabled = bool(getattr(spec, "train_bn", False))
@@ -1110,7 +1594,7 @@ class CustomModelCanvasWidget(QWidget):
                             self.state[key]["stage_method"] = method
                 else:
                     for layer_key in targets.get("layer_keys", []):
-                        key = str(layer_key)
+                        key = self._normalize_node_key_for_current_flow(str(layer_key))
                         if key in self.state:
                             self.state[key]["stage_method"] = method
                 if bool(targets.get("classifier", False)):
@@ -1124,6 +1608,87 @@ class CustomModelCanvasWidget(QWidget):
                         self.state[key]["bitfit_scope"] = str(params.get("scope", "all_bias")).strip().lower() or "all_bias"
                         self.state[key]["ssf_scale"] = float(params.get("init_scale", 1.0))
                         self.state[key]["ssf_shift"] = float(params.get("init_shift", 0.0))
+
+            # Backward-compatible inheritance for old stage-level specs:
+            # stage settings are propagated to child sub-stages unless node_settings explicitly override.
+            for parent_stage, children in self._stage_children.items():
+                if parent_stage not in self.state:
+                    continue
+                parent_state = dict(self.state[parent_stage])
+                for child_key in children:
+                    if child_key not in self.state:
+                        continue
+                    self.state[child_key].update(
+                        {
+                            "frozen": parent_state.get("frozen", True),
+                            "train_bn": parent_state.get("train_bn", False),
+                            "train_norm": parent_state.get("train_norm", False),
+                            "stage_method": parent_state.get("stage_method", "none"),
+                            "rank": parent_state.get("rank", 8),
+                            "alpha": parent_state.get("alpha", 16.0),
+                            "adapter_dim": parent_state.get("adapter_dim", 32),
+                            "bitfit_scope": parent_state.get("bitfit_scope", "all_bias"),
+                            "ssf_scale": parent_state.get("ssf_scale", 1.0),
+                            "ssf_shift": parent_state.get("ssf_shift", 0.0),
+                            "lr_override_enabled": parent_state.get("lr_override_enabled", False),
+                            "lr_override": parent_state.get("lr_override", 1e-3),
+                            "inherit_from_parent": True,
+                        }
+                    )
+
+            node_settings = getattr(spec, "node_settings", {})
+            if isinstance(node_settings, dict):
+                for key, raw_state in node_settings.items():
+                    normalized_key = self._normalize_node_key_for_current_flow(key)
+                    if normalized_key not in self.state or not isinstance(raw_state, dict):
+                        continue
+                    target = self.state[normalized_key]
+                    if "frozen" in raw_state:
+                        target["frozen"] = bool(raw_state.get("frozen", True))
+                    if "train_bn" in raw_state:
+                        target["train_bn"] = bool(raw_state.get("train_bn", False))
+                    if "train_norm" in raw_state:
+                        target["train_norm"] = bool(raw_state.get("train_norm", False))
+                    if "stage_method" in raw_state:
+                        target["stage_method"] = str(raw_state.get("stage_method", "none")).strip().lower() or "none"
+                    if "rank" in raw_state:
+                        target["rank"] = int(raw_state.get("rank", 8))
+                    if "alpha" in raw_state:
+                        target["alpha"] = float(raw_state.get("alpha", 16.0))
+                    if "adapter_dim" in raw_state:
+                        target["adapter_dim"] = int(raw_state.get("adapter_dim", 32))
+                    if "bitfit_scope" in raw_state:
+                        target["bitfit_scope"] = str(raw_state.get("bitfit_scope", "all_bias")).strip().lower() or "all_bias"
+                    if "ssf_scale" in raw_state:
+                        target["ssf_scale"] = float(raw_state.get("ssf_scale", 1.0))
+                    if "ssf_shift" in raw_state:
+                        target["ssf_shift"] = float(raw_state.get("ssf_shift", 0.0))
+                    if "lr_override_enabled" in raw_state:
+                        target["lr_override_enabled"] = bool(raw_state.get("lr_override_enabled", False))
+                    if "lr_override" in raw_state:
+                        try:
+                            lr_value = float(raw_state.get("lr_override", 1e-3))
+                        except Exception:
+                            lr_value = 1e-3
+                        if lr_value > 0:
+                            target["lr_override"] = lr_value
+                    if "inherit_from_parent" in raw_state:
+                        target["inherit_from_parent"] = bool(raw_state.get("inherit_from_parent", False))
+            node_hierarchy = getattr(spec, "node_hierarchy", {})
+            if isinstance(node_hierarchy, dict):
+                for key, raw_meta in node_hierarchy.items():
+                    normalized_key = self._normalize_node_key_for_current_flow(key)
+                    if normalized_key not in self.state or not isinstance(raw_meta, dict):
+                        continue
+                    merged = dict(self._node_static_meta.get(normalized_key, {}))
+                    merged.update(dict(raw_meta))
+                    merged["key"] = normalized_key
+                    merged.setdefault("title", normalized_key)
+                    self._node_static_meta[normalized_key] = merged
+            for key in self.editable_stages:
+                parent_key = self._node_parent.get(key)
+                if isinstance(parent_key, str) and parent_key:
+                    self._sync_node_inheritance_flag(key)
         finally:
             self._updating = False
         self._select_stage(self._selected_stage if self._selected_stage in self.editable_stages else "classifier")
@@ -1144,6 +1709,28 @@ class CustomModelCanvasWidget(QWidget):
                 tags.append("Norm")
             if stage.get("stage_method", "none") != "none":
                 tags.append(str(stage.get("stage_method", "none")).upper())
+            parent_key = self._node_parent.get(key)
+            if isinstance(parent_key, str) and parent_key in self.state:
+                parent_state = self.state[parent_key]
+                differs = any(
+                    stage.get(field) != parent_state.get(field)
+                    for field in (
+                        "frozen",
+                        "train_bn",
+                        "train_norm",
+                        "stage_method",
+                        "rank",
+                        "alpha",
+                        "adapter_dim",
+                        "bitfit_scope",
+                        "ssf_scale",
+                        "ssf_shift",
+                        "lr_override_enabled",
+                        "lr_override",
+                    )
+                )
+                if differs:
+                    tags.append("Override")
             node.set_state_text(" | ".join(tags))
         if self._read_only_introspection:
             self.method_preview.setText("Method: inspection-only")
@@ -1238,20 +1825,7 @@ class CustomModelCanvasWidget(QWidget):
                 )
                 self.state.setdefault(
                     stage_key,
-                    {
-                        "frozen": True,
-                        "train_bn": False,
-                        "train_norm": False,
-                        "stage_method": "none",
-                        "rank": 8,
-                        "alpha": 16.0,
-                        "adapter_dim": 32,
-                        "bitfit_scope": "all_bias",
-                        "ssf_scale": 1.0,
-                        "ssf_shift": 0.0,
-                        "lr_override_enabled": False,
-                        "lr_override": 1e-3,
-                    },
+                    self._default_stage_state(stage_key),
                 )
                 self.state[stage_key]["frozen"] = stage_type not in {"head", "classifier"}
                 self.state[stage_key]["train_bn"] = False
@@ -1396,3 +1970,4 @@ class CustomModelCanvasWidget(QWidget):
         if self._on_model_generated is not None:
             self._on_model_generated(artifacts.model_name)
         QMessageBox.information(self, "Model Generated", f"Model file: {artifacts.model_file_path}\nSpec file: {artifacts.spec_file_path}")
+

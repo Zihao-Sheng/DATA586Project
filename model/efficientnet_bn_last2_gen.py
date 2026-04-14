@@ -76,6 +76,40 @@ def build_optimizer(model: nn.Module, lr: float = 1e-3) -> torch.optim.Optimizer
     return _build_optimizer(model, lr=lr)
 
 
+
+def _classifier_base_model() -> str:
+    return str(GENERATED_SPEC.get("base_model", ""))
+
+
+def get_head_module_path(model: nn.Module | None = None) -> str:
+    from model import _transfer_strategies as _ts
+
+    target_model = model if model is not None else build_model(num_classes=101, device="cpu")
+    return _ts.get_head_module_path(target_model, base_model=_classifier_base_model())
+
+
+def get_feature_dim(model: nn.Module | None = None) -> int:
+    from model import _transfer_strategies as _ts
+
+    target_model = model if model is not None else build_model(num_classes=101, device="cpu")
+    return int(_ts.get_feature_dim(target_model, base_model=_classifier_base_model()))
+
+
+def get_classifier_info(model: nn.Module | None = None) -> dict[str, object]:
+    from model import _transfer_strategies as _ts
+
+    target_model = model if model is not None else build_model(num_classes=101, device="cpu")
+    payload = _ts.get_classifier_info(target_model, base_model=_classifier_base_model())
+    payload.setdefault("source", "generated_spec")
+    payload.setdefault("model_name", str(GENERATED_SPEC.get("model_name", "")))
+    return payload
+
+
+def replace_classifier_head(model: nn.Module, num_classes: int) -> nn.Module:
+    from model import _transfer_strategies as _ts
+
+    return _ts.replace_classifier_head(model, num_classes=int(num_classes), base_model=_classifier_base_model())
+
 def get_model_metadata() -> dict[str, object]:
     return dict(GENERATED_SPEC)
 
@@ -90,6 +124,7 @@ def get_capabilities() -> dict[str, bool]:
         "supports_dora": method_type == "dora",
         "supports_tsa": method_type == "tsa",
         "supports_bn_tuning": method_type in {"bn_tuning", "bn_last1", "bn_last2"},
+        "supports_classifier_head_adaptation": True,
     }
 
 

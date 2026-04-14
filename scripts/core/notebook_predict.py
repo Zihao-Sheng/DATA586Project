@@ -121,7 +121,7 @@ def display_gradcam_comparison(
 ):
     from IPython.display import HTML, display
 
-    from core.gradcam import overlay_heatmap_on_image, build_heatmap, find_last_conv_layer
+    from core.gradcam import render_gradcam_overlay_image_with_diagnostics
     from pipeline.predicting import build_transform, load_model
     import torch
     from PIL import Image
@@ -132,63 +132,52 @@ def display_gradcam_comparison(
     actual_label = resolved_image.parent.name.replace("_", " ").title() if resolved_image.parent.name else "Unknown"
     cards: list[dict[str, str]] = []
     for model_name, checkpoint_path in model_specs:
-        model, class_to_idx = load_model(checkpoint_path.expanduser().resolve(), model_name, resolved_device)
-        model.eval()
-        target_layer = find_last_conv_layer(model)
-        if target_layer is None:
+        resolved_checkpoint = checkpoint_path.expanduser().resolve()
+        diagnostic_reason = ""
+        try:
+            model, class_to_idx = load_model(resolved_checkpoint, model_name, resolved_device)
+            model.eval()
+            tensor = build_transform(image_size)(original).unsqueeze(0).to(resolved_device)
+            with torch.no_grad():
+                output = model(tensor)
+                probabilities = torch.softmax(output, dim=1)
+                pred_index = int(output.argmax(dim=1).item())
+            idx_to_class = {idx: name for name, idx in class_to_idx.items()}
+            predicted_class = idx_to_class.get(pred_index, str(pred_index))
+            confidence = float(probabilities[0, pred_index].item())
+        except Exception as exc:
             cards.append(
                 {
                     "model_name": model_name,
                     "image_html": _image_tag_for_pil(original),
-                    "prediction_label": "Grad-CAM unavailable",
+                    "prediction_label": f"Load failed: {type(exc).__name__}",
                     "confidence_label": "",
+                    "diagnostic_label": str(exc),
                 }
             )
             continue
-        activations = {}
-        gradients = {}
 
-        def forward_hook(module, inputs, output):
-            activations["value"] = output.detach()
-
-        def backward_hook(module, grad_input, grad_output):
-            gradients["value"] = grad_output[0].detach()
-
-        forward_handle = target_layer.register_forward_hook(forward_hook)
-        backward_handle = target_layer.register_full_backward_hook(backward_hook)
         try:
-            tensor = build_transform(image_size)(original).unsqueeze(0).to(resolved_device)
-            output = model(tensor)
-            probabilities = torch.softmax(output, dim=1)
-            pred_index = int(output.argmax(dim=1).item())
-            idx_to_class = {idx: name for name, idx in class_to_idx.items()}
-            predicted_class = idx_to_class.get(pred_index, str(pred_index))
-            confidence = float(probabilities[0, pred_index].item())
-            model.zero_grad(set_to_none=True)
-            output[:, pred_index].sum().backward()
-            if "value" in activations and "value" in gradients:
-                heatmap = build_heatmap(activations["value"], gradients["value"])
-                overlay = overlay_heatmap_on_image(original, heatmap)
-                cards.append(
-                    {
-                        "model_name": model_name,
-                        "image_html": _image_tag_for_pil(overlay),
-                        "prediction_label": predicted_class.replace("_", " ").title(),
-                        "confidence_label": f"Confidence {confidence:.1%}",
-                    }
-                )
-            else:
-                cards.append(
-                    {
-                        "model_name": model_name,
-                        "image_html": _image_tag_for_pil(original),
-                        "prediction_label": predicted_class.replace("_", " ").title(),
-                        "confidence_label": f"Confidence {confidence:.1%}",
-                    }
-                )
-        finally:
-            forward_handle.remove()
-            backward_handle.remove()
+            overlay, diagnostic_reason = render_gradcam_overlay_image_with_diagnostics(
+                image_path=resolved_image,
+                checkpoint_path=resolved_checkpoint,
+                model_name=model_name,
+                image_size=image_size,
+                device=resolved_device,
+            )
+        except Exception as exc:
+            overlay = original
+            diagnostic_reason = f"Grad-CAM unavailable: {exc}"
+
+        cards.append(
+            {
+                "model_name": model_name,
+                "image_html": _image_tag_for_pil(overlay if diagnostic_reason is None else original),
+                "prediction_label": predicted_class.replace("_", " ").title(),
+                "confidence_label": f"Confidence {confidence:.1%}",
+                "diagnostic_label": "" if diagnostic_reason is None else str(diagnostic_reason),
+            }
+        )
     original_card = f"""
     <div style="display:flex;justify-content:center;margin-bottom:24px;">
       <div style="width:min(360px, 100%);">
@@ -218,6 +207,7 @@ def display_gradcam_comparison(
               Pred: {escape(card["prediction_label"])}
             </div>
             {"<div style='display:inline-block;padding:5px 10px;border-radius:999px;background:#dbeafe;color:#0f172a;font-weight:700;font-size:13px;box-shadow:0 2px 8px rgba(15,23,42,.14);text-align:center;'>" + escape(card["confidence_label"]) + "</div>" if card["confidence_label"] else ""}
+            {"<div style='display:block;max-width:100%;padding:6px 10px;border-radius:10px;background:#fee2e2;color:#7f1d1d;font-weight:600;font-size:12px;line-height:1.35;white-space:normal;word-break:break-word;text-align:center;'>" + escape(card["diagnostic_label"]) + "</div>" if card.get("diagnostic_label") else ""}
           </div>
         </div>
         """

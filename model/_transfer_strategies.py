@@ -38,6 +38,157 @@ def _normalize_backbone_name(base_model: str | None) -> str | None:
     return None
 
 
+def infer_backbone_name_from_model(model: nn.Module) -> str | None:
+    class_name = type(model).__name__.lower()
+    if "resnet" in class_name:
+        if "50" in class_name:
+            return "resnet50"
+        return "resnet18"
+    if "efficientnet" in class_name:
+        return "efficientnet_v2_s"
+    if "convnext" in class_name:
+        return "convnext_tiny"
+    if "mobilenet" in class_name:
+        return "mobilenet_v3_large"
+    if "densenet" in class_name:
+        return "densenet121"
+
+    features = getattr(model, "features", None)
+    if isinstance(features, nn.Module) and hasattr(features, "denseblock4"):
+        return "densenet121"
+
+    if hasattr(model, "layer4") and hasattr(model, "fc"):
+        layer4 = getattr(model, "layer4", None)
+        if isinstance(layer4, (nn.Sequential, nn.ModuleList)):
+            block_count = len(layer4)
+            if block_count >= 3:
+                return "resnet50"
+            if block_count >= 2:
+                return "resnet18"
+        return "resnet18"
+    if hasattr(model, "features") and hasattr(model, "classifier"):
+        features = getattr(model, "features", None)
+        classifier = getattr(model, "classifier", None)
+        if isinstance(features, (nn.Sequential, nn.ModuleList)):
+            feature_len = len(features)
+            if feature_len >= 16 and isinstance(classifier, (nn.Sequential, nn.ModuleList)) and len(classifier) >= 4:
+                return "mobilenet_v3_large"
+            if feature_len >= 8 and isinstance(classifier, (nn.Sequential, nn.ModuleList)) and len(classifier) >= 2:
+                return "efficientnet_v2_s"
+        return "efficientnet_v2_s"
+    return None
+
+
+def _resolve_backbone_name(model: nn.Module, base_model: str | None = None) -> str:
+    normalized = _normalize_backbone_name(base_model)
+    if normalized:
+        return normalized
+    inferred = infer_backbone_name_from_model(model)
+    if inferred:
+        return inferred
+    raise ValueError("Unable to resolve backbone name for classifier-head adaptation.")
+
+
+def _split_module_path(path: str) -> list[str]:
+    return [part for part in str(path).split(".") if part]
+
+
+def _get_module_by_path(root: nn.Module, path: str) -> nn.Module:
+    current: nn.Module | object = root
+    for part in _split_module_path(path):
+        if isinstance(current, (nn.Sequential, nn.ModuleList)) and part.isdigit():
+            current = current[int(part)]
+            continue
+        current = getattr(current, part)
+    if not isinstance(current, nn.Module):
+        raise ValueError(f"Resolved path is not a torch module: {path}")
+    return current
+
+
+def _set_module_by_path(root: nn.Module, path: str, module: nn.Module) -> None:
+    parts = _split_module_path(path)
+    if not parts:
+        raise ValueError("Classifier module path cannot be empty.")
+    parent: nn.Module | object = root
+    for part in parts[:-1]:
+        if isinstance(parent, (nn.Sequential, nn.ModuleList)) and part.isdigit():
+            parent = parent[int(part)]
+            continue
+        parent = getattr(parent, part)
+    last = parts[-1]
+    if isinstance(parent, (nn.Sequential, nn.ModuleList)) and last.isdigit():
+        parent[int(last)] = module
+        return
+    setattr(parent, last, module)
+
+
+def _unwrap_linear_module(module: nn.Module) -> nn.Linear:
+    if isinstance(module, nn.Linear):
+        return module
+    if isinstance(module, (LoRALinear, DoRALinear)):
+        return module.base
+    if isinstance(module, LinearAdapterWrapper):
+        return _unwrap_linear_module(module.base_module)
+    raise ValueError(f"Unsupported classifier module type for head adaptation: {type(module).__name__}")
+
+
+def get_head_module_path_for_backbone(base_model: str) -> str:
+    backbone = _normalize_backbone_name(base_model)
+    if backbone in {"resnet18", "resnet50"}:
+        return "fc"
+    if backbone == "efficientnet_v2_s":
+        return "classifier.1"
+    if backbone == "convnext_tiny":
+        return "classifier.2"
+    if backbone == "mobilenet_v3_large":
+        return "classifier.3"
+    if backbone == "densenet121":
+        return "classifier"
+    raise ValueError(f"Unsupported backbone for classifier path lookup: {base_model}")
+
+
+def get_head_module_path(model: nn.Module, base_model: str | None = None) -> str:
+    backbone = _resolve_backbone_name(model, base_model)
+    return get_head_module_path_for_backbone(backbone)
+
+
+def get_feature_dim(model: nn.Module, base_model: str | None = None) -> int:
+    head_module = _get_module_by_path(model, get_head_module_path(model, base_model))
+    return int(_unwrap_linear_module(head_module).in_features)
+
+
+def get_classifier_info(model: nn.Module, base_model: str | None = None) -> dict[str, object]:
+    backbone = _resolve_backbone_name(model, base_model)
+    head_path = get_head_module_path_for_backbone(backbone)
+    head_module = _get_module_by_path(model, head_path)
+    linear = _unwrap_linear_module(head_module)
+    return {
+        "base_model": backbone,
+        "head_module_path": head_path,
+        "feature_dim": int(linear.in_features),
+        "num_classes": int(linear.out_features),
+        "head_module_type": type(head_module).__name__,
+        "replaceable": True,
+    }
+
+
+def replace_classifier_head(model: nn.Module, num_classes: int, base_model: str | None = None) -> nn.Module:
+    requested_classes = int(num_classes)
+    if requested_classes <= 0:
+        raise ValueError("num_classes must be a positive integer.")
+    head_path = get_head_module_path(model, base_model)
+    current_head = _get_module_by_path(model, head_path)
+    linear = _unwrap_linear_module(current_head)
+    replacement = nn.Linear(linear.in_features, requested_classes)
+    try:
+        reference_param = next(model.parameters())
+        replacement = replacement.to(device=reference_param.device, dtype=reference_param.dtype)
+    except StopIteration:
+        pass
+    _set_module_by_path(model, head_path, replacement)
+    return model
+
+
 def build_optimizer(
     model: nn.Module,
     lr: float = 1e-3,
@@ -45,11 +196,16 @@ def build_optimizer(
     optimizer_name: str = "adam",
     base_model: str | None = None,
     stage_lr_overrides: dict[str, object] | None = None,
+    node_lr_overrides: dict[str, object] | None = None,
 ) -> torch.optim.Optimizer:
     trainable_params = [param for param in model.parameters() if param.requires_grad]
     param_groups: list[dict[str, object]] = [{"params": trainable_params, "lr": float(lr)}]
 
     normalized_overrides = _normalize_stage_lr_overrides(stage_lr_overrides)
+    normalized_node_overrides = _normalize_stage_lr_overrides(node_lr_overrides)
+    if normalized_node_overrides:
+        for key, value in normalized_node_overrides.items():
+            normalized_overrides[key] = value
     normalized_backbone = _normalize_backbone_name(base_model)
     if normalized_overrides and normalized_backbone is not None:
         try:
@@ -89,62 +245,88 @@ def _resolved_device(device: str | torch.device) -> str | torch.device:
     return device
 
 
-def load_resnet18_classifier(num_classes: int, pretrained: bool = True) -> nn.Module:
+def _load_torchvision_model(
+    *,
+    builder_name: str,
+    weights_enum_name: str,
+    pretrained: bool,
+) -> nn.Module:
+    builder = getattr(models, builder_name)
     try:
-        weights = models.ResNet18_Weights.DEFAULT if pretrained else None
-        model = models.resnet18(weights=weights)
+        weights_enum = getattr(models, weights_enum_name)
+        weights = weights_enum.DEFAULT if pretrained else None
+        return builder(weights=weights)
     except TypeError:
-        model = models.resnet18(pretrained=pretrained)
+        return builder(pretrained=pretrained)
+    except Exception as exc:
+        if not pretrained:
+            raise
+        print(
+            f"[WARN] Failed to load pretrained weights for {builder_name}: {exc}. "
+            "Falling back to randomly initialized weights."
+        )
+        try:
+            return builder(weights=None)
+        except TypeError:
+            return builder(pretrained=False)
+
+
+def load_resnet18_classifier(num_classes: int, pretrained: bool = True) -> nn.Module:
+    model = _load_torchvision_model(
+        builder_name="resnet18",
+        weights_enum_name="ResNet18_Weights",
+        pretrained=pretrained,
+    )
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
 
 
 def load_resnet50_classifier(num_classes: int, pretrained: bool = True) -> nn.Module:
-    try:
-        weights = models.ResNet50_Weights.DEFAULT if pretrained else None
-        model = models.resnet50(weights=weights)
-    except TypeError:
-        model = models.resnet50(pretrained=pretrained)
+    model = _load_torchvision_model(
+        builder_name="resnet50",
+        weights_enum_name="ResNet50_Weights",
+        pretrained=pretrained,
+    )
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
 
 
 def load_efficientnet_v2_s_classifier(num_classes: int, pretrained: bool = True) -> nn.Module:
-    try:
-        weights = models.EfficientNet_V2_S_Weights.DEFAULT if pretrained else None
-        model = models.efficientnet_v2_s(weights=weights)
-    except TypeError:
-        model = models.efficientnet_v2_s(pretrained=pretrained)
+    model = _load_torchvision_model(
+        builder_name="efficientnet_v2_s",
+        weights_enum_name="EfficientNet_V2_S_Weights",
+        pretrained=pretrained,
+    )
     model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
     return model
 
 
 def load_convnext_tiny_classifier(num_classes: int, pretrained: bool = True) -> nn.Module:
-    try:
-        weights = models.ConvNeXt_Tiny_Weights.DEFAULT if pretrained else None
-        model = models.convnext_tiny(weights=weights)
-    except TypeError:
-        model = models.convnext_tiny(pretrained=pretrained)
+    model = _load_torchvision_model(
+        builder_name="convnext_tiny",
+        weights_enum_name="ConvNeXt_Tiny_Weights",
+        pretrained=pretrained,
+    )
     model.classifier[2] = nn.Linear(model.classifier[2].in_features, num_classes)
     return model
 
 
 def load_mobilenet_v3_large_classifier(num_classes: int, pretrained: bool = True) -> nn.Module:
-    try:
-        weights = models.MobileNet_V3_Large_Weights.DEFAULT if pretrained else None
-        model = models.mobilenet_v3_large(weights=weights)
-    except TypeError:
-        model = models.mobilenet_v3_large(pretrained=pretrained)
+    model = _load_torchvision_model(
+        builder_name="mobilenet_v3_large",
+        weights_enum_name="MobileNet_V3_Large_Weights",
+        pretrained=pretrained,
+    )
     model.classifier[3] = nn.Linear(model.classifier[3].in_features, num_classes)
     return model
 
 
 def load_densenet121_classifier(num_classes: int, pretrained: bool = True) -> nn.Module:
-    try:
-        weights = models.DenseNet121_Weights.DEFAULT if pretrained else None
-        model = models.densenet121(weights=weights)
-    except TypeError:
-        model = models.densenet121(pretrained=pretrained)
+    model = _load_torchvision_model(
+        builder_name="densenet121",
+        weights_enum_name="DenseNet121_Weights",
+        pretrained=pretrained,
+    )
     model.classifier = nn.Linear(model.classifier.in_features, num_classes)
     return model
 
@@ -621,17 +803,8 @@ def build_efficientnet_full_finetune(num_classes: int, device: str | torch.devic
 
 
 def _classifier_module_for_backbone(model: nn.Module, backbone: str) -> nn.Module:
-    if backbone in {"resnet18", "resnet50"}:
-        return model.fc
-    if backbone == "efficientnet_v2_s":
-        return model.classifier[1]
-    if backbone == "convnext_tiny":
-        return model.classifier[2]
-    if backbone == "mobilenet_v3_large":
-        return model.classifier[3]
-    if backbone == "densenet121":
-        return model.classifier
-    raise ValueError(f"Unsupported backbone for classifier lookup: {backbone}")
+    head_path = get_head_module_path_for_backbone(backbone)
+    return _get_module_by_path(model, head_path)
 
 
 def _replace_classifier_with_lora(model: nn.Module, backbone: str) -> None:
@@ -690,7 +863,7 @@ def _load_backbone_classifier(backbone: str, num_classes: int, pretrained: bool 
 
 def _stage_map_for_backbone(model: nn.Module, backbone: str) -> dict[str, nn.Module]:
     if backbone in {"resnet18", "resnet50"}:
-        return {
+        stage_map = {
             "stem": model.conv1,
             "layer1": model.layer1,
             "layer2": model.layer2,
@@ -698,14 +871,36 @@ def _stage_map_for_backbone(model: nn.Module, backbone: str) -> dict[str, nn.Mod
             "layer4": model.layer4,
             "classifier": _classifier_module_for_backbone(model, backbone),
         }
+        # Sub-stage aliases for canvas-driven fine-grained targeting.
+        for layer_name in ("layer1", "layer2", "layer3", "layer4"):
+            layer = getattr(model, layer_name, None)
+            if isinstance(layer, (nn.Sequential, nn.ModuleList)):
+                for idx, block in enumerate(layer):
+                    stage_map[f"{layer_name}.block{idx + 1}"] = block
+                    stage_map[f"{layer_name}.sub{idx + 1}"] = block
+        return stage_map
     if backbone == "efficientnet_v2_s":
-        return {
+        stage_map = {
             "stem": model.features[0],
             **{f"features.{idx}": model.features[idx] for idx in range(len(model.features))},
             "classifier": _classifier_module_for_backbone(model, backbone),
         }
+        for parent_key, count in {
+            "features.1": 2,
+            "features.2": 2,
+            "features.3": 3,
+            "features.4": 3,
+            "features.5": 4,
+            "features.6": 2,
+        }.items():
+            module = stage_map.get(parent_key)
+            if module is None:
+                continue
+            for idx in range(1, count + 1):
+                stage_map[f"{parent_key}.sub{idx}"] = module
+        return stage_map
     if backbone == "convnext_tiny":
-        return {
+        stage_map = {
             "stem": model.features[0],
             "stage1": model.features[1],
             "stage2": model.features[3],
@@ -713,8 +908,15 @@ def _stage_map_for_backbone(model: nn.Module, backbone: str) -> dict[str, nn.Mod
             "stage4": model.features[7],
             "classifier": _classifier_module_for_backbone(model, backbone),
         }
+        for parent_key, count in {"stage1": 2, "stage2": 2, "stage3": 3, "stage4": 2}.items():
+            module = stage_map.get(parent_key)
+            if module is None:
+                continue
+            for idx in range(1, count + 1):
+                stage_map[f"{parent_key}.sub{idx}"] = module
+        return stage_map
     if backbone == "mobilenet_v3_large":
-        return {
+        stage_map = {
             "stem": model.features[0],
             "stage1": model.features[3],
             "stage2": model.features[6],
@@ -722,8 +924,15 @@ def _stage_map_for_backbone(model: nn.Module, backbone: str) -> dict[str, nn.Mod
             "stage4": model.features[16],
             "classifier": _classifier_module_for_backbone(model, backbone),
         }
+        for parent_key, count in {"stage1": 2, "stage2": 2, "stage3": 2, "stage4": 3}.items():
+            module = stage_map.get(parent_key)
+            if module is None:
+                continue
+            for idx in range(1, count + 1):
+                stage_map[f"{parent_key}.sub{idx}"] = module
+        return stage_map
     if backbone == "densenet121":
-        return {
+        stage_map = {
             "stem": model.features.conv0,
             "denseblock1": model.features.denseblock1,
             "denseblock2": model.features.denseblock2,
@@ -731,6 +940,13 @@ def _stage_map_for_backbone(model: nn.Module, backbone: str) -> dict[str, nn.Mod
             "denseblock4": model.features.denseblock4,
             "classifier": _classifier_module_for_backbone(model, backbone),
         }
+        for parent_key, count in {"denseblock1": 2, "denseblock2": 3, "denseblock3": 4, "denseblock4": 3}.items():
+            module = stage_map.get(parent_key)
+            if module is None:
+                continue
+            for idx in range(1, count + 1):
+                stage_map[f"{parent_key}.sub{idx}"] = module
+        return stage_map
     raise ValueError(f"Unsupported backbone for stage map: {backbone}")
 
 

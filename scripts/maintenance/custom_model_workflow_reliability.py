@@ -51,6 +51,25 @@ def ensure_app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+def dispose_widget(widget) -> None:
+    if widget is None:
+        return
+    try:
+        widget.close()
+    except Exception:
+        pass
+    try:
+        widget.deleteLater()
+    except Exception:
+        pass
+    app = QApplication.instance()
+    if app is not None:
+        try:
+            app.processEvents()
+        except Exception:
+            pass
+
+
 def safe_temp_paths(model_name: str) -> list[Path]:
     return [
         custom_model_generator.MODEL_DIR / f"{model_name}.py",
@@ -155,6 +174,7 @@ def test_generator_matrix(results: list[str]) -> None:
 def test_workspace_generation_matrix(results: list[str]) -> None:
     patch = DialogPatch()
     prepare_message_box_patches(patch)
+    widget = None
     try:
         widget = CustomModelsWorkspaceWidget()
         index = 0
@@ -180,6 +200,7 @@ def test_workspace_generation_matrix(results: list[str]) -> None:
 def test_workspace_identity_sequences(results: list[str]) -> None:
     patch = DialogPatch()
     prepare_message_box_patches(patch)
+    widget = None
     try:
         widget = CustomModelsWorkspaceWidget()
 
@@ -244,6 +265,7 @@ def open_canvas_from_spec(widget: CustomModelCanvasWidget, spec_path: Path) -> c
 def test_canvas_identity_and_state(results: list[str]) -> None:
     patch = DialogPatch()
     prepare_message_box_patches(patch)
+    widget = None
     try:
         widget = CustomModelCanvasWidget()
 
@@ -301,12 +323,14 @@ def test_canvas_identity_and_state(results: list[str]) -> None:
         verify_generated_outputs(legacy_variant_spec)
         results.append("canvas:legacy_mapping_variant_isolated")
     finally:
+        dispose_widget(widget)
         patch.restore()
 
 
 def test_canvas_open_existing_roundtrip(results: list[str]) -> None:
     patch = DialogPatch()
     prepare_message_box_patches(patch)
+    widget = None
     try:
         model_name = f"{PREFIX}_open_existing_src"
         variant_name = f"{PREFIX}_open_existing_variant"
@@ -329,7 +353,123 @@ def test_canvas_open_existing_roundtrip(results: list[str]) -> None:
         verify_generated_outputs(variant_spec)
         results.append("canvas:open_existing_generated_variant")
     finally:
+        dispose_widget(widget)
         patch.restore()
+
+
+def test_canvas_block_inheritance_compat(results: list[str]) -> None:
+    patch = DialogPatch()
+    prepare_message_box_patches(patch)
+    widget = None
+    try:
+        widget = CustomModelCanvasWidget()
+
+        # Old stage-level spec compatibility: no hierarchy/node_settings fields.
+        legacy_stage_name = f"{PREFIX}_old_stage_resnet18"
+        for path in safe_temp_paths(legacy_stage_name):
+            if path.exists():
+                path.unlink()
+        legacy_stage_spec = custom_model_generator.build_preset_spec(
+            model_name=legacy_stage_name,
+            base_model="resnet18",
+            method_type="baseline",
+        )
+        legacy_payload = spec_dict(legacy_stage_spec)
+        legacy_payload.pop("hierarchy_mode", None)
+        legacy_payload.pop("node_settings", None)
+        legacy_payload.pop("node_lr_overrides", None)
+        legacy_stage_spec = custom_model_generator.spec_from_dict(legacy_payload)
+        legacy_stage_path = custom_model_generator.save_spec_file(legacy_stage_spec)
+        open_canvas_from_spec(widget, legacy_stage_path)
+        assert_true("layer1.sub1" in widget.state, "Sub-stage nodes missing when opening old resnet stage-level spec.")
+        assert_true(bool(widget.state["layer1.sub1"].get("inherit_from_parent", False)), "Old stage spec did not mark sub-stage as inherited.")
+        assert_equal(
+            bool(widget.state["layer1.sub1"].get("frozen", True)),
+            bool(widget.state["layer1"].get("frozen", True)),
+            "Old stage spec did not propagate stage->sub-stage state.",
+        )
+        results.append("canvas:old_stage_spec_resnet_block_compat")
+
+        # Stage -> block inheritance with override preservation.
+        block_model_name = f"{PREFIX}_block_inherit_resnet50"
+        for path in safe_temp_paths(block_model_name):
+            if path.exists():
+                path.unlink()
+        widget.new_spec()
+        widget.model_name_edit.setText(block_model_name)
+        widget.base_model_combo.setCurrentText("resnet50")
+
+        widget._select_stage("layer1")
+        widget.stage_frozen.setChecked(False)
+        widget.stage_train_bn.setChecked(True)
+        widget._on_detail_changed()
+        widget._toggle_stage_expand("layer1")
+        assert_true("layer1.sub1" in widget.nodes, "Expanded sub-stage node missing from canvas render tree.")
+        assert_true(
+            "Frozen" in widget.nodes["layer1.sub1"].state_label.text() or "Unfrozen" in widget.nodes["layer1.sub1"].state_label.text(),
+            "Expanded sub-stage node lost visible state text.",
+        )
+        assert_equal(bool(widget.state["layer1.sub1"]["frozen"]), False, "Stage edit did not propagate to inheriting sub-stage1.")
+        assert_equal(bool(widget.state["layer1.sub2"]["train_bn"]), True, "Stage edit did not propagate to inheriting sub-stage2.")
+
+        widget._select_stage("layer1.sub1")
+        widget.stage_frozen.setChecked(True)
+        widget._on_detail_changed()
+        assert_equal(bool(widget.state["layer1.sub1"]["inherit_from_parent"]), False, "Sub-stage override did not break inheritance.")
+
+        widget._select_stage("layer1")
+        widget.stage_train_bn.setChecked(False)
+        widget._on_detail_changed()
+        assert_equal(bool(widget.state["layer1.sub1"]["train_bn"]), True, "Parent edit incorrectly overwrote explicit sub-stage override.")
+        assert_equal(bool(widget.state["layer1.sub2"]["train_bn"]), False, "Parent edit did not refresh inheriting sub-stage.")
+
+        block_spec = widget._derive_spec()
+        block_payload = spec_dict(block_spec)
+        block_node_settings = block_payload.get("node_settings", {})
+        assert_true("layer1.sub1" in block_node_settings, "Explicit sub-stage override missing from serialized node_settings.")
+        assert_true("layer1.sub2" not in block_node_settings, "Inheriting sub-stage should not be serialized as explicit override.")
+        widget.generate_model()
+        verify_generated_outputs(block_spec)
+
+        reopen_path = custom_model_generator.SPEC_DIR / f"{block_model_name}.json"
+        reopened = open_canvas_from_spec(widget, reopen_path)
+        reopened_payload = spec_dict(reopened)
+        assert_equal(
+            reopened_payload.get("node_settings", {}),
+            block_node_settings,
+            "Block node_settings changed after save/generate/reopen round-trip.",
+        )
+        results.append("canvas:block_inheritance_override_roundtrip")
+    finally:
+        dispose_widget(widget)
+        patch.restore()
+
+
+def test_canvas_substage_metadata(results: list[str]) -> None:
+    widget = None
+    try:
+        widget = CustomModelCanvasWidget()
+        for base_model, layout in widget.SUBSTAGE_LAYOUTS.items():
+            widget.new_spec()
+            widget.base_model_combo.setCurrentText(base_model)
+            spec = widget._derive_spec()
+            payload = spec_dict(spec)
+            assert_equal(payload.get("hierarchy_mode"), "substage", f"{base_model} did not emit substage hierarchy_mode.")
+            node_hierarchy = payload.get("node_hierarchy")
+            assert_true(isinstance(node_hierarchy, dict) and bool(node_hierarchy), f"{base_model} did not emit node_hierarchy metadata.")
+            for parent_key, count in layout.items():
+                if int(count) <= 0:
+                    continue
+                child_key = f"{parent_key}.sub1"
+                assert_true(child_key in widget.state, f"{base_model} missing expected sub-stage node '{child_key}'.")
+                child_meta = node_hierarchy.get(child_key, {})
+                assert_true(isinstance(child_meta, dict), f"{base_model}:{child_key} missing node_hierarchy payload.")
+                for field in ("node_kind", "parent_key", "hierarchy_depth", "source_module", "static_group_label", "structure_mapping", "structure_source", "safe_operations"):
+                    assert_true(field in child_meta, f"{base_model}:{child_key} missing hierarchy field '{field}'.")
+                break
+            results.append(f"canvas:substage_metadata:{base_model}")
+    finally:
+        dispose_widget(widget)
 
 
 def run() -> list[str]:
@@ -341,6 +481,8 @@ def run() -> list[str]:
     test_workspace_identity_sequences(results)
     test_canvas_identity_and_state(results)
     test_canvas_open_existing_roundtrip(results)
+    test_canvas_block_inheritance_compat(results)
+    test_canvas_substage_metadata(results)
     cleanup_temp_artifacts()
     return results
 

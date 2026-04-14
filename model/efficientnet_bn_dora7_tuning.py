@@ -4,16 +4,12 @@ import torch
 from torch import nn
 
 from model._transfer_strategies import (
-    DoRALinear,
-    apply_dora_recursively,
     build_optimizer as _build_optimizer,
-    freeze_all,
-    load_efficientnet_v2_s_classifier,
-    strategy_builder,
+    build_model_from_spec as _build_model_from_spec,
 )
 
 
-GENERATED_SPEC = {'model_name': 'efficientnet_bn_last1_gen', 'base_model': 'efficientnet_v2_s', 'task_type': 'classification', 'method_type': 'bn_last1', 'freeze_strategy': 'bn_tuning_with_last_stages', 'train_bn': True, 'unfreeze_stages': [7], 'peft_method': None, 'peft_targets': {'feature_stages': [], 'layer_keys': [], 'classifier': False}, 'peft_params': {}, 'gradcam_target_hint': ['features.7'], 'pretrained': True, 'metadata_version': '1.1', 'generator_version': 'phase3_v1'}
+GENERATED_SPEC = {'model_name': 'efficientnet_bn_dora7_tuning', 'base_provider': 'torchvision', 'base_family': 'efficientnet', 'variant': 'efficientnet_v2_s', 'base_model': 'efficientnet_v2_s', 'task_type': 'classification', 'method_type': 'dora', 'freeze_strategy': 'bn_tuning', 'train_bn': True, 'train_norm': False, 'unfreeze_stages': [], 'peft_method': 'dora', 'peft_targets': {'feature_stages': [7], 'layer_keys': [], 'classifier': False}, 'peft_params': {'rank': 8, 'alpha': 16.0}, 'stage_lr_overrides': {}, 'gradcam_target_hint': ['features.7'], 'pretrained': True, 'metadata_version': '1.3', 'generator_version': 'phase_canvas_methods_v1', 'is_generated': True, 'source_of_truth': 'spec', 'spec_name': 'efficientnet_bn_dora7_tuning.json', 'spec_file': 'model_specs/efficientnet_bn_dora7_tuning.json', 'source_spec_file': 'model_specs/efficientnet_bn_dora7_tuning.json'}
 
 
 def _resolved_device(device: str | torch.device) -> str | torch.device:
@@ -22,58 +18,20 @@ def _resolved_device(device: str | torch.device) -> str | torch.device:
     return device
 
 
-def _strategy_tuple() -> tuple[str, str]:
-    base_model = str(GENERATED_SPEC.get("base_model", "efficientnet_v2_s"))
-    method_type = str(GENERATED_SPEC.get("method_type", "baseline"))
-    backbone = "efficientnet" if base_model == "efficientnet_v2_s" else "resnet18"
-    strategy_map = {
-        "baseline": "linear_probe",
-        "bn_tuning": "bn_tuning",
-        "bn_last1": "bn_last1",
-        "bn_last2": "bn_last2",
-        "full_finetune": "full_finetune",
-        "lora": "lora",
-        "dora": "dora",
-        "tsa": "tsa",
-    }
-    if method_type not in strategy_map:
-        raise ValueError(f"Unsupported generated method_type: {method_type}")
-    return backbone, strategy_map[method_type]
-
-
 def build_model(num_classes: int, freeze_backbone: bool = True, device: str | torch.device = "cpu") -> nn.Module:
     del freeze_backbone
     resolved_device = _resolved_device(device)
-    base_model = str(GENERATED_SPEC.get("base_model", "efficientnet_v2_s"))
-    method_type = str(GENERATED_SPEC.get("method_type", "baseline"))
     pretrained = bool(GENERATED_SPEC.get("pretrained", True))
-
-    if base_model == "efficientnet_v2_s" and method_type == "dora":
-        feature_stages = []
-        use_classifier = False
-        rank = 8
-        alpha = 16.0
-        # Preserve handwritten DoRA-equivalent semantics by default; allow constrained custom targets when requested.
-        if feature_stages == [6, 7] and use_classifier and rank == 8 and abs(alpha - 16.0) < 1e-9:
-            backbone, strategy = _strategy_tuple()
-            return strategy_builder(backbone, strategy)(num_classes, resolved_device, pretrained)
-
-        model = load_efficientnet_v2_s_classifier(num_classes, pretrained=pretrained)
-        freeze_all(model)
-        for stage_idx in feature_stages:
-            if 0 <= int(stage_idx) < len(model.features):
-                apply_dora_recursively(model.features[int(stage_idx)])
-        if use_classifier:
-            model.classifier[1] = DoRALinear(model.classifier[1], rank=rank, alpha=alpha)
-        model.to(resolved_device)
-        return model
-
-    backbone, strategy = _strategy_tuple()
-    return strategy_builder(backbone, strategy)(num_classes, resolved_device, pretrained)
+    return _build_model_from_spec(dict(GENERATED_SPEC), num_classes=num_classes, device=resolved_device, pretrained=pretrained)
 
 
 def build_optimizer(model: nn.Module, lr: float = 1e-3) -> torch.optim.Optimizer:
-    return _build_optimizer(model, lr=lr)
+    return _build_optimizer(
+        model,
+        lr=lr,
+        base_model=str(GENERATED_SPEC.get("base_model", "")),
+        stage_lr_overrides=GENERATED_SPEC.get("stage_lr_overrides", {}),
+    )
 
 
 
@@ -111,7 +69,13 @@ def replace_classifier_head(model: nn.Module, num_classes: int) -> nn.Module:
     return _ts.replace_classifier_head(model, num_classes=int(num_classes), base_model=_classifier_base_model())
 
 def get_model_metadata() -> dict[str, object]:
-    return dict(GENERATED_SPEC)
+    metadata = dict(GENERATED_SPEC)
+    metadata.setdefault("is_generated", True)
+    metadata.setdefault("source_of_truth", "spec")
+    metadata.setdefault("spec_name", f"{metadata.get('model_name', 'unknown')}.json")
+    metadata.setdefault("spec_file", f"model_specs/{metadata.get('model_name', 'unknown')}.json")
+    metadata.setdefault("source_spec_file", f"model_specs/{metadata.get('model_name', 'unknown')}.json")
+    return metadata
 
 
 def get_capabilities() -> dict[str, bool]:
@@ -119,11 +83,16 @@ def get_capabilities() -> dict[str, bool]:
     return {
         "supports_resume": True,
         "supports_gradcam": True,
-        "supports_structure_editing": False,
+        "supports_structure_editing": True,
         "supports_lora": method_type == "lora",
         "supports_dora": method_type == "dora",
         "supports_tsa": method_type == "tsa",
+        "supports_adapter": method_type == "adapter",
+        "supports_bitfit": method_type == "bitfit",
+        "supports_ssf": method_type == "ssf",
         "supports_bn_tuning": method_type in {"bn_tuning", "bn_last1", "bn_last2"},
+        "supports_classifier_head_adaptation": True,
+        "supports_norm_tuning": method_type == "norm_tuning",
         "supports_classifier_head_adaptation": True,
     }
 
@@ -135,6 +104,30 @@ def describe_model_structure() -> dict[str, object]:
             "base_family": "resnet18",
             "feature_stages": ["conv1", "layer1", "layer2", "layer3", "layer4"],
             "classifier": "fc",
+        }
+    if base_model == "resnet50":
+        return {
+            "base_family": "resnet50",
+            "feature_stages": ["conv1", "layer1", "layer2", "layer3", "layer4"],
+            "classifier": "fc",
+        }
+    if base_model == "convnext_tiny":
+        return {
+            "base_family": "convnext_tiny",
+            "feature_stages": ["stem", "stage1", "stage2", "stage3", "stage4"],
+            "classifier": "classifier.2",
+        }
+    if base_model == "mobilenet_v3_large":
+        return {
+            "base_family": "mobilenet_v3_large",
+            "feature_stages": ["stem", "stage1", "stage2", "stage3", "stage4"],
+            "classifier": "classifier.3",
+        }
+    if base_model == "densenet121":
+        return {
+            "base_family": "densenet121",
+            "feature_stages": ["stem", "denseblock1", "denseblock2", "denseblock3", "denseblock4"],
+            "classifier": "classifier",
         }
     return {
         "base_family": "efficientnet_v2_s",
