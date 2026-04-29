@@ -15,9 +15,5 @@ __pycache__/
 build/
 dist/
 
-# Windows shortcuts in repo root
-/Check Requirements.lnk
-/Launch Training GUI.lnk
-
 # Local recycle bin for deleted logs/models
 /.trash/

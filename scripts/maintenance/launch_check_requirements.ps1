@@ -3,7 +3,8 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $guiScript = Join-Path $projectRoot "scripts\maintenance\ensure_packages_gui.pyw"
 $rebuildScript = Join-Path $projectRoot "scripts\maintenance\rebuild_gui_shortcuts.ps1"
-$launchScript = Join-Path $projectRoot "scripts\maintenance\launch_check_requirements.ps1"
+$launchScript = ".\scripts\maintenance\launch_check_requirements.ps1"
+$trainingLaunchScript = ".\scripts\maintenance\launch_training_gui.ps1"
 $powershellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 
 function Resolve-PythonLauncher {
@@ -60,7 +61,7 @@ function Read-Shortcut([string]$shortcutPath, $wsh) {
     return $wsh.CreateShortcut($shortcutPath)
 }
 
-function Needs-ShortcutRepair($resolvedLauncher) {
+function Needs-ShortcutRepair {
     $wsh = New-Object -ComObject WScript.Shell
     $checkShortcutPath = Join-Path $projectRoot "Check Requirements.lnk"
     $trainingShortcutPath = Join-Path $projectRoot "Launch Training GUI.lnk"
@@ -80,24 +81,22 @@ function Needs-ShortcutRepair($resolvedLauncher) {
         return $true
     }
 
-    $trainingTarget = $trainingShortcut.TargetPath
-    if (-not $trainingTarget -or -not (Test-Path $trainingTarget)) {
+    $trainingTarget = Normalize-PathString $trainingShortcut.TargetPath
+    $trainingArgs = Normalize-PathString $trainingShortcut.Arguments
+    $expectedTrainingTarget = Normalize-PathString $powershellExe
+    $expectedTrainingLaunchRef = Normalize-PathString $trainingLaunchScript
+
+    if (-not $trainingTarget) {
         return $true
     }
-
-    # Only enforce exact target match when we resolved a concrete python executable path.
-    if ($resolvedLauncher -and $resolvedLauncher.PrefixArgs.Count -eq 0) {
-        $expectedTrainingTarget = Normalize-PathString $resolvedLauncher.FilePath
-        if ((Normalize-PathString $trainingTarget) -ne $expectedTrainingTarget) {
-            return $true
-        }
+    if ($trainingTarget -ne $expectedTrainingTarget -or $trainingArgs -notlike "*$expectedTrainingLaunchRef*") {
+        return $true
     }
 
     return $false
 }
 
-$launcher = Resolve-PythonLauncher
-if (Needs-ShortcutRepair $launcher) {
+if (Needs-ShortcutRepair) {
     try {
         & powershell -NoProfile -ExecutionPolicy Bypass -File $rebuildScript | Out-Null
     } catch {
@@ -112,7 +111,7 @@ if (-not $launcher) {
     Add-Type -AssemblyName PresentationFramework
     [System.Windows.MessageBox]::Show(
         "No Python interpreter was found. Please install Python/Conda and then run scripts\maintenance\rebuild_gui_shortcuts.ps1.",
-        "DATA586 Requirements Checker"
+        "Project Requirements Checker"
     ) | Out-Null
     exit 1
 }

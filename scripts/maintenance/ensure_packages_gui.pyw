@@ -16,7 +16,7 @@ SCRIPT_PATH = PROJECT_ROOT / "scripts" / "maintenance" / "ensure_packages.py"
 class RequirementsWindow:
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("DATA586 Requirements Checker")
+        self.root.title("Project Requirements Checker")
         self.root.geometry("760x460")
 
         self.status_var = tk.StringVar(value="Ready")
