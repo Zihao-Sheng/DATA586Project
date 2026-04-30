@@ -46,7 +46,7 @@ A typical workflow looks like this:
 
 The **Training** tab is the main launch surface for supervised classification training. It exposes the core configuration needed to start a run while keeping advanced options available without forcing the user into command-line use.
 
-![Training Tab](./training_tab.png)
+![Training Tab](./pics/training_tab.png)
 
 ### What this tab is for
 Use this tab to:
@@ -88,7 +88,7 @@ This tab is not just a thin launcher. It ties together:
 
 The **Predicting** tab is the inference and visual inspection workspace. It is designed for both quick single-model prediction and richer checkpoint comparison workflows.
 
-![Predicting Tab](./predicting_tab.png)
+![Predicting Tab](./pics/predicting_tab.png)
 
 ### What this tab is for
 Use this tab to:
@@ -127,7 +127,7 @@ Use this tab to:
 ### Example prediction output
 The repository also includes a captured example showing a rendered prediction view with a Grad-CAM overlay.
 
-![Prediction Example](./predicting_example.png)
+![Prediction Example](./pics/predicting_example.png)
 
 This kind of output is useful not only for debugging but also for qualitative comparison between tuning strategies.
 
@@ -137,7 +137,7 @@ This kind of output is useful not only for debugging but also for qualitative co
 
 The **Test Splits** tab is the robustness-evaluation surface. It is designed for evaluating a checkpoint against curated dataset variants such as blur, downsample, masking, or other controlled perturbation sets.
 
-![Test Splits Tab](./test_split_tab.png)
+![Test Splits Tab](./pics/test_split_tab.png)
 
 ### What this tab is for
 Use this tab to:
@@ -153,7 +153,7 @@ A standard train/val/test workflow does not tell the whole story for transfer le
 ### Example visualization from test-split outputs
 The repository includes a line-chart style comparison of per-split performance across several runs:
 
-![Test Split Comparison](./test_split_comparison.png)
+![Test Split Comparison](./pics/test_split_comparison.png)
 
 This makes it easy to see where one strategy wins or fails—for example on downsampled or blur-heavy variants.
 
@@ -188,7 +188,7 @@ Moving data preparation into a dedicated tab keeps the rest of the application c
 
 The **Logs** tab is one of the strongest parts of the application. It converts raw run logs into an analysis workspace for comparing experiments visually.
 
-![Logs Tab](./log_tab.png)
+![Logs Tab](./pics/log_tab.png)
 
 ### What this tab is for
 Use this tab to:
@@ -217,17 +217,17 @@ Use this tab to:
 #### Accuracy-over-epoch comparison
 This plot compares validation accuracy across runs to show convergence behavior and relative performance trends.
 
-![Accuracy Comparison](./acc_comparison.png)
+![Accuracy Comparison](./pics/acc_comparison.png)
 
 #### Confusion matrix view
 The confusion matrix panel helps inspect class-specific mistakes rather than only top-line accuracy.
 
-![Confusion Matrix](./confusion_matrix.png)
+![Confusion Matrix](./pics/confusion_matrix.png)
 
 #### Performance vs efficiency
 This bubble chart captures the trade-off between train wall time, accuracy, and trainable parameter count.
 
-![Performance vs Efficiency](./eff_comparison.png)
+![Performance vs Efficiency](./pics/eff_comparison.png)
 
 ### Why this tab matters
 Instead of treating logs as passive files, the app turns them into a first-class analysis surface. This is particularly valuable for transfer learning studies where:
@@ -241,7 +241,7 @@ Instead of treating logs as passive files, the app turns them into a first-class
 
 The **Custom Models** tab is the structured model-authoring and editing workspace. This is where the repository goes beyond standard training GUIs and starts behaving like a configurable model studio.
 
-![Custom Models Tab](./coustom_model.png)
+![Custom Models Tab](./pics/coustom_model.png)
 
 ### What this tab is for
 Use this tab to:
